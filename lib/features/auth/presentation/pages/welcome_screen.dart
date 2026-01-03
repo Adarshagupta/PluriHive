@@ -3,6 +3,7 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/patterned_background.dart';
 import 'onboarding_screen.dart';
 import 'signup_screen.dart';
+import 'signin_screen.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -76,9 +77,9 @@ class WelcomeScreen extends StatelessWidget {
               // Already have account
               TextButton(
                 onPressed: () {
-                  Navigator.of(context).pushReplacement(
+                  Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => const SignUpScreen(),
+                      builder: (_) => const SignInScreen(),
                     ),
                   );
                 },

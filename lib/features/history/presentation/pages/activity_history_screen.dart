@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import '../../../../core/theme/app_theme.dart';
-import '../../../../core/widgets/patterned_background.dart';
 import '../../../tracking/domain/entities/activity.dart';
 import '../../../tracking/data/datasources/activity_local_data_source.dart';
+import '../../../../core/services/tracking_api_service.dart';
+import '../../../../core/di/injection_container.dart' as di;
 import 'package:intl/intl.dart';
 
 class ActivityHistoryScreen extends StatefulWidget {
@@ -14,34 +14,52 @@ class ActivityHistoryScreen extends StatefulWidget {
 }
 
 class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
-  final ActivityLocalDataSource _dataSource = ActivityLocalDataSourceImpl();
+  late final TrackingApiService _apiService;
+  final ActivityLocalDataSource _localDataSource = ActivityLocalDataSourceImpl();
   List<Activity> _activities = [];
   bool _isLoading = true;
   
   @override
   void initState() {
     super.initState();
+    _apiService = di.getIt<TrackingApiService>();
     _loadActivities();
   }
   
   Future<void> _loadActivities() async {
     setState(() => _isLoading = true);
     try {
-      final activities = await _dataSource.getAllActivities();
+      // Try to load from backend first
+      try {
+        final activitiesData = await _apiService.getUserActivities();
+        final backendActivities = activitiesData.map((data) => Activity.fromJson(data)).toList();
+        
+        if (backendActivities.isNotEmpty) {
+          setState(() {
+            _activities = backendActivities;
+            _isLoading = false;
+          });
+          return;
+        }
+      } catch (e) {
+        print('⚠️ Could not load from backend: $e');
+      }
+      
+      // Fallback to local storage
+      final localActivities = await _localDataSource.getAllActivities();
       setState(() {
-        _activities = activities;
+        _activities = localActivities;
         _isLoading = false;
       });
+      print('📱 Loaded ${localActivities.length} activities from local storage');
     } catch (e) {
-      print('Error loading activities: $e');
+      print('❌ Error loading activities: $e');
       setState(() => _isLoading = false);
     }
   }
 
   double get _totalDistance => _activities.fold(0.0, (sum, a) => sum + a.distanceMeters / 1000);
   int get _totalActivities => _activities.length;
-  Duration get _totalDuration => _activities.fold(Duration.zero, (sum, a) => sum + a.duration);
-  int get _totalCalories => _activities.fold(0, (sum, a) => sum + a.caloriesBurned);
 
   @override
   Widget build(BuildContext context) {

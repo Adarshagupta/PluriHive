@@ -20,8 +20,11 @@ class UserStats extends Equatable {
   });
   
   int get experiencePoints => totalPoints;
-  int get nextLevelXP => level * 1000;
-  double get progressToNextLevel => (experiencePoints % nextLevelXP) / nextLevelXP;
+  int get nextLevelXP => level > 0 ? level * 1000 : 1000;
+  double get progressToNextLevel {
+    if (nextLevelXP <= 0) return 0.0;
+    return ((experiencePoints % nextLevelXP) / nextLevelXP).clamp(0.0, 1.0);
+  }
   
   @override
   List<Object?> get props => [

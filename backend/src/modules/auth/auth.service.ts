@@ -40,7 +40,7 @@ export class AuthService {
 
     return {
       user: this.sanitizeUser(user),
-      token,
+      access_token: token,
     };
   }
 
@@ -64,7 +64,7 @@ export class AuthService {
 
     return {
       user: this.sanitizeUser(user),
-      token,
+      access_token: token,
     };
   }
 

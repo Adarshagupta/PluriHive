@@ -24,9 +24,17 @@ class Position extends Equatable {
   };
   
   factory Position.fromJson(Map<String, dynamic> json) => Position(
-    latitude: json['latitude'],
-    longitude: json['longitude'],
-    altitude: json['altitude'],
+    latitude: (json['latitude'] is String) 
+        ? double.parse(json['latitude']) 
+        : (json['latitude'] as num).toDouble(),
+    longitude: (json['longitude'] is String) 
+        ? double.parse(json['longitude']) 
+        : (json['longitude'] as num).toDouble(),
+    altitude: json['altitude'] != null
+        ? (json['altitude'] is String
+            ? double.parse(json['altitude'])
+            : (json['altitude'] as num).toDouble())
+        : null,
     timestamp: DateTime.parse(json['timestamp']),
   );
 }

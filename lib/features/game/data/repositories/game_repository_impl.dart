@@ -1,20 +1,47 @@
 import '../../domain/entities/user_stats.dart';
 import '../../domain/repositories/game_repository.dart';
-import '../datasources/game_local_data_source.dart';
+import '../../../../core/services/auth_api_service.dart';
 
 class GameRepositoryImpl implements GameRepository {
-  final GameLocalDataSource localDataSource;
+  final AuthApiService authApiService;
   
-  GameRepositoryImpl(this.localDataSource);
+  GameRepositoryImpl(this.authApiService);
   
   @override
-  Future<UserStats> getUserStats() {
-    return localDataSource.getUserStats();
+  Future<UserStats> getUserStats() async {
+    // Always fetch from backend - no local storage
+    try {
+      final userData = await authApiService.getCurrentUser();
+      return UserStats(
+        totalPoints: userData['totalPoints'] is int 
+            ? userData['totalPoints'] 
+            : (userData['totalPoints'] as num?)?.toInt() ?? 0,
+        level: userData['level'] is int 
+            ? userData['level'] 
+            : (userData['level'] as num?)?.toInt() ?? 1,
+        totalDistanceKm: userData['totalDistanceKm'] is String
+            ? double.parse(userData['totalDistanceKm'])
+            : (userData['totalDistanceKm'] as num?)?.toDouble() ?? 0.0,
+        totalCaloriesBurned: 0,
+        territoriesCaptured: userData['totalTerritoriesCaptured'] is int
+            ? userData['totalTerritoriesCaptured']
+            : (userData['totalTerritoriesCaptured'] as num?)?.toInt() ?? 0,
+        currentStreak: 0,
+        longestStreak: 0,
+      );
+    } catch (e) {
+      throw Exception('Failed to fetch user stats from backend: $e');
+    }
   }
   
   @override
-  Future<void> updateStats(UserStats stats) {
-    return localDataSource.updateStats(stats);
+  Future<void> updateStats(UserStats stats) async {
+    // Stats are automatically updated by backend when activities/territories are saved
+    // No need to manually update - this is a no-op
+    // The backend updates stats when:
+    // 1. Activity is saved
+    // 2. Territory is captured
+    return Future.value();
   }
   
   @override

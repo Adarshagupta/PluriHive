@@ -10,13 +10,23 @@ export class TerritoryController {
   @UseGuards(JwtAuthGuard)
   async captureTerritories(
     @Request() req,
-    @Body() body: { hexIds: string[]; coordinates: { lat: number; lng: number }[] },
+    @Body() body: { 
+      hexIds: string[]; 
+      coordinates: { lat: number; lng: number }[];
+      routePoints?: { lat: number; lng: number }[][];
+    },
   ) {
     return this.territoryService.captureTerritories(
       req.user.id,
       body.hexIds,
       body.coordinates,
+      body.routePoints,
     );
+  }
+
+  @Get('all')
+  async getAllTerritories() {
+    return this.territoryService.getAllTerritories();
   }
 
   @Get('user/:userId')

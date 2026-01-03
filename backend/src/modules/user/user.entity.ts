@@ -32,11 +32,15 @@ export class User {
   @Column({ nullable: true })
   gender: string;
 
+  // Onboarding status - default to true for backward compatibility
+  @Column({ default: true })
+  hasCompletedOnboarding: boolean;
+
   // Game stats
   @Column({ default: 0 })
   totalPoints: number;
 
-  @Column({ default: 0 })
+  @Column({ default: 1 })
   level: number;
 
   @Column({ type: 'decimal', default: 0 })

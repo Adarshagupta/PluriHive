@@ -19,15 +19,22 @@ class AuthLocalDataSourceImpl implements AuthLocalDataSource {
   
   @override
   Future<User?> getCurrentUser() async {
+    print('👤 AuthLocalDataSource: Getting current user from SharedPreferences...');
     final userJson = sharedPreferences.getString(_userKey);
+    print('👤 AuthLocalDataSource: User JSON = ${userJson != null ? "EXISTS (${userJson.length} chars)" : "NULL"}');
     if (userJson == null) return null;
-    return User.fromJson(jsonDecode(userJson));
+    final user = User.fromJson(jsonDecode(userJson));
+    print('👤 AuthLocalDataSource: Loaded user = ${user.email}');
+    return user;
   }
   
   @override
   Future<void> saveUser(User user) async {
+    print('💾 AuthLocalDataSource: Saving user ${user.email} to SharedPreferences...');
     final encoded = jsonEncode(user.toJson());
+    print('💾 AuthLocalDataSource: JSON length = ${encoded.length} chars');
     await sharedPreferences.setString(_userKey, encoded);
+    print('💾 AuthLocalDataSource: User saved successfully');
   }
   
   @override

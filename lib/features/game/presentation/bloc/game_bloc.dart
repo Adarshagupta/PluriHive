@@ -4,7 +4,7 @@ import '../../domain/entities/user_stats.dart';
 import '../../domain/usecases/calculate_points.dart';
 import '../../domain/usecases/get_user_stats.dart';
 import '../../domain/repositories/game_repository.dart';
-import '../../../tracking/data/datasources/activity_local_data_source.dart';
+import '../../../../core/services/auth_api_service.dart';
 
 // Events
 abstract class GameEvent extends Equatable {
@@ -76,11 +76,13 @@ class GameBloc extends Bloc<GameEvent, GameState> {
   final CalculatePoints calculatePoints;
   final GetUserStats getUserStats;
   final GameRepository repository;
+  final AuthApiService authApiService;
   
   GameBloc({
     required this.calculatePoints,
     required this.getUserStats,
     required this.repository,
+    required this.authApiService,
   }) : super(GameInitial()) {
     on<LoadGameData>(_onLoadGameData);
     on<AddPoints>(_onAddPoints);
@@ -95,36 +97,41 @@ class GameBloc extends Bloc<GameEvent, GameState> {
   ) async {
     try {
       emit(GameLoading());
-      final stats = await getUserStats();
       
-      // If distance is 0, calculate from all saved activities
-      if (stats.totalDistanceKm == 0.0) {
-        try {
-          final activityDataSource = ActivityLocalDataSourceImpl();
-          final activities = await activityDataSource.getAllActivities();
-          
-          // Sum all distances from activities
-          double totalDistance = 0.0;
-          for (final activity in activities) {
-            totalDistance += activity.distanceMeters / 1000; // Convert meters to km
-          }
-          
-          if (totalDistance > 0) {
-            final updatedStats = stats.copyWith(totalDistanceKm: totalDistance);
-            await repository.updateStats(updatedStats);
-            print('📥 GameBloc LoadGameData: Calculated distance from ${activities.length} activities = ${totalDistance.toStringAsFixed(3)} km');
-            emit(GameLoaded(updatedStats));
-            return;
-          }
-        } catch (e) {
-          print('⚠️ Error calculating distance from activities: $e');
-        }
-      }
+      // Fetch user data from backend
+      final userData = await authApiService.getCurrentUser();
       
-      print('📥 GameBloc LoadGameData: Loaded distance = ${stats.totalDistanceKm} km');
+      // Convert backend user data to UserStats with proper type handling
+      final stats = UserStats(
+        totalPoints: userData['totalPoints'] is int 
+            ? userData['totalPoints'] 
+            : (userData['totalPoints'] as num?)?.toInt() ?? 0,
+        level: userData['level'] is int 
+            ? userData['level'] 
+            : (userData['level'] as num?)?.toInt() ?? 1,
+        totalDistanceKm: userData['totalDistanceKm'] is String
+            ? double.parse(userData['totalDistanceKm'])
+            : (userData['totalDistanceKm'] as num?)?.toDouble() ?? 0.0,
+        totalCaloriesBurned: 0, // Calculate from activities if needed
+        territoriesCaptured: userData['totalTerritoriesCaptured'] is int
+            ? userData['totalTerritoriesCaptured']
+            : (userData['totalTerritoriesCaptured'] as num?)?.toInt() ?? 0,
+        currentStreak: 0,
+        longestStreak: 0,
+      );
+      
+      print('📥 GameBloc LoadGameData: Loaded from backend - distance = ${stats.totalDistanceKm} km, points = ${stats.totalPoints}');
       emit(GameLoaded(stats));
     } catch (e) {
-      emit(GameError(e.toString()));
+      print('⚠️ Error loading game data from backend: $e');
+      // Fallback to local data
+      try {
+        final stats = await getUserStats();
+        print('📥 GameBloc LoadGameData: Loaded from local - distance = ${stats.totalDistanceKm} km');
+        emit(GameLoaded(stats));
+      } catch (localError) {
+        emit(GameError(localError.toString()));
+      }
     }
   }
   
@@ -132,64 +139,35 @@ class GameBloc extends Bloc<GameEvent, GameState> {
     AddPoints event,
     Emitter<GameState> emit,
   ) async {
-    if (state is GameLoaded) {
-      final currentStats = (state as GameLoaded).stats;
-      final newPoints = currentStats.totalPoints + event.points;
-      final newLevel = (newPoints / 1000).floor() + 1;
-      
-      final updatedStats = currentStats.copyWith(
-        totalPoints: newPoints,
-        level: newLevel,
-      );
-      
-      await repository.updateStats(updatedStats);
-      emit(GameLoaded(updatedStats));
-    }
+    // Points are updated on backend when activity is saved
+    // Just reload fresh data from backend
+    add(LoadGameData());
   }
   
   Future<void> _onUpdateDistance(
     UpdateDistance event,
     Emitter<GameState> emit,
   ) async {
-    if (state is GameLoaded) {
-      final currentStats = (state as GameLoaded).stats;
-      final updatedStats = currentStats.copyWith(
-        totalDistanceKm: currentStats.totalDistanceKm + event.distanceKm,
-      );
-      
-      print('💾 GameBloc: Distance updated from ${currentStats.totalDistanceKm.toStringAsFixed(3)} to ${updatedStats.totalDistanceKm.toStringAsFixed(3)} km');
-      await repository.updateStats(updatedStats);
-      emit(GameLoaded(updatedStats));
-    }
+    // Distance is updated on backend when activity is saved
+    // Just reload fresh data from backend
+    add(LoadGameData());
   }
   
   Future<void> _onAddCalories(
     AddCalories event,
     Emitter<GameState> emit,
   ) async {
-    if (state is GameLoaded) {
-      final currentStats = (state as GameLoaded).stats;
-      final updatedStats = currentStats.copyWith(
-        totalCaloriesBurned: currentStats.totalCaloriesBurned + event.calories,
-      );
-      
-      await repository.updateStats(updatedStats);
-      emit(GameLoaded(updatedStats));
-    }
+    // Calories are calculated and saved with activity on backend
+    // Just reload fresh data from backend
+    add(LoadGameData());
   }
   
   Future<void> _onTerritoryCapture(
     TerritoryCapture event,
     Emitter<GameState> emit,
   ) async {
-    if (state is GameLoaded) {
-      final currentStats = (state as GameLoaded).stats;
-      final updatedStats = currentStats.copyWith(
-        territoriesCaptured: currentStats.territoriesCaptured + 1,
-      );
-      
-      await repository.updateStats(updatedStats);
-      emit(GameLoaded(updatedStats));
-    }
+    // Territories are updated on backend when captured
+    // Just reload fresh data from backend
+    add(LoadGameData());
   }
 }

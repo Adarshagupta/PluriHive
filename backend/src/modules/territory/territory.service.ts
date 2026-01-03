@@ -12,14 +12,19 @@ export class TerritoryService {
     private userService: UserService,
   ) {}
 
-  async captureTerritories(userId: string, hexIds: string[], coordinates: { lat: number; lng: number }[]) {
+  async captureTerritories(
+    userId: string, 
+    hexIds: string[], 
+    coordinates: { lat: number; lng: number }[],
+    routePointsArray?: { lat: number; lng: number }[][]
+  ) {
     const newTerritories = [];
     const recapturedTerritories = [];
-    let totalPoints = 0;
 
     for (let i = 0; i < hexIds.length; i++) {
       const hexId = hexIds[i];
       const coord = coordinates[i];
+      const routePoints = routePointsArray ? routePointsArray[i] : null;
 
       // Check if territory exists
       const existing = await this.territoryRepository.findOne({ 
@@ -28,16 +33,23 @@ export class TerritoryService {
       });
 
       if (existing) {
-        // Recapture from another user
+        // Territory exists - update it
         if (existing.ownerId !== userId) {
+          // Recapture from another user
           existing.ownerId = userId;
           existing.captureCount++;
-          existing.points = 50 + (existing.captureCount * 10); // Bonus for contested territories
+          existing.points = 0;
           existing.lastBattleAt = new Date();
+          if (routePoints) existing.routePoints = routePoints;
           
           await this.territoryRepository.save(existing);
           recapturedTerritories.push(existing);
-          totalPoints += existing.points;
+        } else {
+          // Same user recapturing their own territory
+          existing.captureCount++;
+          existing.capturedAt = new Date();
+          if (routePoints) existing.routePoints = routePoints;
+          await this.territoryRepository.save(existing);
         }
       } else {
         // New territory
@@ -46,27 +58,34 @@ export class TerritoryService {
           latitude: coord.lat,
           longitude: coord.lng,
           ownerId: userId,
-          points: 50,
+          points: 0,
+          routePoints: routePoints || [],
         });
         
         await this.territoryRepository.save(territory);
         newTerritories.push(territory);
-        totalPoints += 50;
       }
     }
 
-    // Update user stats
+    // Update user stats - only track territory count, no points bonus
     await this.userService.updateStats(userId, {
       territories: newTerritories.length + recapturedTerritories.length,
-      points: totalPoints,
+      points: 0, // Points come from distance only
     });
 
     return {
       newTerritories,
       recapturedTerritories,
-      totalPoints,
+      totalPoints: 0, // No territory bonus points
       totalCaptured: newTerritories.length + recapturedTerritories.length,
     };
+  }
+
+  async getAllTerritories(): Promise<Territory[]> {
+    return this.territoryRepository.find({
+      relations: ['owner'],
+      order: { capturedAt: 'DESC' },
+    });
   }
 
   async getUserTerritories(userId: string): Promise<Territory[]> {

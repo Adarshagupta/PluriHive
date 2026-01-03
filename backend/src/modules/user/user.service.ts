@@ -22,6 +22,19 @@ export class UserService {
     return this.findById(userId);
   }
 
+  async completeOnboarding(userId: string): Promise<User> {
+    await this.userRepository.update(userId, { hasCompletedOnboarding: true });
+    return this.findById(userId);
+  }
+
+  async fixOnboardingForAllUsers(): Promise<{ updated: number }> {
+    const result = await this.userRepository.update(
+      { hasCompletedOnboarding: false },
+      { hasCompletedOnboarding: true }
+    );
+    return { updated: result.affected || 0 };
+  }
+
   async updateStats(userId: string, stats: {
     distanceKm?: number;
     steps?: number;
@@ -31,7 +44,10 @@ export class UserService {
   }): Promise<User> {
     const user = await this.findById(userId);
     
-    if (stats.distanceKm) user.totalDistanceKm += stats.distanceKm;
+    // Convert decimal fields from string to number (PostgreSQL returns decimals as strings)
+    if (stats.distanceKm) {
+      user.totalDistanceKm = Number(user.totalDistanceKm) + stats.distanceKm;
+    }
     if (stats.steps) user.totalSteps += stats.steps;
     if (stats.territories) user.totalTerritoriesCaptured += stats.territories;
     if (stats.points) {

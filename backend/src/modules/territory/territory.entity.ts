@@ -9,13 +9,16 @@ export class Territory {
   id: string;
 
   @Column({ unique: true })
-  hexId: string; // H3 hex ID or custom grid ID
+  hexId: string; // Used as unique identifier for the territory
 
   @Column({ type: 'decimal', precision: 10, scale: 7 })
-  latitude: number;
+  latitude: number; // Center point latitude
 
   @Column({ type: 'decimal', precision: 10, scale: 7 })
-  longitude: number;
+  longitude: number; // Center point longitude
+
+  @Column({ type: 'jsonb', nullable: true })
+  routePoints: { lat: number; lng: number }[]; // Actual loop path
 
   @Column({ type: 'uuid' })
   ownerId: string;

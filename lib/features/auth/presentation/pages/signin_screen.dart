@@ -3,19 +3,18 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../bloc/auth_bloc.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
-import 'profile_setup_screen.dart';
-import 'signin_screen.dart';
+import 'signup_screen.dart';
+import '../../../dashboard/presentation/pages/main_dashboard.dart';
 
-class SignUpScreen extends StatefulWidget {
-  const SignUpScreen({super.key});
+class SignInScreen extends StatefulWidget {
+  const SignInScreen({super.key});
 
   @override
-  State<SignUpScreen> createState() => _SignUpScreenState();
+  State<SignInScreen> createState() => _SignInScreenState();
 }
 
-class _SignUpScreenState extends State<SignUpScreen> {
+class _SignInScreenState extends State<SignInScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
@@ -23,19 +22,17 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   @override
   void dispose() {
-    _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
 
-  void _handleSignUp() {
+  void _handleSignIn() {
     if (_formKey.currentState!.validate()) {
       setState(() => _isLoading = true);
       
       context.read<AuthBloc>().add(
-        SignUpUser(
-          name: _nameController.text.trim(),
+        SignInUser(
           email: _emailController.text.trim(),
           password: _passwordController.text,
         ),
@@ -48,11 +45,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
     return BlocListener<AuthBloc, AuthState>(
       listener: (context, state) {
         if (state is Authenticated) {
-          // Reload game data from backend after successful signup
+          // Reload game data from backend after successful login
           context.read<GameBloc>().add(LoadGameData());
           
           Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (_) => const ProfileSetupScreen()),
+            MaterialPageRoute(builder: (_) => const DashboardScreen()),
           );
         } else if (state is AuthError) {
           setState(() => _isLoading = false);
@@ -73,44 +70,35 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 children: [
                   const SizedBox(height: 20),
                   
-                  // Illustration
-                  Center(
-                    child: Image.asset(
-                      'assets/illustrations/splashscreen.png',
-                      width: MediaQuery.of(context).size.width * 0.5,
-                      height: MediaQuery.of(context).size.width * 0.5,
-                      fit: BoxFit.contain,
+                  // Back Button
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back),
+                  ),
+                  
+                  const SizedBox(height: 20),
+                  
+                  // Title
+                  const Text(
+                    'Welcome Back!',
+                    style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.textPrimary,
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 8),
+                  
+                  Text(
+                    'Sign in to continue your fitness journey',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: AppTheme.textSecondary,
                     ),
                   ),
                   
                   const SizedBox(height: 48),
-                  
-                  // Name Field
-                  TextFormField(
-                    controller: _nameController,
-                    decoration: InputDecoration(
-                      labelText: 'Full Name',
-                      prefixIcon: const Icon(Icons.person_outline),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter your name';
-                      }
-                      return null;
-                    },
-                  ),
-                  
-                  const SizedBox(height: 16),
                   
                   // Email Field
                   TextFormField(
@@ -173,10 +161,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     ),
                     validator: (value) {
                       if (value == null || value.isEmpty) {
-                        return 'Please enter a password';
-                      }
-                      if (value.length < 6) {
-                        return 'Password must be at least 6 characters';
+                        return 'Please enter your password';
                       }
                       return null;
                     },
@@ -184,12 +169,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
                   
                   const SizedBox(height: 32),
                   
-                  // Sign Up Button
+                  // Sign In Button
                   SizedBox(
                     width: double.infinity,
                     height: 56,
                     child: ElevatedButton(
-                      onPressed: _isLoading ? null : _handleSignUp,
+                      onPressed: _isLoading ? null : _handleSignIn,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppTheme.accentColor,
                         foregroundColor: Colors.white,
@@ -208,7 +193,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                               ),
                             )
                           : const Text(
-                              'Continue with Email',
+                              'Sign In',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w600,
@@ -219,26 +204,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
                   
                   const SizedBox(height: 24),
                   
-                  // Terms
-                  Center(
-                    child: Text(
-                      'By continuing, you agree to our Terms & Privacy Policy',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.textSecondary,
-                      ),
-                    ),
-                  ),
-                  
-                  const SizedBox(height: 24),
-                  
-                  // Sign In Link
+                  // Sign Up Link
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
-                        "Already have an account? ",
+                        "Don't have an account? ",
                         style: TextStyle(
                           color: AppTheme.textSecondary,
                           fontSize: 14,
@@ -247,11 +218,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       GestureDetector(
                         onTap: () {
                           Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const SignInScreen()),
+                            MaterialPageRoute(builder: (_) => const SignUpScreen()),
                           );
                         },
                         child: const Text(
-                          'Sign In',
+                          'Sign Up',
                           style: TextStyle(
                             color: AppTheme.accentColor,
                             fontSize: 14,
@@ -261,8 +232,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       ),
                     ],
                   ),
-                  
-                  const SizedBox(height: 24),
                 ],
               ),
             ),

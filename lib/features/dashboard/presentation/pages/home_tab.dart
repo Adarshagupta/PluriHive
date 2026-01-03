@@ -7,7 +7,11 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../../../../core/widgets/patterned_background.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
+import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../tracking/presentation/bloc/location_bloc.dart';
+import '../../../tracking/domain/entities/activity.dart';
+import '../../../../core/services/tracking_api_service.dart';
+import '../../../../core/di/injection_container.dart' as di;
 import 'dart:async';
 
 class HomeTab extends StatefulWidget {
@@ -22,13 +26,17 @@ class HomeTab extends StatefulWidget {
 class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   GoogleMapController? _mapController;
   late AnimationController _animController;
+  late TrackingApiService _trackingApiService;
   Map<String, dynamic>? _weatherData;
   bool _isNight = false;
   String _greeting = 'Good morning';
+  List<Activity> _recentActivities = [];
+  bool _isLoadingActivities = false;
 
   @override
   void initState() {
     super.initState();
+    _trackingApiService = di.getIt<TrackingApiService>();
     _animController = AnimationController(
       duration: Duration(milliseconds: 800),
       vsync: this,
@@ -38,6 +46,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<GameBloc>().add(LoadGameData());
       _fetchWeather();
+      _loadRecentActivities();
     });
   }
 
@@ -51,6 +60,22 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   Future<void> _refreshData() async {
     context.read<GameBloc>().add(LoadGameData());
     await _fetchWeather();
+    await _loadRecentActivities();
+  }
+  
+  Future<void> _loadRecentActivities() async {
+    setState(() => _isLoadingActivities = true);
+    try {
+      final activitiesData = await _trackingApiService.getUserActivities(limit: 3);
+      final activities = activitiesData.map((data) => Activity.fromJson(data)).toList();
+      setState(() {
+        _recentActivities = activities;
+        _isLoadingActivities = false;
+      });
+    } catch (e) {
+      print('Error loading recent activities: $e');
+      setState(() => _isLoadingActivities = false);
+    }
   }
 
   @override
@@ -86,26 +111,33 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '$_greeting,',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w500,
-                                      color: Colors.black87,
-                                    ),
-                                  ),
-                                  Text(
-                                    'Runner!',
-                                    style: TextStyle(
-                                      fontSize: 24,
-                                      fontWeight: FontWeight.w800,
-                                      color: Colors.black,
-                                    ),
-                                  ),
-                                ],
+                              child: BlocBuilder<AuthBloc, AuthState>(
+                                builder: (context, authState) {
+                                  final userName = authState is Authenticated 
+                                      ? (authState.user.name.isNotEmpty ? authState.user.name : 'Runner')
+                                      : 'Runner';
+                                  return Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '$_greeting,',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w500,
+                                          color: Colors.black87,
+                                        ),
+                                      ),
+                                      Text(
+                                        userName,
+                                        style: TextStyle(
+                                          fontSize: 24,
+                                          fontWeight: FontWeight.w800,
+                                          color: Colors.black,
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
                               ),
                             ),
                           ],
@@ -127,18 +159,23 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         if (state is! GameLoaded) {
                           return SizedBox.shrink();
                         }
-                        final currentLevel = state.stats.level;
-                        final xpForCurrentLevel = (currentLevel - 1) * 1000;
-                        final xpForNextLevel = currentLevel * 1000;
-                            final progress =
-                                ((state.stats.totalPoints - xpForCurrentLevel) /
-                                        (xpForNextLevel - xpForCurrentLevel))
-                                    .clamp(0.0, 1.0);
+                        
+                        // Use the progress calculation from UserStats
+                        final stats = state.stats;
+                        final progress = stats.progressToNextLevel;
+                        final currentLevel = stats.level;
+                        final xpForNextLevel = stats.nextLevelXP;
+                        final currentXP = stats.totalPoints % xpForNextLevel;
+                        
+                        print('📊 Progress Debug: Level=$currentLevel, TotalPoints=${stats.totalPoints}, CurrentXP=$currentXP, NextLevelXP=$xpForNextLevel, Progress=$progress (${(progress * 100).toInt()}%)');
                             
-                            // Calculate points progress for the circular indicator
-                            final pointsProgress = (state.stats.totalPoints / (xpForNextLevel > 0 ? xpForNextLevel : 1)).clamp(0.0, 1.0);
-                            final now = DateTime.now();
-                            final dateStr = '${now.day} ${_getMonthName(now.month)}';
+                        // Calculate points progress for the circular indicator
+                        final pointsProgress = xpForNextLevel > 0
+                            ? (stats.totalPoints / xpForNextLevel).clamp(0.0, 1.0)
+                            : 0.0;
+                            
+                        final now = DateTime.now();
+                        final dateStr = '${now.day} ${_getMonthName(now.month)}';
 
                             return Container(
                               padding: EdgeInsets.all(24),
@@ -710,29 +747,68 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           ),
                         ),
                         const SizedBox(height: 12),
-                        _RecentActivityCard(
-                          icon: Icons.directions_run,
-                          title: 'Morning Run',
-                          subtitle: '5.2 km • 32 min',
-                          time: '2h ago',
-                          color: Color(0xFF7FE87A),
-                        ),
-                        SizedBox(height: 8),
-                        _RecentActivityCard(
-                          icon: Icons.emoji_events,
-                          title: 'Achievement Unlocked',
-                          subtitle: 'First 10km completed',
-                          time: '5h ago',
-                          color: Color(0xFFFFB84D),
-                        ),
-                        SizedBox(height: 8),
-                        _RecentActivityCard(
-                          icon: Icons.flag,
-                          title: 'Territory Captured',
-                          subtitle: 'Downtown Park Area',
-                          time: '1d ago',
-                          color: Color(0xFF6DD5ED),
-                        ),
+                        _isLoadingActivities
+                            ? Center(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(20.0),
+                                  child: CircularProgressIndicator(),
+                                ),
+                              )
+                            : _recentActivities.isEmpty
+                                ? Container(
+                                    padding: EdgeInsets.all(24),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(16),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withOpacity(0.05),
+                                          blurRadius: 10,
+                                          offset: Offset(0, 4),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        Icon(Icons.directions_run, size: 40, color: Colors.grey),
+                                        SizedBox(height: 8),
+                                        Text(
+                                          'No activities yet',
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.grey[700],
+                                          ),
+                                        ),
+                                        SizedBox(height: 4),
+                                        Text(
+                                          'Start your first workout!',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.grey[500],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  )
+                                : Column(
+                                    children: _recentActivities.map((activity) {
+                                      final distanceKm = activity.distanceMeters / 1000;
+                                      final durationMin = activity.duration.inMinutes;
+                                      final timeAgo = _getTimeAgo(activity.startTime);
+                                      
+                                      return Padding(
+                                        padding: const EdgeInsets.only(bottom: 8.0),
+                                        child: _RecentActivityCard(
+                                          icon: Icons.directions_run,
+                                          title: 'Workout',
+                                          subtitle: '${distanceKm.toStringAsFixed(1)} km • $durationMin min',
+                                          time: timeAgo,
+                                          color: Color(0xFF7FE87A),
+                                        ),
+                                      );
+                                    }).toList(),
+                                  ),
 
                         const SizedBox(height: 40),
                       ],
@@ -745,6 +821,21 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         ),
       );
     }
+  
+  String _getTimeAgo(DateTime dateTime) {
+    final now = DateTime.now();
+    final difference = now.difference(dateTime);
+    
+    if (difference.inDays > 0) {
+      return '${difference.inDays}d ago';
+    } else if (difference.inHours > 0) {
+      return '${difference.inHours}h ago';
+    } else if (difference.inMinutes > 0) {
+      return '${difference.inMinutes}m ago';
+    } else {
+      return 'Just now';
+    }
+  }
 
   Future<void> _fetchWeather() async {
     try {

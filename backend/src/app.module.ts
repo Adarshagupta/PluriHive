@@ -27,6 +27,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
       entities: [__dirname + '/**/*.entity{.ts,.js}'],
       synchronize: true, // Set to false in production
       logging: true,
+      ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
     }),
     
     // Feature Modules

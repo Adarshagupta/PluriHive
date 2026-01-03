@@ -1,5 +1,6 @@
 import 'package:get_it/get_it.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 
 import '../../features/auth/data/repositories/auth_repository_impl.dart';
 import '../../features/auth/data/datasources/auth_local_data_source.dart';
@@ -28,12 +29,50 @@ import '../../features/game/domain/usecases/calculate_points.dart';
 import '../../features/game/domain/usecases/get_user_stats.dart';
 import '../../features/game/presentation/bloc/game_bloc.dart';
 
+// API Services
+import '../services/auth_api_service.dart';
+import '../services/tracking_api_service.dart';
+import '../services/territory_api_service.dart';
+import '../services/leaderboard_api_service.dart';
+import '../services/websocket_service.dart';
+
 final getIt = GetIt.instance;
 
 Future<void> initializeDependencies() async {
   // External
   final sharedPreferences = await SharedPreferences.getInstance();
   getIt.registerSingleton<SharedPreferences>(sharedPreferences);
+  
+  // HTTP Client
+  getIt.registerLazySingleton<http.Client>(() => http.Client());
+  
+  // API Services
+  getIt.registerLazySingleton<AuthApiService>(
+    () => AuthApiService(
+      client: getIt(),
+      prefs: getIt(),
+    ),
+  );
+  
+  getIt.registerLazySingleton<TrackingApiService>(
+    () => TrackingApiService(
+      authService: getIt(),
+      client: getIt(),
+    ),
+  );
+  
+  getIt.registerLazySingleton<TerritoryApiService>(
+    () => TerritoryApiService(
+      authService: getIt(),
+      client: getIt(),
+    ),
+  );
+  
+  getIt.registerLazySingleton<LeaderboardApiService>(
+    () => LeaderboardApiService(client: getIt()),
+  );
+  
+  getIt.registerSingleton<WebSocketService>(WebSocketService());
   
   // Data Sources
   getIt.registerLazySingleton<AuthLocalDataSource>(
@@ -81,7 +120,11 @@ Future<void> initializeDependencies() async {
   getIt.registerLazySingleton(() => GetUserStats(getIt()));
   
   // BLoCs
-  getIt.registerFactory(() => AuthBloc(repository: getIt()));
+  getIt.registerFactory(() => AuthBloc(
+    repository: getIt(),
+    authApiService: getIt(),
+    webSocketService: getIt(),
+  ));
   
   getIt.registerFactory(() => LocationBloc(
     startTracking: getIt(),
@@ -99,5 +142,6 @@ Future<void> initializeDependencies() async {
     calculatePoints: getIt(),
     getUserStats: getIt(),
     repository: getIt(),
+    authApiService: getIt(),
   ));
 }

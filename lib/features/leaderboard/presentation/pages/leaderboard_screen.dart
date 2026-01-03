@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../../../core/widgets/patterned_background.dart';
+import '../../../../core/services/leaderboard_api_service.dart';
+import '../../../../core/di/injection_container.dart' as di;
 
 class LeaderboardScreen extends StatefulWidget {
   const LeaderboardScreen({super.key});
@@ -11,34 +12,34 @@ class LeaderboardScreen extends StatefulWidget {
 class _LeaderboardScreenState extends State<LeaderboardScreen> 
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
-  late Animation<double> _fadeAnimation;
-  late Animation<Offset> _slideAnimation;
+  late final LeaderboardApiService _apiService;
+  List<Map<String, dynamic>> _leaderboardData = [];
+  bool _isLoadingData = false;
 
   Future<void> _refreshLeaderboard() async {
-    // Simulate refresh delay
-    await Future.delayed(Duration(milliseconds: 500));
-    // In a real app, this would reload data from API
-    setState(() {});
+    setState(() => _isLoadingData = true);
+    try {
+      final data = await _apiService.getGlobalLeaderboard();
+      setState(() {
+        _leaderboardData = data;
+        _isLoadingData = false;
+      });
+    } catch (e) {
+      print('Error loading leaderboard: $e');
+      setState(() => _isLoadingData = false);
+    }
   }
 
   @override
   void initState() {
     super.initState();
+    _apiService = di.getIt<LeaderboardApiService>();
     _controller = AnimationController(
       duration: Duration(milliseconds: 600),
       vsync: this,
     );
-    
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOut),
-    );
-    
-    _slideAnimation = Tween<Offset>(
-      begin: Offset(0, 0.1),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
-    
     _controller.forward();
+    _refreshLeaderboard();
   }
 
   @override
@@ -49,58 +50,78 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
 
   @override
   Widget build(BuildContext context) {
-    // Mock data for leaderboard
-    final leaderboard = [
-      LeaderboardEntry(
-          rank: 1,
-          name: 'lilyone1w...',
-          points: 146,
-          territories: 234,
-          avatar: '🙋',
-          emoji: '👋'),
-      LeaderboardEntry(
-          rank: 2,
-          name: 'josheleve...',
-          points: 105,
-          territories: 221,
-          avatar: '👨‍💼',
-          emoji: ''),
-      LeaderboardEntry(
-          rank: 3,
-          name: 'herotaylo...',
-          points: 99,
-          territories: 198,
-          avatar: '😎',
-          emoji: '😊'),
-      LeaderboardEntry(
-          rank: 4,
-          name: 'whitefish664',
-          points: 96,
-          territories: 0,
-          avatar: '👨',
-          emoji: ''),
-      LeaderboardEntry(
-          rank: 5,
-          name: 'sadpanda176',
-          points: 88,
-          territories: 167,
-          avatar: '🐼',
-          emoji: ''),
-      LeaderboardEntry(
-          rank: 6,
-          name: 'silverduck204',
-          points: 87,
-          territories: 156,
-          avatar: '🦆',
-          emoji: ''),
-      LeaderboardEntry(
-          rank: 7,
-          name: 'beautifulmouse112',
-          points: 85,
-          territories: 142,
-          avatar: '🐭',
-          emoji: ''),
-    ];
+    // Convert backend data to leaderboard entries
+    List<LeaderboardEntry> leaderboard = [];
+    
+    if (_leaderboardData.isNotEmpty) {
+      leaderboard = _leaderboardData.asMap().entries.map((entry) {
+        final index = entry.key;
+        final data = entry.value;
+        return LeaderboardEntry(
+          rank: index + 1,
+          name: data['user']?['name'] ?? 'User',
+          points: data['totalPoints'] ?? 0,
+          territories: data['territoriesCaptured'] ?? 0,
+          avatar: '👤',
+          emoji: index == 0 ? '🏆' : (index == 1 ? '🥈' : (index == 2 ? '🥉' : '')),
+        );
+      }).toList();
+    }
+    
+    // Fallback mock data if no backend data
+    if (leaderboard.isEmpty) {
+      leaderboard = [
+        LeaderboardEntry(
+            rank: 1,
+            name: 'lilyone1w...',
+            points: 146,
+            territories: 234,
+            avatar: '🙋',
+            emoji: '👋'),
+        LeaderboardEntry(
+            rank: 2,
+            name: 'josheleve...',
+            points: 105,
+            territories: 221,
+            avatar: '👨‍💼',
+            emoji: ''),
+        LeaderboardEntry(
+            rank: 3,
+            name: 'herotaylo...',
+            points: 99,
+            territories: 198,
+            avatar: '😎',
+            emoji: '😊'),
+        LeaderboardEntry(
+            rank: 4,
+            name: 'whitefish664',
+            points: 96,
+            territories: 0,
+            avatar: '👨',
+            emoji: ''),
+        LeaderboardEntry(
+            rank: 5,
+            name: 'sadpanda176',
+            points: 88,
+            territories: 167,
+            avatar: '🐼',
+            emoji: ''),
+        LeaderboardEntry(
+            rank: 6,
+            name: 'silverduck204',
+            points: 87,
+            territories: 156,
+            avatar: '🦆',
+            emoji: ''),
+        LeaderboardEntry(
+            rank: 7,
+            name: 'beautifulmouse112',
+            points: 85,
+            territories: 142,
+            avatar: '🐭',
+            emoji: ''),
+      ];
+    }
 
     return Scaffold(
       backgroundColor: Color(0xFFF9FAFB),
@@ -145,20 +166,36 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
                 padding: EdgeInsets.fromLTRB(20, 24, 20, 32),
                 child: Column(
                   children: [
-                    // Winner podium
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        // 2nd Place
-                        Expanded(child: _buildPodiumItem(leaderboard[1], 2)),
-                        SizedBox(width: 12),
-                        // 1st Place (taller)
-                        Expanded(child: _buildPodiumItem(leaderboard[0], 1)),
-                        SizedBox(width: 12),
-                        // 3rd Place
-                        Expanded(child: _buildPodiumItem(leaderboard[2], 3)),
-                      ],
-                    ),
+                    // Winner podium (only show if we have at least 1 entry)
+                    if (leaderboard.isNotEmpty)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          // 2nd Place
+                          if (leaderboard.length > 1)
+                            Expanded(child: _buildPodiumItem(leaderboard[1], 2)),
+                          if (leaderboard.length > 1)
+                            SizedBox(width: 12),
+                          // 1st Place (taller)
+                          Expanded(child: _buildPodiumItem(leaderboard[0], 1)),
+                          if (leaderboard.length > 2)
+                            SizedBox(width: 12),
+                          // 3rd Place
+                          if (leaderboard.length > 2)
+                            Expanded(child: _buildPodiumItem(leaderboard[2], 3)),
+                        ],
+                      ),
+                    if (leaderboard.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.all(20.0),
+                        child: Text(
+                          'No leaderboard data yet',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Color(0xFF6B7280),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -177,19 +214,20 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
                 ),
               ),
             ),
-            // Rest of rankings
-            SliverPadding(
-              padding: EdgeInsets.symmetric(horizontal: 20),
-              sliver: SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final entry = leaderboard[index + 3];
-                    return _buildListItem(entry, index == leaderboard.length - 4);
-                  },
-                  childCount: leaderboard.length - 3,
+            // Rest of rankings (only show if we have more than 3 entries)
+            if (leaderboard.length > 3)
+              SliverPadding(
+                padding: EdgeInsets.symmetric(horizontal: 20),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      final entry = leaderboard[index + 3];
+                      return _buildListItem(entry, index == leaderboard.length - 4);
+                    },
+                    childCount: leaderboard.length - 3,
+                  ),
                 ),
               ),
-            ),
             SliverToBoxAdapter(child: SizedBox(height: 100)),
           ],
         ),

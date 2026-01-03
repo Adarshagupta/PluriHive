@@ -28,7 +28,22 @@ export class Activity {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   distanceMeters: number;
 
-  @Column({ type: 'interval' })
+  @Column({ type: 'interval', transformer: {
+    to: (value: string) => value, // Store as-is
+    from: (value: any) => {
+      // PostgreSQL returns interval as object, convert to string
+      if (typeof value === 'object' && value !== null) {
+        // Extract seconds from PostgreSQL interval object
+        const seconds = value.seconds || 0;
+        const minutes = value.minutes || 0;
+        const hours = value.hours || 0;
+        const days = value.days || 0;
+        const totalSeconds = seconds + (minutes * 60) + (hours * 3600) + (days * 86400);
+        return `${totalSeconds} seconds`;
+      }
+      return value;
+    }
+  }})
   duration: string;
 
   @Column({ type: 'decimal', precision: 5, scale: 2, nullable: true })

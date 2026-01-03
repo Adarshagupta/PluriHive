@@ -17,6 +17,17 @@ export class UserController {
     return this.userService.updateProfile(req.user.id, updates);
   }
 
+  @Put('complete-onboarding')
+  async completeOnboarding(@Request() req) {
+    return this.userService.completeOnboarding(req.user.id);
+  }
+
+  // Temporary endpoint to fix existing users
+  @Put('admin/fix-onboarding')
+  async fixOnboardingForAll() {
+    return this.userService.fixOnboardingForAllUsers();
+  }
+
   @Get(':id')
   async getUserById(@Param('id') id: string) {
     return this.userService.findById(id);
