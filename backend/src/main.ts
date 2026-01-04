@@ -18,9 +18,9 @@ async function bootstrap() {
   }));
   
   const port = process.env.PORT || 3000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0'); // Bind to 0.0.0.0 for cloud deployment
   
-  console.log(`🚀 PluriHive Backend running on: http://localhost:${port}`);
+  console.log(`🚀 PluriHive Backend running on: http://0.0.0.0:${port}`);
   console.log(`📡 WebSocket server ready for real-time updates`);
 }
 

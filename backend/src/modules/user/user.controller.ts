@@ -28,6 +28,24 @@ export class UserController {
     return this.userService.fixOnboardingForAllUsers();
   }
 
+  // Specific routes MUST come before parameterized routes
+  @Get('settings')
+  async getSettings(@Request() req) {
+    const user = await this.userService.findById(req.user.id);
+    return user.settings || {};
+  }
+
+  @Put('settings')
+  async updateSettings(@Request() req, @Body() settings: any) {
+    return this.userService.updateSettings(req.user.id, settings);
+  }
+
+  @Get('stats')
+  async getUserStats(@Request() req) {
+    return this.userService.getUserStats(req.user.id);
+  }
+
+  // Parameterized route comes last
   @Get(':id')
   async getUserById(@Param('id') id: string) {
     return this.userService.findById(id);

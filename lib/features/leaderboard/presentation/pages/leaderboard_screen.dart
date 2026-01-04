@@ -57,75 +57,40 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
       leaderboard = _leaderboardData.asMap().entries.map((entry) {
         final index = entry.key;
         final data = entry.value;
+        final userName = data['user']?['name'] ?? data['user']?['username'] ?? 'User';
         return LeaderboardEntry(
           rank: index + 1,
-          name: data['user']?['name'] ?? 'User',
-          points: data['totalPoints'] ?? 0,
-          territories: data['territoriesCaptured'] ?? 0,
-          avatar: '👤',
+          name: userName,
+          points: (data['totalPoints'] ?? 0) as int,
+          territories: (data['territoriesCaptured'] ?? 0) as int,
+          avatar: _getAvatarForRank(index + 1),
           emoji: index == 0 ? '🏆' : (index == 1 ? '🥈' : (index == 2 ? '🥉' : '')),
         );
       }).toList();
     }
-    
-    // Fallback mock data if no backend data
-    if (leaderboard.isEmpty) {
-      leaderboard = [
-        LeaderboardEntry(
-            rank: 1,
-            name: 'lilyone1w...',
-            points: 146,
-            territories: 234,
-            avatar: '🙋',
-            emoji: '👋'),
-        LeaderboardEntry(
-            rank: 2,
-            name: 'josheleve...',
-            points: 105,
-            territories: 221,
-            avatar: '👨‍💼',
-            emoji: ''),
-        LeaderboardEntry(
-            rank: 3,
-            name: 'herotaylo...',
-            points: 99,
-            territories: 198,
-            avatar: '😎',
-            emoji: '😊'),
-        LeaderboardEntry(
-            rank: 4,
-            name: 'whitefish664',
-            points: 96,
-            territories: 0,
-            avatar: '👨',
-            emoji: ''),
-        LeaderboardEntry(
-            rank: 5,
-            name: 'sadpanda176',
-            points: 88,
-            territories: 167,
-            avatar: '🐼',
-            emoji: ''),
-        LeaderboardEntry(
-            rank: 6,
-            name: 'silverduck204',
-            points: 87,
-            territories: 156,
-            avatar: '🦆',
-            emoji: ''),
-        LeaderboardEntry(
-            rank: 7,
-            name: 'beautifulmouse112',
-            points: 85,
-            territories: 142,
-            avatar: '🐭',
-            emoji: ''),
-      ];
-    }
 
     return Scaffold(
       backgroundColor: Color(0xFFF9FAFB),
-      body: RefreshIndicator(
+      body: _isLoadingData
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation(Color(0xFF667EEA)),
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'Loading leaderboard...',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Color(0xFF6B7280),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          : RefreshIndicator(
         onRefresh: _refreshLeaderboard,
         color: Color(0xFF667EEA),
         child: CustomScrollView(
@@ -187,13 +152,41 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
                       ),
                     if (leaderboard.isEmpty)
                       Padding(
-                        padding: const EdgeInsets.all(20.0),
-                        child: Text(
-                          'No leaderboard data yet',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Color(0xFF6B7280),
-                          ),
+                        padding: const EdgeInsets.all(40.0),
+                        child: Column(
+                          children: [
+                            Container(
+                              padding: EdgeInsets.all(24),
+                              decoration: BoxDecoration(
+                                color: Color(0xFFF3F4F6),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                Icons.leaderboard,
+                                size: 48,
+                                color: Color(0xFF9CA3AF),
+                              ),
+                            ),
+                            SizedBox(height: 16),
+                            Text(
+                              'No players yet',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF1A1A1A),
+                              ),
+                            ),
+                            SizedBox(height: 8),
+                            Text(
+                              'Be the first to capture territories\nand climb the leaderboard!',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Color(0xFF6B7280),
+                                height: 1.5,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                         ),
                       ),
                   ],
@@ -233,6 +226,14 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
         ),
       ),
     );
+  }
+
+  String _getAvatarForRank(int rank) {
+    const avatars = ['🏆', '🥈', '🥉', '👤', '🎮', '⚡', '🌟', '🚀', '💪', '🔥'];
+    if (rank <= avatars.length) {
+      return avatars[rank - 1];
+    }
+    return '👤';
   }
 
   Widget _buildPodiumItem(LeaderboardEntry entry, int rank) {

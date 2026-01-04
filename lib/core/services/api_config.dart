@@ -1,11 +1,36 @@
+import 'package:shared_preferences/shared_preferences.dart';
+
 class ApiConfig {
-  // PC IP address for USB debugging (use this when testing on physical device)
-  // Try these IPs in order: 172.31.226.185, 10.1.80.22, 172.16.0.2
-  static const String baseUrl = 'http://10.1.80.22:3000';
+  // Backend URLs
+  static const String localUrl = 'http://10.1.80.22:3000';
+  static const String productionUrl = 'https://plurihiveapi.onrender.com';
   
-  // For emulator testing, use:
-  // static const String baseUrl = 'http://10.0.2.2:3000'; // Android Emulator
-  // static const String baseUrl = 'http://localhost:3000'; // iOS Simulator
+  static const String _backendPrefKey = 'selected_backend_url';
+  
+  // Current backend URL (mutable for runtime switching)
+  static String baseUrl = localUrl;
+  
+  // Initialize backend URL from saved preference
+  static Future<void> initialize() async {
+    final prefs = await SharedPreferences.getInstance();
+    baseUrl = prefs.getString(_backendPrefKey) ?? localUrl;
+  }
+  
+  // Get current backend URL
+  static Future<String> getBaseUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_backendPrefKey) ?? localUrl;
+  }
+  
+  // Set backend URL and update runtime value
+  static Future<void> setBaseUrl(String url) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_backendPrefKey, url);
+    baseUrl = url; // Update runtime value immediately
+  }
+  
+  // Check if using production
+  static bool get isProduction => baseUrl == productionUrl;
   
   static const String wsUrl = 'ws://10.1.80.22:3000';
   

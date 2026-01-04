@@ -4,6 +4,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 import 'core/di/injection_container.dart';
 import 'core/theme/app_theme.dart';
+import 'core/services/api_config.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/auth/presentation/pages/splash_screen.dart';
 import 'features/tracking/presentation/bloc/location_bloc.dart';
@@ -12,6 +13,9 @@ import 'features/game/presentation/bloc/game_bloc.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize API configuration
+  await ApiConfig.initialize();
   
   // Initialize Hive
   await Hive.initFlutter();

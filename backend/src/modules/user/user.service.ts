@@ -59,4 +59,53 @@ export class UserService {
     
     return this.userRepository.save(user);
   }
+
+  async updateSettings(userId: string, settings: any): Promise<User> {
+    const user = await this.findById(userId);
+    user.settings = { ...user.settings, ...settings };
+    return this.userRepository.save(user);
+  }
+
+  async getUserStats(userId: string): Promise<{
+    totalDistanceKm: number;
+    totalSteps: number;
+    totalTerritoriesCaptured: number;
+    totalWorkouts: number;
+    totalPoints: number;
+    level: number;
+    totalCaloriesBurned: number;
+    totalDurationSeconds: number;
+  }> {
+    const user = await this.findById(userId);
+    
+    // Calculate calories and duration from activities
+    let totalCaloriesBurned = 0;
+    let totalDurationSeconds = 0;
+    
+    if (user.activities && user.activities.length > 0) {
+      for (const activity of user.activities) {
+        totalCaloriesBurned += activity.caloriesBurned || 0;
+        
+        // Parse duration string (format: "X seconds")
+        if (activity.duration) {
+          const durationStr = activity.duration.toString();
+          const match = durationStr.match(/(\d+)/);
+          if (match) {
+            totalDurationSeconds += parseInt(match[1]);
+          }
+        }
+      }
+    }
+    
+    return {
+      totalDistanceKm: Number(user.totalDistanceKm),
+      totalSteps: user.totalSteps,
+      totalTerritoriesCaptured: user.totalTerritoriesCaptured,
+      totalWorkouts: user.totalWorkouts,
+      totalPoints: user.totalPoints,
+      level: user.level,
+      totalCaloriesBurned,
+      totalDurationSeconds,
+    };
+  }
 }

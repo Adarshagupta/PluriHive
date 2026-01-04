@@ -32,12 +32,24 @@ export class TrackingService {
     return savedActivity;
   }
 
-  async getUserActivities(userId: string, limit: number = 50): Promise<Activity[]> {
-    return this.activityRepository.find({
+  async getUserActivities(userId: string, limit: number = 50): Promise<any[]> {
+    const activities = await this.activityRepository.find({
       where: { userId },
+      relations: ['user'],
       order: { createdAt: 'DESC' },
       take: limit,
     });
+
+    // Manually serialize to avoid circular references
+    return activities.map(activity => ({
+      ...activity,
+      user: activity.user ? {
+        id: activity.user.id,
+        name: activity.user.name,
+        email: activity.user.email,
+        profilePicture: activity.user.profilePicture,
+      } : null,
+    }));
   }
 
   async getActivityById(id: string): Promise<Activity> {

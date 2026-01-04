@@ -26,6 +26,8 @@ import '../../../game/presentation/bloc/game_bloc.dart';
 import '../../../territory/data/helpers/territory_grid_helper.dart';
 import '../../../territory/domain/entities/territory.dart' as app;
 import 'workout_summary_screen.dart';
+import 'activity_history_sheet.dart';
+import 'activity_detail_drawer.dart';
 
 class MapScreen extends StatefulWidget {
   final VoidCallback? onNavigateHome;
@@ -42,6 +44,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   final Set<Polygon> _polygons = {};
   final Set<Polyline> _polylines = {};
   final Set<Marker> _territoryMarkers = {};
+  final Map<String, Map<String, dynamic>> _activityData = {}; // Store activity data by polylineId
   late AnimationController _animController;
   late AnimationController _buttonAnimController;
   GoogleMapController? _mapController;
@@ -161,9 +164,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       print('🗺️ Filtered ${territories.length} territories down to ${displayTerritories.length} unique hexes');
 
       setState(() {
-        _polygons.clear();
+        // Remove only territory polygons, keep activity polygons
+        _polygons.removeWhere((polygon) => polygon.polygonId.value.startsWith('territory_'));
         _territoryMarkers.clear(); // Remove all markers
-        _territoryData.clear(); // Clear old data
+        _territoryData.clear(); // Clear old territory data (not activity data)
 
         // Display all territories on map with owner information
         for (final territory in displayTerritories) {
@@ -397,12 +401,28 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
       int loadedCount = 0;
       setState(() {
-        _polygons.clear();
-        _territoryMarkers.clear();
+        // Remove only activity polygons and polylines, keep territory polygons
+        _polygons.removeWhere((polygon) => polygon.polygonId.value.startsWith('saved_area_'));
+        _polylines.clear();
+        
+        // Clear only activity-related markers (not territory markers)
+        _territoryMarkers.removeWhere((marker) => marker.markerId.value.startsWith('label_'));
+        
+        // Clear only activity data, keep territory data
+        _activityData.removeWhere((key, value) => key.startsWith('saved_area_') || key.startsWith('saved_route_'));
 
         // Load each activity's captured area (only those with territories captured)
         for (int i = 0; i < activitiesData.length; i++) {
           final activityData = activitiesData[i];
+          print('📦 Activity ${i + 1}: ${activityData.keys.toList()}');
+          if (activityData.containsKey('user')) {
+            final userData = activityData['user'];
+            print('👤 User data found: $userData');
+            print('   - Name: ${userData is Map ? userData['name'] : 'not a map'}');
+            print('   - Email: ${userData is Map ? userData['email'] : 'not a map'}');
+          } else {
+            print('❌ No user data in activity');
+          }
           final territoriesCaptured = activityData['territoriesCaptured'] ?? 0;
           
           // Only render activities that captured territories
@@ -415,13 +435,33 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   .toList();
 
               // Add filled area polygon matching the walked path
+              final polygonId = 'saved_area_${activityData['id']}';
+              _activityData[polygonId] = activityData;
               _polygons.add(
                 Polygon(
-                  polygonId: PolygonId('saved_area_${activityData['id']}'),
+                  polygonId: PolygonId(polygonId),
                   points: routePoints,
                   fillColor: Color(0xFF4CAF50).withOpacity(0.3), // Green for captured territory
                   strokeColor: Color(0xFF2E7D32),
                   strokeWidth: 2,
+                  consumeTapEvents: true,
+                ),
+              );
+
+              // Add tappable polyline for route
+              final polylineId = 'saved_route_${activityData['id']}';
+              _activityData[polylineId] = activityData;
+              _polylines.add(
+                Polyline(
+                  polylineId: PolylineId(polylineId),
+                  points: routePoints,
+                  color: Color(0xFF2196F3), // Brighter blue
+                  width: 10,
+                  consumeTapEvents: true,
+                  onTap: () {
+                    print('🔵 Polyline tapped: $polylineId');
+                    _handlePolylineTap(PolylineId(polylineId));
+                  },
                 ),
               );
 
@@ -438,10 +478,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                     markerId: MarkerId('label_${activityData['id']}'),
                     position: LatLng(
                         sumLat / routePoints.length, sumLng / routePoints.length),
-                    infoWindow: InfoWindow(
-                      title: 'Your Territory',
-                      snippet: 'Completed loop',
-                    ),
+                    icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
                   ),
                 );
               }
@@ -654,8 +691,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                         _loadTerritoriesFromBackend();
                       },
                       onTap: (LatLng position) {
-                        // Check if tap is inside any territory polygon
-                        _handleMapTap(position);
+                        // Check if tap is inside any activity polygon to show drawer
+                        _handleMapTapForActivities(position);
                       },
                       onCameraMove: (position) {
                         // Could generate visible territories here
@@ -1241,10 +1278,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           Marker(
             markerId: MarkerId('label_$ownerId'),
             position: LatLng(centerLat, centerLng),
-            infoWindow: InfoWindow(
-              title: ownerName,
-              snippet: '${ownerTerritories.length} territories',
-            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
           ),
         );
       }
@@ -1634,11 +1668,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             markerId: MarkerId('username_label_$areaId'),
             position: LatLng(
                 sumLat / routePoints.length, sumLng / routePoints.length),
-            infoWindow: InfoWindow(
-              title: 'Runner',
-              snippet:
-                  '${(_estimatedAreaSqMeters / 1000).toStringAsFixed(2)} km²',
-            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
           ),
         );
       }
@@ -1987,6 +2017,294 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
   }
 
+  // Show activity route on map
+  void _showActivityOnMap(Map<String, dynamic> activity) {
+    if (_mapController == null) return;
+    
+    // Get route points from activity
+    final routePoints = activity['routePoints'] as List<dynamic>?;
+    if (routePoints == null || routePoints.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No route data available for this activity')),
+      );
+      return;
+    }
+
+    // Convert route points to LatLng
+    final List<LatLng> latLngPoints = routePoints.map((point) {
+      return LatLng(
+        point['latitude'] as double,
+        point['longitude'] as double,
+      );
+    }).toList();
+
+    if (latLngPoints.isEmpty) return;
+
+    // Clear existing polylines and add the activity route
+    setState(() {
+      _polylines.clear();
+      _activityData.clear();
+      
+      // Store activity data
+      _activityData['activity_route'] = activity;
+      
+      _polylines.add(
+        Polyline(
+          polylineId: PolylineId('activity_route'),
+          points: latLngPoints,
+          color: Color(0xFF2196F3), // Brighter blue
+          width: 10,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+          jointType: JointType.round,
+          consumeTapEvents: true,
+          onTap: () {
+            print('🔵 Activity route polyline tapped');
+            _handlePolylineTap(PolylineId('activity_route'));
+          },
+        ),
+      );
+    });
+
+    // Calculate bounds to fit all points
+    double minLat = latLngPoints.first.latitude;
+    double maxLat = latLngPoints.first.latitude;
+    double minLng = latLngPoints.first.longitude;
+    double maxLng = latLngPoints.first.longitude;
+
+    for (var point in latLngPoints) {
+      if (point.latitude < minLat) minLat = point.latitude;
+      if (point.latitude > maxLat) maxLat = point.latitude;
+      if (point.longitude < minLng) minLng = point.longitude;
+      if (point.longitude > maxLng) maxLng = point.longitude;
+    }
+
+    // Add padding to bounds
+    final latPadding = (maxLat - minLat) * 0.1;
+    final lngPadding = (maxLng - minLng) * 0.1;
+
+    final bounds = LatLngBounds(
+      southwest: LatLng(minLat - latPadding, minLng - lngPadding),
+      northeast: LatLng(maxLat + latPadding, maxLng + lngPadding),
+    );
+
+    // Animate camera to show the entire route
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(bounds, 50),
+    );
+  }
+
+  /// ═══════════════════════════════════════════════════════════════════════════
+  /// HANDLE POLYLINE TAP - Show Activity Details
+  /// ═══════════════════════════════════════════════════════════════════════════
+  void _handlePolylineTap(PolylineId polylineId) {
+    print('🎯 _handlePolylineTap called with: ${polylineId.value}');
+    final activity = _activityData[polylineId.value];
+    print('📦 Activity data found: ${activity != null}');
+    if (activity != null) {
+      print('🎭 Showing bottom drawer...');
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        isScrollControlled: true,
+        builder: (context) => ActivityDetailDrawer(activity: activity),
+      );
+    } else {
+      print('❌ No activity data found for ${polylineId.value}');
+      print('   Available keys: ${_activityData.keys.toList()}');
+    }
+  }
+
+  /// ═══════════════════════════════════════════════════════════════════════════
+  /// HANDLE MAP TAP - Check if inside activity area and show drawer
+  /// ═══════════════════════════════════════════════════════════════════════════
+  void _handleMapTapForActivities(LatLng tapPosition) {
+    print('🗺️ Map tapped at: ${tapPosition.latitude}, ${tapPosition.longitude}');
+    print('📊 Total activity data entries: ${_activityData.length}');
+    print('�️ Total territory data entries: ${_territoryData.length}');
+    
+    // First check activity polygons (user's own completed loops)
+    for (final entry in _activityData.entries) {
+      if (entry.key.startsWith('saved_area_')) {
+        final activity = entry.value;
+        final routeData = activity['routePoints'] as List<dynamic>?;
+        
+        if (routeData != null && routeData.length >= 3) {
+          final routePoints = routeData
+              .map((p) => LatLng(p['latitude'] as double, p['longitude'] as double))
+              .toList();
+          
+          if (_isPointInPolygon(tapPosition, routePoints)) {
+            print('✅ Tap is inside activity polygon: ${entry.key}');
+            showModalBottomSheet(
+              context: context,
+              backgroundColor: Colors.transparent,
+              isScrollControlled: true,
+              builder: (context) => ActivityDetailDrawer(activity: activity),
+            );
+            return;
+          }
+        }
+      }
+    }
+    
+    // Then check territory polygons (all territories including others')
+    for (final entry in _territoryData.entries) {
+      final hexId = entry.key;
+      final data = entry.value;
+      final polygonPoints = data['polygonPoints'] as List<LatLng>;
+      
+      if (_isPointInPolygon(tapPosition, polygonPoints)) {
+        print('✅ Tap is inside territory: $hexId');
+        print('   Owner: ${data['ownerName']}');
+        
+        // Show territory owner info drawer
+        _showTerritoryOwnerDrawer(
+          ownerName: data['ownerName'],
+          isOwn: data['isOwn'],
+          captureCount: data['captureCount'],
+        );
+        return;
+      }
+    }
+    
+    print('❌ Tap not inside any activity or territory area');
+  }
+  
+  /// Show territory owner info in bottom drawer
+  void _showTerritoryOwnerDrawer({
+    required String ownerName,
+    required bool isOwn,
+    required int captureCount,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 10,
+              offset: Offset(0, -5),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Color(0xFFE5E7EB),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            
+            // Header
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: (isOwn ? Colors.green : Colors.orange).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Icon(
+                          isOwn ? Icons.check_circle : Icons.flag,
+                          color: isOwn ? Colors.green : Colors.orange,
+                          size: 32,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              isOwn ? 'Your Territory' : 'Territory',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF111827),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Owned by $ownerName',
+                              style: TextStyle(
+                                fontSize: 15,
+                                color: Color(0xFF6B7280),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Color(0xFFF9FAFB),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Color(0xFFE5E7EB),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.emoji_events,
+                          color: Colors.amber,
+                          size: 24,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          'Captured ',
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: Color(0xFF6B7280),
+                          ),
+                        ),
+                        Text(
+                          '$captureCount',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF111827),
+                          ),
+                        ),
+                        Text(
+                          ' ${captureCount == 1 ? "time" : "times"}',
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: Color(0xFF6B7280),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// ═══════════════════════════════════════════════════════════════════════════
   /// ULTRA-ADVANCED SPEED CALCULATION
   /// Uses Weighted Moving Average with outlier rejection
@@ -2073,7 +2391,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
   }
 
-  // Animated control buttons (Start -> Pause/End + Home)
+  // Animated control buttons (Start -> Pause/End + Home + History)
   Widget _buildControlButtons(bool isTracking) {
     return AnimatedBuilder(
       animation: _buttonAnimController,
@@ -2084,37 +2402,39 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Home button (always visible)
-            GestureDetector(
-              onTap: () {
-                if (widget.onNavigateHome != null) {
-                  widget.onNavigateHome!();
-                } else {
-                  Navigator.of(context).pop();
-                }
-              },
-              child: Container(
-                width: 60,
-                height: 60,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 15,
-                      offset: Offset(0, 5),
-                    ),
-                  ],
-                ),
-                child: Icon(
-                  Icons.home_rounded,
-                  size: 28,
-                  color: Colors.black87,
+            // Home button (only visible when not tracking)
+            if (!isExpanded) ...[
+              GestureDetector(
+                onTap: () {
+                  if (widget.onNavigateHome != null) {
+                    widget.onNavigateHome!();
+                  } else {
+                    Navigator.of(context).pop();
+                  }
+                },
+                child: Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 15,
+                        offset: Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    Icons.home_rounded,
+                    size: 28,
+                    color: Colors.black87,
+                  ),
                 ),
               ),
-            ),
-            SizedBox(width: 20),
+              SizedBox(width: 20),
+            ],
 
             // Pause button (only visible when tracking started)
             if (isExpanded) ...[
@@ -2223,6 +2543,45 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 ],
               ),
             ),
+            
+            // History button (only visible when not tracking)
+            if (!isExpanded) ...[
+              SizedBox(width: 20),
+              GestureDetector(
+                onTap: () async {
+                  final selectedActivity = await showModalBottomSheet<Map<String, dynamic>>(
+                    context: context,
+                    isScrollControlled: true,
+                    backgroundColor: Colors.transparent,
+                    builder: (context) => ActivityHistorySheet(),
+                  );
+                  
+                  if (selectedActivity != null) {
+                    _showActivityOnMap(selectedActivity);
+                  }
+                },
+                child: Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 15,
+                        offset: Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    Icons.history,
+                    size: 28,
+                    color: Colors.black87,
+                  ),
+                ),
+              ),
+            ],
           ],
         );
       },

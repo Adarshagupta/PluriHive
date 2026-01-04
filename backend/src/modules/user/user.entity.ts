@@ -55,6 +55,19 @@ export class User {
   @Column({ default: 0 })
   totalWorkouts: number;
 
+  // User Settings
+  @Column({ type: 'jsonb', nullable: true })
+  settings: {
+    units?: 'metric' | 'imperial';
+    gpsAccuracy?: 'high' | 'medium' | 'low';
+    hapticFeedback?: boolean;
+    pushNotifications?: boolean;
+    emailNotifications?: boolean;
+    streakReminders?: boolean;
+    darkMode?: boolean;
+    language?: string;
+  };
+
   // Relationships
   @OneToMany(() => Territory, territory => territory.owner)
   territories: Territory[];

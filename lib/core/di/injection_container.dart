@@ -35,6 +35,8 @@ import '../services/tracking_api_service.dart';
 import '../services/territory_api_service.dart';
 import '../services/leaderboard_api_service.dart';
 import '../services/websocket_service.dart';
+import '../services/settings_api_service.dart';
+import '../services/user_stats_api_service.dart';
 
 final getIt = GetIt.instance;
 
@@ -70,6 +72,20 @@ Future<void> initializeDependencies() async {
   
   getIt.registerLazySingleton<LeaderboardApiService>(
     () => LeaderboardApiService(client: getIt()),
+  );
+  
+  getIt.registerLazySingleton<SettingsApiService>(
+    () => SettingsApiService(
+      authService: getIt(),
+      client: getIt(),
+    ),
+  );
+  
+  getIt.registerLazySingleton<UserStatsApiService>(
+    () => UserStatsApiService(
+      authService: getIt(),
+      client: getIt(),
+    ),
   );
   
   getIt.registerSingleton<WebSocketService>(WebSocketService());
