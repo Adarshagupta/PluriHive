@@ -22,6 +22,14 @@ export class AuthController {
     return this.authService.signInWithGoogle(googleSignInDto);
   }
 
+  @Post('logout')
+  @UseGuards(JwtAuthGuard)
+  async logout(@Request() req) {
+    // For stateless JWT, we just acknowledge the request.
+    // In future, you could add token blacklisting here.
+    return { message: 'Logged out successfully' };
+  }
+
   @Get('me')
   @UseGuards(JwtAuthGuard)
   async getProfile(@Request() req) {
