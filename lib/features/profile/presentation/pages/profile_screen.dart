@@ -65,30 +65,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<AuthBloc, AuthState>(
-      builder: (context, state) {
-        if (state is! Authenticated) {
-          return const Scaffold(
-            body: Center(child: Text('Not authenticated')),
-          );
-        }
+    return WillPopScope(
+      onWillPop: () async {
+        // Simply pop the current screen
+        Navigator.of(context).pop();
+        return false; // Prevent default back behavior
+      },
+      child: BlocBuilder<AuthBloc, AuthState>(
+        builder: (context, state) {
+          if (state is! Authenticated) {
+            return const Scaffold(
+              body: Center(child: Text('Not authenticated')),
+            );
+          }
 
-        final user = state.user;
+          final user = state.user;
 
-        return Scaffold(
-          backgroundColor: Colors.white,
-          body: RefreshIndicator(
-            onRefresh: _refreshProfile,
-            color: Color(0xFF7FE87A),
-            child: CustomScrollView(
-              slivers: [
-                // Minimal Header
-                SliverAppBar(
-                  expandedHeight: 200,
-                  backgroundColor: Colors.white,
-                  elevation: 0,
-                  pinned: true,
-                  actions: [
+          return Scaffold(
+            backgroundColor: Colors.white,
+            body: RefreshIndicator(
+              onRefresh: _refreshProfile,
+              color: Color(0xFF7FE87A),
+              child: CustomScrollView(
+                slivers: [
+                  // Minimal Header
+                  SliverAppBar(
+                    expandedHeight: 200,
+                    backgroundColor: Colors.white,
+                    elevation: 0,
+                    pinned: true,
+                    automaticallyImplyLeading: false,
+                    actions: [
                     IconButton(
                       onPressed: () {
                         Navigator.push(
@@ -254,6 +261,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         );
       },
+    ),
     );
   }
 

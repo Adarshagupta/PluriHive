@@ -9,6 +9,7 @@ class CommonSliverAppBar extends StatelessWidget {
   final List<Widget>? actions;
   final double expandedHeight;
   final bool pinned;
+  final bool automaticallyImplyLeading;
 
   const CommonSliverAppBar({
     super.key,
@@ -18,6 +19,7 @@ class CommonSliverAppBar extends StatelessWidget {
     this.actions,
     this.expandedHeight = AppConstants.appBarExpandedHeight,
     this.pinned = true,
+    this.automaticallyImplyLeading = true,
   });
 
   @override
@@ -27,6 +29,7 @@ class CommonSliverAppBar extends StatelessWidget {
       pinned: pinned,
       backgroundColor: Colors.transparent,
       elevation: 0,
+      automaticallyImplyLeading: automaticallyImplyLeading,
       actions: actions,
       flexibleSpace: FlexibleSpaceBar(
         background: Container(

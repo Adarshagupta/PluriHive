@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/patterned_background.dart';
+import '../../../../core/services/strict_permission_service.dart';
+import '../bloc/auth_bloc.dart';
+import 'profile_setup_screen.dart';
 import 'signup_screen.dart';
 
 class PermissionScreen extends StatefulWidget {
@@ -13,6 +17,7 @@ class PermissionScreen extends StatefulWidget {
 }
 
 class _PermissionScreenState extends State<PermissionScreen> {
+  final _permissionService = StrictPermissionService();
   bool _locationGranted = false;
   bool _activityRecognitionGranted = false;
   bool _notificationGranted = false;
@@ -27,16 +32,22 @@ class _PermissionScreenState extends State<PermissionScreen> {
   Future<void> _checkAllPermissions() async {
     setState(() => _isChecking = true);
     
-    // Check location permission
+    final granted = await _permissionService.areAllPermissionsGranted();
+    
+    if (granted) {
+      // All permissions already granted - proceed
+      _navigateToNextScreen();
+      return;
+    }
+    
+    // Check individual permissions for display
     final locationStatus = await Geolocator.checkPermission();
     _locationGranted = locationStatus == LocationPermission.always || 
                        locationStatus == LocationPermission.whileInUse;
     
-    // Check activity recognition
     final activityStatus = await Permission.activityRecognition.status;
     _activityRecognitionGranted = activityStatus.isGranted;
     
-    // Check notification permission
     final notificationStatus = await Permission.notification.status;
     _notificationGranted = notificationStatus.isGranted;
     
@@ -46,34 +57,35 @@ class _PermissionScreenState extends State<PermissionScreen> {
   Future<void> _requestAllPermissions() async {
     setState(() => _isChecking = true);
     
-    // Request location permission
-    if (!_locationGranted) {
-      final locationStatus = await Geolocator.requestPermission();
-      _locationGranted = locationStatus == LocationPermission.always || 
-                         locationStatus == LocationPermission.whileInUse;
-    }
+    final status = await _permissionService.requestAllPermissions(context);
     
-    // Request activity recognition
-    if (!_activityRecognitionGranted) {
-      final activityStatus = await Permission.activityRecognition.request();
-      _activityRecognitionGranted = activityStatus.isGranted;
-    }
-    
-    // Request notification permission
-    if (!_notificationGranted) {
-      final notificationStatus = await Permission.notification.request();
-      _notificationGranted = notificationStatus.isGranted;
-    }
+    // Check again after request
+    await _checkAllPermissions();
     
     setState(() => _isChecking = false);
     
-    // If all granted, proceed
     if (_allPermissionsGranted) {
+      _navigateToNextScreen();
+    } else {
+      _showPermissionDialog();
+    }
+  }
+
+  void _navigateToNextScreen() {
+    if (!mounted) return;
+    
+    final authState = context.read<AuthBloc>().state;
+    
+    if (authState is Authenticated) {
+      // Navigate to Profile Setup where they add their details (weight, height, age, gender)
+      // Profile Setup will dispatch CompleteOnboarding when done
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const ProfileSetupScreen()),
+      );
+    } else {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const SignUpScreen()),
       );
-    } else {
-      _showPermissionDialog();
     }
   }
 
@@ -83,28 +95,41 @@ class _PermissionScreenState extends State<PermissionScreen> {
   void _showPermissionDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Permissions Required'),
-        content: const Text(
-          'This app requires all permissions to function properly:\n\n'
-          '• Location: Track your movement and capture territories\n'
-          '• Physical Activity: Count steps and detect motion\n'
-          '• Notifications: Keep you updated on progress\n\n'
-          'Please grant all permissions to continue.',
+      barrierDismissible: false, // Cannot dismiss
+      builder: (context) => PopScope(
+        canPop: false, // Cannot go back
+        child: AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber, color: Colors.red),
+              SizedBox(width: 8),
+              Text('Permissions Required'),
+            ],
+          ),
+          content: const Text(
+            '⚠️ This app REQUIRES all permissions to function:\n\n'
+            '• Location: Track your movement and capture territories\n'
+            '• Physical Activity: Count steps and detect motion\n'
+            '• Notifications: Keep you updated on progress\n\n'
+            '❌ Without these permissions, the app CANNOT work.\n\n'
+            'Please grant ALL permissions to continue.',
+            style: TextStyle(fontSize: 14),
+          ),
+          actions: [
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                _permissionService.openSettings();
+              },
+              icon: const Icon(Icons.settings),
+              label: const Text('Open Settings'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              openAppSettings();
-            },
-            child: const Text('Open Settings'),
-          ),
-        ],
       ),
     );
   }
@@ -119,7 +144,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
               padding: const EdgeInsets.all(24.0),
               child: Column(
                 children: [
-                  SizedBox(height: MediaQuery.of(context).size.height * 0.1),
+                  const SizedBox(height: 40),
                   
                   // Icon
                   Container(
@@ -160,7 +185,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
                   ),
                 ),
                 
-                const SizedBox(height: 48),
+                const SizedBox(height: 32),
                 
                 // Permission items
                 _buildPermissionItem(
@@ -188,7 +213,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
                   isGranted: _notificationGranted,
                 ),
                 
-                SizedBox(height: MediaQuery.of(context).size.height * 0.1),
+                const SizedBox(height: 40),
                 
                 // Button
                 SizedBox(
@@ -198,11 +223,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
                     onPressed: _isChecking 
                         ? null 
                         : (_allPermissionsGranted 
-                            ? () {
-                                Navigator.of(context).pushReplacement(
-                                  MaterialPageRoute(builder: (_) => const SignUpScreen()),
-                                );
-                              }
+                            ? _navigateToNextScreen
                             : _requestAllPermissions),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: _allPermissionsGranted 

@@ -124,6 +124,7 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
                         pinned: true,
                         elevation: 0,
                         backgroundColor: Colors.white,
+                        automaticallyImplyLeading: false,
                         toolbarHeight: 70,
                         title: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,

@@ -230,6 +230,66 @@ class AuthApiService {
     }
   }
 
+  // Sign In with Google
+  Future<Map<String, dynamic>> signInWithGoogle({
+    required String idToken,
+  }) async {
+    try {
+      print('🔵 Attempting Google sign in to: ${ApiConfig.baseUrl}/auth/google');
+      
+      final response = await _client
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/auth/google'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'idToken': idToken,
+            }),
+          )
+          .timeout(ApiConfig.defaultTimeout);
+
+      print('📡 Google sign in response status: ${response.statusCode}');
+      print('📡 Google sign in response body: ${response.body}');
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final token = data['access_token'];
+        final userId = data['user']['id'];
+        print('💾 Google SignIn: About to save token and userId: $userId');
+        
+        // Store token and user ID in secure storage
+        await _secureStorage.write(key: _tokenKey, value: token);
+        print('💾 Google SignIn: Token saved to secure storage');
+        await _secureStorage.write(key: _userIdKey, value: userId);
+        print('💾 Google SignIn: UserId saved to secure storage');
+        
+        // Backup to SharedPreferences for reliability
+        if (_prefs != null) {
+          await _prefs!.setString(_tokenKey, token);
+          print('💾 Google SignIn: Token saved to SharedPreferences');
+          await _prefs!.setString(_userIdKey, userId);
+          print('💾 Google SignIn: UserId saved to SharedPreferences');
+        } else {
+          print('⚠️ Google SignIn: SharedPreferences is NULL - backup not saved!');
+        }
+        
+        print('✅ Google sign in successful! Token saved.');
+        return data;
+      } else {
+        final errorMsg = data['message'] ?? 'Google sign in failed';
+        print('❌ Google sign in failed: $errorMsg');
+        throw Exception(errorMsg);
+      }
+    } on TimeoutException {
+      print('⏱️ Google sign in timeout - backend may not be running');
+      throw Exception('Connection timeout. Please check if backend is running on ${ApiConfig.baseUrl}');
+    } catch (e) {
+      print('❌ Google sign in error: $e');
+      throw Exception('Google sign in error: $e');
+    }
+  }
+
+
   // Token Management
   Future<String?> getToken() async {
     print('🔑 getToken: Reading from secure storage...');

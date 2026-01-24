@@ -102,7 +102,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   ),
                   // Header content on top of gradient
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 60, 24, 24),
+                    padding: const EdgeInsets.fromLTRB(24, 60, 24, 8),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [

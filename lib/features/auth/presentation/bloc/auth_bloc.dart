@@ -41,6 +41,17 @@ class SignInUser extends AuthEvent {
   List<Object?> get props => [email, password];
 }
 
+class SignInWithGoogle extends AuthEvent {
+  final String idToken;
+  
+  SignInWithGoogle({
+    required this.idToken,
+  });
+  
+  @override
+  List<Object?> get props => [idToken];
+}
+
 class UpdateUserProfile extends AuthEvent {
   final double weightKg;
   final double heightCm;
@@ -113,6 +124,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<CheckAuthStatus>(_onCheckAuthStatus);
     on<SignUpUser>(_onSignUpUser);
     on<SignInUser>(_onSignInUser);
+    on<SignInWithGoogle>(_onSignInWithGoogle);
     on<UpdateUserProfile>(_onUpdateUserProfile);
     on<CompleteOnboarding>(_onCompleteOnboarding);
     on<SignOut>(_onSignOut);
@@ -217,7 +229,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
             emit(Authenticated(user));
           } catch (e) {
             print('❌ CheckAuthStatus: Error fetching user from backend: $e');
-            // Clear auth only if we can't get user at all
+            // Clear auth only if we can't get user at all in
             await authApiService.clearAuth();
             emit(Unauthenticated(isFirstTime: true));
           }
@@ -327,6 +339,63 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     }
   }
   
+  Future<void> _onSignInWithGoogle(
+    SignInWithGoogle event,
+    Emitter<AuthState> emit,
+  ) async {
+    try {
+      print('🔵 Google SignIn: Starting Google sign in...');
+      emit(AuthLoading());
+      
+      // Call backend API with Google ID token
+      final response = await authApiService.signInWithGoogle(
+        idToken: event.idToken,
+      );
+      
+      print('✅ Google SignIn: Backend response received');
+      final userData = response['user'];
+      
+      // Parse hasCompletedOnboarding safely
+      bool onboardingComplete = false;
+      if (userData['hasCompletedOnboarding'] != null) {
+        if (userData['hasCompletedOnboarding'] is bool) {
+          onboardingComplete = userData['hasCompletedOnboarding'];
+        } else if (userData['hasCompletedOnboarding'] is String) {
+          onboardingComplete = userData['hasCompletedOnboarding'].toLowerCase() == 'true';
+        }
+      }
+      
+      final user = User(
+        id: userData['id'].toString(),
+        name: userData['name']?.toString() ?? '',
+        email: userData['email'].toString(),
+        hasCompletedOnboarding: onboardingComplete,
+        weightKg: userData['weight'] != null ? double.tryParse(userData['weight'].toString()) : null,
+        heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
+        age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
+        gender: userData['gender']?.toString(),
+      );
+      
+      print('✅ Google SignIn: User object created: ${user.email}, onboarding: ${user.hasCompletedOnboarding}');
+      
+      // Save locally
+      await repository.saveUser(user);
+      print('✅ Google SignIn: User saved locally: ${user.email}');
+      
+      // Connect WebSocket
+      webSocketService.connect(user.id);
+      print('✅ Google SignIn: WebSocket connected');
+      
+      emit(Authenticated(user));
+      print('✅ Google SignIn: Emitted Authenticated state');
+    } catch (e, stackTrace) {
+      print('❌ Google SignIn: Error occurred: $e');
+      print('❌ Google SignIn: Stack trace: $stackTrace');
+      emit(AuthError('Google sign in failed: ${e.toString()}'));
+    }
+  }
+
+  
   Future<void> _onUpdateUserProfile(
     UpdateUserProfile event,
     Emitter<AuthState> emit,
@@ -336,12 +405,20 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         final currentUser = (state as Authenticated).user;
         
         // Update backend
+        print('📝 Updating profile with data:');
+        print('   Weight: ${event.weightKg} kg');
+        print('   Height: ${event.heightCm} cm');
+        print('   Age: ${event.age}');
+        print('   Gender: ${event.gender}');
+        
         await authApiService.updateProfile({
           'weight': event.weightKg,
           'height': event.heightCm,
           'age': event.age,
           'gender': event.gender,
         });
+        
+        print('✅ Profile update complete');
         
         final updatedUser = currentUser.copyWith(
           weightKg: event.weightKg,

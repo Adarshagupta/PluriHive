@@ -5,6 +5,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'core/di/injection_container.dart';
 import 'core/theme/app_theme.dart';
 import 'core/services/api_config.dart';
+import 'core/services/update_service.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/auth/presentation/pages/splash_screen.dart';
 import 'features/tracking/presentation/bloc/location_bloc.dart';
@@ -26,8 +27,23 @@ void main() async {
   runApp(const TerritoryFitnessApp());
 }
 
-class TerritoryFitnessApp extends StatelessWidget {
+class TerritoryFitnessApp extends StatefulWidget {
   const TerritoryFitnessApp({super.key});
+
+  @override
+  State<TerritoryFitnessApp> createState() => _TerritoryFitnessAppState();
+}
+
+class _TerritoryFitnessAppState extends State<TerritoryFitnessApp> {
+  @override
+  void initState() {
+    super.initState();
+    
+    // Check for updates on app start
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      UpdateService().checkForUpdateOnStart(context);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

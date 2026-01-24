@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/common_app_bar.dart';
 import '../../../../core/widgets/patterned_background.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
+import '../../../auth/presentation/pages/signin_screen.dart';
 import '../../../../core/services/api_config.dart';
 import '../../../../core/services/settings_api_service.dart';
+import '../../../../core/services/update_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 
 class SettingsScreen extends StatefulWidget {
@@ -64,7 +67,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Setting updated'),
-          backgroundColor: Colors.green,
           duration: Duration(seconds: 1),
         ),
       );
@@ -72,7 +74,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to update setting'),
-          backgroundColor: Colors.red,
         ),
       );
     }
@@ -95,7 +96,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Backend changed to: ${newUrl == ApiConfig.localUrl ? "Local" : "Production"}'),
-          backgroundColor: Colors.green,
         ),
       );
     }
@@ -107,26 +107,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return Scaffold(
         body: PatternedBackground(
           child: Center(
-            child: CircularProgressIndicator(
-              color: AppTheme.primaryColor,
-            ),
+            child: CircularProgressIndicator(),
           ),
         ),
       );
     }
 
-    return Scaffold(
-      body: PatternedBackground(
-        child: CustomScrollView(
-          slivers: [
-            CommonSliverAppBar(
-              title: 'Settings',
-              subtitle: 'Manage your preferences',
-              iconData: Icons.settings,
-            ),
-            SliverList(
-              delegate: SliverChildListDelegate([
-                const SizedBox(height: 8),
+    return WillPopScope(
+      onWillPop: () async {
+        // Simply pop the current screen
+        Navigator.of(context).pop();
+        return false; // Prevent default back behavior
+      },
+      child: BlocListener<AuthBloc, AuthState>(
+        listener: (context, state) {
+          if (state is Unauthenticated) {
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const SignInScreen()),
+              (route) => false,
+            );
+          }
+        },
+        child: Scaffold(
+          body: PatternedBackground(
+          child: CustomScrollView(
+            slivers: [
+              CommonSliverAppBar(
+                title: 'Settings',
+                subtitle: 'Manage your preferences',
+                iconData: Icons.settings,
+                automaticallyImplyLeading: false,
+              ),
+              SliverList(
+                delegate: SliverChildListDelegate([
+                  const SizedBox(height: 8),
           
           // Account Section
           _SectionHeader(title: 'Account'),
@@ -219,7 +233,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _SettingsTile(
             icon: Icons.cloud,
             title: 'Backend Server',
-            subtitle: _selectedBackend == ApiConfig.localUrl ? 'Local (10.1.80.22:3000)' : 'Production (Render)',
+            subtitle: _selectedBackend == ApiConfig.localUrl ? 'Local (10.1.80.11:3000)' : 'Production (Render)',
             onTap: () => _showBackendDialog(context),
           ),
           
@@ -254,11 +268,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
           
           // About Section
           _SectionHeader(title: 'About'),
+          FutureBuilder<PackageInfo>(
+            future: PackageInfo.fromPlatform(),
+            builder: (context, snapshot) {
+              final version = snapshot.data?.version ?? '1.0.0';
+              final buildNumber = snapshot.data?.buildNumber ?? '1';
+              return _SettingsTile(
+                icon: Icons.info,
+                title: 'About App',
+                subtitle: 'Version $version ($buildNumber)',
+                onTap: () {},
+              );
+            },
+          ),
           _SettingsTile(
-            icon: Icons.info,
-            title: 'About App',
-            subtitle: 'Version 1.0.0',
-            onTap: () {},
+            icon: Icons.system_update,
+            title: 'Check for Updates',
+            onTap: () async {
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (context) => const Center(
+                  child: CircularProgressIndicator(),
+                ),
+              );
+              
+              await UpdateService().checkForUpdate(
+                context,
+                showNoUpdateDialog: true,
+              );
+              
+              if (context.mounted) {
+                Navigator.of(context).pop();
+              }
+            },
           ),
           _SettingsTile(
             icon: Icons.description,
@@ -281,39 +324,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Sign Out Button
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Color(0xFF9D7BEA), Color(0xFF7E5FD8)],
+            child: ElevatedButton(
+              onPressed: () {
+                context.read<AuthBloc>().add(SignOut());
+              },
+              style: ElevatedButton.styleFrom(
+                minimumSize: const Size(double.infinity, 50),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Color(0xFF9D7BEA).withOpacity(0.3),
-                    blurRadius: 15,
-                    offset: Offset(0, 8),
-                  ),
-                ],
               ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () {
-                    context.read<AuthBloc>().add(SignOut());
-                  },
-                  borderRadius: BorderRadius.circular(20),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    alignment: Alignment.center,
-                    child: const Text(
-                      'Sign Out',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
+              child: const Text(
+                'Sign Out',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
@@ -324,6 +349,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ],
         ),
+        ),
+      ),
       ),
     );
   }
@@ -338,7 +365,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             RadioListTile<String>(
               title: const Text('Local Development'),
-              subtitle: const Text('http://10.1.80.22:3000'),
+              subtitle: const Text('http://10.1.80.11:3000'),
               value: ApiConfig.localUrl,
               groupValue: _selectedBackend,
               onChanged: (value) {

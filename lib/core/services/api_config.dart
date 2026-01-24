@@ -2,24 +2,24 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
   // Backend URLs
-  static const String localUrl = 'http://10.1.80.22:3000';
+  static const String localUrl = 'http://10.1.80.76:3000';
   static const String productionUrl = 'https://plurihiveapi.onrender.com';
   
   static const String _backendPrefKey = 'selected_backend_url';
   
   // Current backend URL (mutable for runtime switching)
-  static String baseUrl = localUrl;
+  static String baseUrl = localUrl; // Using local backend for testing
   
   // Initialize backend URL from saved preference
   static Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
-    baseUrl = prefs.getString(_backendPrefKey) ?? localUrl;
+    baseUrl = prefs.getString(_backendPrefKey) ?? localUrl; // Default to local for testing
   }
   
   // Get current backend URL
   static Future<String> getBaseUrl() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_backendPrefKey) ?? localUrl;
+    return prefs.getString(_backendPrefKey) ?? localUrl; // Default to local for testing
   }
   
   // Set backend URL and update runtime value
@@ -32,7 +32,7 @@ class ApiConfig {
   // Check if using production
   static bool get isProduction => baseUrl == productionUrl;
   
-  static const String wsUrl = 'ws://10.1.80.22:3000';
+  static const String wsUrl = 'ws://10.1.80.76:3000';
   
   // Auth endpoints
   static const String signUpEndpoint = '/auth/signup';

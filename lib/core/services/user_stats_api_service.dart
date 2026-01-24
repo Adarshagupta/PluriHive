@@ -1,11 +1,11 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'auth_api_service.dart';
+import 'api_config.dart';
 
 class UserStatsApiService {
   final AuthApiService authService;
   final http.Client client;
-  final String baseUrl = 'http://10.1.80.22:3000';
 
   UserStatsApiService({
     required this.authService,
@@ -19,7 +19,7 @@ class UserStatsApiService {
     }
 
     final response = await client.get(
-      Uri.parse('$baseUrl/users/stats'),
+      Uri.parse('${ApiConfig.baseUrl}/users/stats'),
       headers: {
         'Authorization': 'Bearer $token',
         'Content-Type': 'application/json',

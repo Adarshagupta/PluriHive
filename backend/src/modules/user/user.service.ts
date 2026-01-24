@@ -8,18 +8,30 @@ export class UserService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
-  ) {}
+  ) { }
 
   async findById(id: string): Promise<User> {
-    return this.userRepository.findOne({ 
+    return this.userRepository.findOne({
       where: { id },
       relations: ['territories', 'activities'],
     });
   }
 
   async updateProfile(userId: string, updates: Partial<User>): Promise<User> {
+    console.log('📝 updateProfile called for user:', userId);
+    console.log('📝 Updates received:', JSON.stringify(updates, null, 2));
+
     await this.userRepository.update(userId, updates);
-    return this.findById(userId);
+
+    const updatedUser = await this.findById(userId);
+    console.log('✅ Profile updated. New values:', {
+      weight: updatedUser.weight,
+      height: updatedUser.height,
+      age: updatedUser.age,
+      gender: updatedUser.gender,
+    });
+
+    return updatedUser;
   }
 
   async completeOnboarding(userId: string): Promise<User> {
@@ -43,7 +55,7 @@ export class UserService {
     workouts?: number;
   }): Promise<User> {
     const user = await this.findById(userId);
-    
+
     // Convert decimal fields from string to number (PostgreSQL returns decimals as strings)
     if (stats.distanceKm) {
       user.totalDistanceKm = Number(user.totalDistanceKm) + stats.distanceKm;
@@ -56,7 +68,7 @@ export class UserService {
       user.level = Math.floor(user.totalPoints / 1000);
     }
     if (stats.workouts) user.totalWorkouts += stats.workouts;
-    
+
     return this.userRepository.save(user);
   }
 
@@ -77,15 +89,15 @@ export class UserService {
     totalDurationSeconds: number;
   }> {
     const user = await this.findById(userId);
-    
+
     // Calculate calories and duration from activities
     let totalCaloriesBurned = 0;
     let totalDurationSeconds = 0;
-    
+
     if (user.activities && user.activities.length > 0) {
       for (const activity of user.activities) {
         totalCaloriesBurned += activity.caloriesBurned || 0;
-        
+
         // Parse duration string (format: "X seconds")
         if (activity.duration) {
           const durationStr = activity.duration.toString();
@@ -96,7 +108,7 @@ export class UserService {
         }
       }
     }
-    
+
     return {
       totalDistanceKm: Number(user.totalDistanceKm),
       totalSteps: user.totalSteps,

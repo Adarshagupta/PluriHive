@@ -267,6 +267,19 @@ class LocationBloc extends Bloc<LocationEvent, LocationState> {
     print('   ⏱️  Timestamp: ${event.position.timestamp}');
     print('   📊 Current state: ${state.runtimeType}');
     
+    // Auto-recover: If we're receiving location updates but not tracking, start tracking
+    if (state is LocationIdle) {
+      print('   ⚠️  WARNING: Receiving location updates in LocationIdle state!');
+      print('   🔄 AUTO-RECOVERY: Transitioning to LocationTracking state...');
+      emit(LocationTracking(
+        currentPosition: event.position,
+        routePoints: [event.position],
+        totalDistance: 0.0,
+      ));
+      print('   ✅ AUTO-RECOVERY: Now in LocationTracking state');
+      return;
+    }
+    
     if (state is! LocationTracking) {
       print('   ❌ ABORT: State is not LocationTracking - STATE IS ${state.runtimeType}');
       return;

@@ -32,8 +32,8 @@ export class User {
   @Column({ nullable: true })
   gender: string;
 
-  // Onboarding status - default to true for backward compatibility
-  @Column({ default: true })
+  // Onboarding status - MUST complete onboarding (non-negotiable)
+  @Column({ default: false })
   hasCompletedOnboarding: boolean;
 
   // Game stats

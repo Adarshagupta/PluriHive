@@ -50,18 +50,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         child: SafeArea(
           child: Column(
           children: [
-            // Skip button
-            Align(
-              alignment: Alignment.topRight,
-              child: TextButton(
-                onPressed: () {
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(builder: (_) => const PermissionScreen()),
-                  );
-                },
-                child: const Text('Skip'),
-              ),
-            ),
+            // Removed skip button - onboarding is mandatory
+            SizedBox(height: 48), // Maintain layout spacing
             
             // Pages
             Expanded(

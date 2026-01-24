@@ -9,6 +9,7 @@ import '../../../tracking/presentation/bloc/location_bloc.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
 import '../../../../core/utils/picture_in_picture.dart';
 import '../../../../core/services/persistent_step_counter_service.dart';
+import '../../../../core/widgets/permission_gate.dart';
 import 'home_tab.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -124,8 +125,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     if (permission == LocationPermission.whileInUse || 
         permission == LocationPermission.always) {
       if (mounted) {
+        print('📍 DASHBOARD: Location permission granted, starting tracking...');
         context.read<LocationBloc>().add(GetInitialLocation());
         context.read<LocationBloc>().add(StartLocationTracking());
+        print('✅ DASHBOARD: StartLocationTracking event sent');
       }
     }
   }
@@ -218,56 +221,58 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      extendBody: true,
-      body: AnimatedSwitcher(
-        duration: Duration(milliseconds: 300),
-        switchInCurve: Curves.easeInOut,
-        switchOutCurve: Curves.easeInOut,
-        transitionBuilder: (Widget child, Animation<double> animation) {
-          return FadeTransition(
-            opacity: animation,
-            child: SlideTransition(
-              position: Tween<Offset>(
-                begin: Offset(0.05, 0.0),
-                end: Offset.zero,
-              ).animate(animation),
-              child: child,
-            ),
-          );
-        },
-        child: Container(
-          key: ValueKey<int>(_currentIndex),
-          child: _screens[_currentIndex],
-        ),
-      ),
-      bottomNavigationBar: _isInPipMode || _currentIndex == 1 ? null : Padding(
-        padding: const EdgeInsets.all(20),
-        child: Container(
-          height: 70,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(35),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 20,
-                offset: const Offset(0, 5),
+    return PermissionGate(
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        extendBody: true,
+        body: AnimatedSwitcher(
+          duration: Duration(milliseconds: 300),
+          switchInCurve: Curves.easeInOut,
+          switchOutCurve: Curves.easeInOut,
+          transitionBuilder: (Widget child, Animation<double> animation) {
+            return FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: Offset(0.05, 0.0),
+                  end: Offset.zero,
+                ).animate(animation),
+                child: child,
               ),
-            ],
+            );
+          },
+          child: Container(
+            key: ValueKey<int>(_currentIndex),
+            child: _screens[_currentIndex],
           ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                _buildNavItem(0, Icons.home_rounded),
-                _buildNavItem(1, Icons.map_rounded),
-                _buildNavItem(2, Icons.history_rounded),
-                _buildNavItem(3, Icons.leaderboard_rounded),
-                _buildNavItem(4, Icons.person_rounded),
+        ),
+        bottomNavigationBar: _isInPipMode || _currentIndex == 1 ? null : Padding(
+          padding: const EdgeInsets.all(20),
+          child: Container(
+            height: 70,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(35),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 20,
+                  offset: const Offset(0, 5),
+                ),
               ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  _buildNavItem(0, Icons.home_rounded),
+                  _buildNavItem(1, Icons.map_rounded),
+                  _buildNavItem(2, Icons.history_rounded),
+                  _buildNavItem(3, Icons.leaderboard_rounded),
+                  _buildNavItem(4, Icons.person_rounded),
+                ],
+              ),
             ),
           ),
         ),
