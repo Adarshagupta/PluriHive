@@ -466,8 +466,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       // Disconnect WebSocket
       webSocketService.disconnect();
       
-      // Clear backend auth
-      await authApiService.clearAuth();
+      // Clear backend auth (call endpoint + clear local tokens)
+      await authApiService.logout();
       
       // Clear local storage
       await repository.clearUser();

@@ -113,7 +113,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
             '• Notifications: Keep you updated on progress\n\n'
             '❌ Without these permissions, the app CANNOT work.\n\n'
             'Please grant ALL permissions to continue.',
-            style: TextStyle(fontSize: 14),
+            style: TextStyle(fontSize: 12),
           ),
           actions: [
             ElevatedButton.icon(

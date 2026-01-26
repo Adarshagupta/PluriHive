@@ -135,6 +135,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _loadTerritoriesFromBackend();
 
     // Get initial location
+    // IMPORTANT: Stop any previous tracking session first
+    context.read<LocationBloc>().add(StopLocationTracking());
     context.read<LocationBloc>().add(GetInitialLocation());
     context.read<TerritoryBloc>().add(LoadTerritories());
   }
@@ -207,6 +209,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             );
             
+            
             // Store territory data for tap handling
             _territoryData[territory['hexId']] = {
               'polygonPoints': polygonPoints,
@@ -214,6 +217,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               'ownerName': territory['owner']?['name'] ?? 'Unknown',
               'captureCount': territory['captureCount'] ?? 1,
               'isOwn': isOwnTerritory,
+              'points': territory['points'],
+              'capturedAt': territory['capturedAt'] != null 
+                  ? DateTime.parse(territory['capturedAt']) 
+                  : null,
+              'lastBattleAt': territory['lastBattleAt'] != null 
+                  ? DateTime.parse(territory['lastBattleAt']) 
+                  : null,
+              'areaSqMeters': _calculatePolygonArea(polygonPoints),
             };
           } else {
             // Fallback: show small circle if no route points
@@ -237,6 +248,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               'ownerName': territory['owner']?['name'] ?? 'Unknown',
               'captureCount': territory['captureCount'] ?? 1,
               'isOwn': isOwnTerritory,
+              'points': territory['points'],
+              'capturedAt': territory['capturedAt'] != null 
+                  ? DateTime.parse(territory['capturedAt']) 
+                  : null,
+              'lastBattleAt': territory['lastBattleAt'] != null 
+                  ? DateTime.parse(territory['lastBattleAt']) 
+                  : null,
+              'areaSqMeters': _calculatePolygonArea(circlePoints),
             };
           }
 
@@ -267,6 +286,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           ownerName: data['ownerName'],
           captureCount: data['captureCount'],
           isOwn: data['isOwn'],
+          points: data['points'],
+          capturedAt: data['capturedAt'],
+          lastBattleAt: data['lastBattleAt'],
+          areaSqMeters: data['areaSqMeters'],
         );
         break;
       }
@@ -309,6 +332,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     required String ownerName,
     required int captureCount,
     required bool isOwn,
+    int? points,
+    DateTime? capturedAt,
+    DateTime? lastBattleAt,
+    double? areaSqMeters,
   }) {
     showDialog(
       context: context,
@@ -321,42 +348,100 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               size: 24,
             ),
             SizedBox(width: 8),
-            Text(
-              isOwn ? 'Your Territory' : 'Territory',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Expanded(
+              child: Text(
+                isOwn ? 'Your Territory' : 'Territory',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.person_outline, size: 20, color: Colors.grey[700]),
-                SizedBox(width: 8),
-                Text(
-                  'Owner: ',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Owner
+              _buildDetailRow(
+                icon: Icons.person_outline,
+                label: 'Owner',
+                value: ownerName,
+                color: isOwn ? Colors.green : Colors.orange,
+              ),
+              SizedBox(height: 12),
+              
+              // Captures
+              _buildDetailRow(
+                icon: Icons.flag_outlined,
+                label: 'Captures',
+                value: '$captureCount ${captureCount == 1 ? 'time' : 'times'}',
+                color: Colors.blue,
+              ),
+              SizedBox(height: 12),
+              
+              // Points
+              if (points != null) ...[
+                _buildDetailRow(
+                  icon: Icons.stars,
+                  label: 'Points',
+                  value: '$points pts',
+                  color: Colors.amber,
                 ),
-                Text(ownerName),
+                SizedBox(height: 12),
               ],
-            ),
-            SizedBox(height: 12),
-            Row(
-              children: [
-                Icon(Icons.flag_outlined, size: 20, color: Colors.grey[700]),
-                SizedBox(width: 8),
-                Text(
-                  'Captures: ',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+              
+              // Area
+              if (areaSqMeters != null) ...[
+                _buildDetailRow(
+                  icon: Icons.area_chart,
+                  label: 'Area',
+                  value: areaSqMeters >= 1000000
+                      ? '${(areaSqMeters / 1000000).toStringAsFixed(2)} km²'
+                      : '${areaSqMeters.toStringAsFixed(0)} m²',
+                  color: Colors.purple,
                 ),
-                Text('$captureCount'),
+                SizedBox(height: 12),
               ],
-            ),
-          ],
+              
+              // Captured Date
+              if (capturedAt != null) ...[
+                _buildDetailRow(
+                  icon: Icons.calendar_today,
+                  label: 'Captured',
+                  value: _formatDate(capturedAt),
+                  color: Colors.teal,
+                ),
+                SizedBox(height: 12),
+              ],
+              
+              // Last Battle
+              if (lastBattleAt != null) ...[
+                _buildDetailRow(
+                  icon: Icons.shield,
+                  label: 'Last Battle',
+                  value: _formatDate(lastBattleAt),
+                  color: Colors.red,
+                ),
+              ],
+            ],
+          ),
         ),
         actions: [
+          if (!isOwn)
+            TextButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Start tracking to challenge this territory!'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+              },
+              icon: Icon(Icons.sports_martial_arts),
+              label: Text('Challenge'),
+              style: TextButton.styleFrom(foregroundColor: Colors.orange),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text('Close'),
@@ -364,6 +449,49 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         ],
       ),
     );
+  }
+
+
+  Widget _buildDetailRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: color),
+        SizedBox(width: 8),
+        Text(
+          '$label: ',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(fontSize: 14),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final difference = now.difference(date);
+    
+    if (difference.inDays == 0) {
+      if (difference.inHours == 0) {
+        return '${difference.inMinutes} min ago';
+      }
+      return '${difference.inHours}h ago';
+    } else if (difference.inDays == 1) {
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      return '${difference.inDays} days ago';
+    } else {
+      return '${date.day}/${date.month}/${date.year}';
+    }
   }
 
   // Helper to generate circle points for territory display

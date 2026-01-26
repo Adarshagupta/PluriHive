@@ -331,6 +331,27 @@ class AuthApiService {
     return userId;
   }
 
+  Future<void> logout() async {
+    try {
+      final token = await getToken();
+      if (token != null) {
+        print('🚪 Logging out from backend...');
+        await _client.post(
+          Uri.parse('${ApiConfig.baseUrl}${ApiConfig.logoutEndpoint}'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+          },
+        ).timeout(const Duration(seconds: 5)); // Short timeout for logout
+      }
+    } catch (e) {
+      print('⚠️ Backend logout failed (ignoring): $e');
+    } finally {
+      // Always clear local auth
+      await clearAuth();
+    }
+  }
+
   Future<void> clearAuth() async {
     await _secureStorage.delete(key: _tokenKey);
     await _secureStorage.delete(key: _userIdKey);

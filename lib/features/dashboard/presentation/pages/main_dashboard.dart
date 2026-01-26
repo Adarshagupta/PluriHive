@@ -50,7 +50,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     WidgetsBinding.instance.addObserver(this);
     PictureInPictureManager.onPipModeChanged = _onPipModeChanged;
     _requestLocationPermissions();
-    _initializePersistentStepCounter();
+    // Disabled: Auto-start of step counter (was showing unwanted notification)
+    // _initializePersistentStepCounter();
   }
   
   @override

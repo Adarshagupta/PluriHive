@@ -2,8 +2,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
   // Backend URLs
-  static const String localUrl = 'http://10.1.80.76:3000';
-  static const String productionUrl = 'https://plurihiveapi.onrender.com';
+  static const String localUrl = 'http://10.1.80.51:3000';
+  static const String productionUrl = 'https://plurihubb.onrender.com';
   
   static const String _backendPrefKey = 'selected_backend_url';
   
@@ -32,12 +32,13 @@ class ApiConfig {
   // Check if using production
   static bool get isProduction => baseUrl == productionUrl;
   
-  static const String wsUrl = 'ws://10.1.80.76:3000';
+  static const String wsUrl = 'ws://10.1.80.51:3000';
   
   // Auth endpoints
   static const String signUpEndpoint = '/auth/signup';
   static const String signInEndpoint = '/auth/signin';
   static const String getMeEndpoint = '/auth/me';
+  static const String logoutEndpoint = '/auth/logout';
   
   // User endpoints
   static const String userProfileEndpoint = '/users/profile';

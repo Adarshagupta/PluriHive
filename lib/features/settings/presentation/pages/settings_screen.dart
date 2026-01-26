@@ -377,7 +377,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             RadioListTile<String>(
               title: const Text('Production (Render)'),
-              subtitle: const Text('https://plurihiveapi.onrender.com'),
+              subtitle: const Text('https://plurihubb.onrender.com'),
               value: ApiConfig.productionUrl,
               groupValue: _selectedBackend,
               onChanged: (value) {
