@@ -1,0 +1,6 @@
+-- CreateTable: Add streak columns to users table for CockroachDB
+ALTER TABLE users ADD COLUMN IF NOT EXISTS "currentStreak" INT4 NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS "longestStreak" INT4 NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS "lastActiveDate" TIMESTAMP;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS "streakFreezes" INT4 NOT NULL DEFAULT 1;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS "lastFreezeGrantDate" TIMESTAMP;

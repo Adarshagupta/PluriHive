@@ -26,8 +26,15 @@ class GameRepositoryImpl implements GameRepository {
         territoriesCaptured: userData['totalTerritoriesCaptured'] is int
             ? userData['totalTerritoriesCaptured']
             : (userData['totalTerritoriesCaptured'] as num?)?.toInt() ?? 0,
-        currentStreak: 0,
-        longestStreak: 0,
+        currentStreak: userData['currentStreak'] is int
+            ? userData['currentStreak']
+            : (userData['currentStreak'] as num?)?.toInt() ?? 0,
+        longestStreak: userData['longestStreak'] is int
+            ? userData['longestStreak']
+            : (userData['longestStreak'] as num?)?.toInt() ?? 0,
+        streakFreezes: userData['streakFreezes'] is int
+            ? userData['streakFreezes']
+            : (userData['streakFreezes'] as num?)?.toInt() ?? 0,
       );
     } catch (e) {
       throw Exception('Failed to fetch user stats from backend: $e');

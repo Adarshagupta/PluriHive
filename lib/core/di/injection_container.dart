@@ -2,6 +2,8 @@ import 'package:get_it/get_it.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
+import '../services/google_fit_service.dart';
+import '../services/pip_service.dart';
 import '../../features/auth/data/repositories/auth_repository_impl.dart';
 import '../../features/auth/data/datasources/auth_local_data_source.dart';
 import '../../features/auth/domain/repositories/auth_repository.dart';
@@ -34,6 +36,7 @@ import '../services/auth_api_service.dart';
 import '../services/tracking_api_service.dart';
 import '../services/territory_api_service.dart';
 import '../services/leaderboard_api_service.dart';
+import '../services/route_api_service.dart';
 import '../services/websocket_service.dart';
 import '../services/settings_api_service.dart';
 import '../services/user_stats_api_service.dart';
@@ -44,10 +47,10 @@ Future<void> initializeDependencies() async {
   // External
   final sharedPreferences = await SharedPreferences.getInstance();
   getIt.registerSingleton<SharedPreferences>(sharedPreferences);
-  
+
   // HTTP Client
   getIt.registerLazySingleton<http.Client>(() => http.Client());
-  
+
   // API Services
   getIt.registerLazySingleton<AuthApiService>(
     () => AuthApiService(
@@ -55,109 +58,122 @@ Future<void> initializeDependencies() async {
       prefs: getIt(),
     ),
   );
-  
+
   getIt.registerLazySingleton<TrackingApiService>(
     () => TrackingApiService(
       authService: getIt(),
       client: getIt(),
     ),
   );
-  
+
   getIt.registerLazySingleton<TerritoryApiService>(
     () => TerritoryApiService(
       authService: getIt(),
       client: getIt(),
     ),
   );
-  
+
+  getIt.registerLazySingleton<RouteApiService>(
+    () => RouteApiService(
+      authService: getIt(),
+      client: getIt(),
+    ),
+  );
+
   getIt.registerLazySingleton<LeaderboardApiService>(
     () => LeaderboardApiService(client: getIt()),
   );
-  
+
   getIt.registerLazySingleton<SettingsApiService>(
     () => SettingsApiService(
       authService: getIt(),
       client: getIt(),
     ),
   );
-  
+
   getIt.registerLazySingleton<UserStatsApiService>(
     () => UserStatsApiService(
       authService: getIt(),
       client: getIt(),
     ),
   );
-  
+
   getIt.registerSingleton<WebSocketService>(WebSocketService());
-  
+
+  // Google Fit Service
+  getIt.registerLazySingleton<GoogleFitService>(() => GoogleFitService());
+
+  // PiP Service
+  getIt.registerLazySingleton<PipService>(() => PipService());
+
   // Data Sources
   getIt.registerLazySingleton<AuthLocalDataSource>(
     () => AuthLocalDataSourceImpl(getIt()),
   );
-  
+
   getIt.registerLazySingleton<LocationDataSource>(
     () => LocationDataSourceImpl(),
   );
-  
+
   getIt.registerLazySingleton<TerritoryLocalDataSource>(
     () => TerritoryLocalDataSourceImpl(getIt()),
   );
-  
+
   getIt.registerLazySingleton<GameLocalDataSource>(
     () => GameLocalDataSourceImpl(getIt()),
   );
-  
+
   // Repositories
   getIt.registerLazySingleton<AuthRepository>(
     () => AuthRepositoryImpl(getIt()),
   );
-  
+
   getIt.registerLazySingleton<LocationRepository>(
     () => LocationRepositoryImpl(getIt()),
   );
-  
+
   getIt.registerLazySingleton<TerritoryRepository>(
     () => TerritoryRepositoryImpl(getIt()),
   );
-  
+
   getIt.registerLazySingleton<GameRepository>(
     () => GameRepositoryImpl(getIt()),
   );
-  
+
   // Use Cases
   getIt.registerLazySingleton(() => StartTracking(getIt()));
   getIt.registerLazySingleton(() => StopTracking(getIt()));
   getIt.registerLazySingleton(() => GetCurrentLocation(getIt()));
-  
+
   getIt.registerLazySingleton(() => CaptureTerritory(getIt()));
   getIt.registerLazySingleton(() => GetCapturedTerritories(getIt()));
-  
+
   getIt.registerLazySingleton(() => CalculatePoints(getIt()));
   getIt.registerLazySingleton(() => GetUserStats(getIt()));
-  
+
   // BLoCs
   getIt.registerFactory(() => AuthBloc(
-    repository: getIt(),
-    authApiService: getIt(),
-    webSocketService: getIt(),
-  ));
-  
+        repository: getIt(),
+        authApiService: getIt(),
+        webSocketService: getIt(),
+      ));
+
   getIt.registerFactory(() => LocationBloc(
-    startTracking: getIt(),
-    stopTracking: getIt(),
-    getCurrentLocation: getIt(),
-    locationRepository: getIt<LocationRepository>(),
-  ));
-  
+        startTracking: getIt(),
+        stopTracking: getIt(),
+        getCurrentLocation: getIt(),
+        locationRepository: getIt<LocationRepository>(),
+      ));
+
   getIt.registerFactory(() => TerritoryBloc(
-    captureTerritory: getIt(),
-    getCapturedTerritories: getIt(),
-  ));
-  
+        captureTerritory: getIt(),
+        getCapturedTerritories: getIt(),
+      ));
+
   getIt.registerFactory(() => GameBloc(
-    calculatePoints: getIt(),
-    getUserStats: getIt(),
-    repository: getIt(),
-    authApiService: getIt(),
-  ));
+        calculatePoints: getIt(),
+        getUserStats: getIt(),
+        repository: getIt(),
+        authApiService: getIt(),
+      ));
 }

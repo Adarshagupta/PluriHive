@@ -75,6 +75,9 @@ DATABASE_PASSWORD=your_password_here
 DATABASE_NAME=plurihive
 JWT_SECRET=change_this_to_a_random_secret_key
 JWT_EXPIRATION=7d
+CORS_ORIGINS=http://localhost:3000
+ADMIN_API_KEY=replace_with_strong_value
+SEED_LEADERBOARD=false
 ```
 
 ### 4. Start the Server
@@ -172,6 +175,7 @@ import 'package:socket_io_client/socket_io_client.dart' as IO;
 final socket = IO.io('http://localhost:3000', <String, dynamic>{
   'transports': ['websocket'],
   'autoConnect': true,
+  'auth': {'token': jwtToken},
 });
 
 // Connect user

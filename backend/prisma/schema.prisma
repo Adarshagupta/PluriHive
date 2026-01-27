@@ -1,0 +1,123 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "cockroachdb"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  password  String
+  profilePicture String?
+
+  // Physical stats
+  weight    Float?
+  height    Float?
+  age       Int?
+  gender    String?
+
+  // Onboarding
+  hasCompletedOnboarding Boolean @default(false)
+
+  // Game stats
+  totalPoints              Int     @default(0)
+  level                    Int     @default(1)
+  totalDistanceKm          Float   @default(0)
+  totalSteps               Int     @default(0)
+  totalTerritoriesCaptured Int     @default(0)
+  totalWorkouts            Int     @default(0)
+
+  // Streaks
+  currentStreak      Int       @default(0)
+  longestStreak      Int       @default(0)
+  lastActiveDate     DateTime?
+  streakFreezes      Int       @default(1)
+  lastFreezeGrantDate DateTime?
+
+  // User Settings (JSON)
+  settings Json?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  territories Territory[]
+  activities  Activity[]
+  routes      Route[]
+
+  @@map("users")
+}
+
+model Route {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  name          String
+  description   String?
+  isPublic      Boolean  @default(false)
+  routePoints   Json
+  distanceKm    Float    @default(0)
+  elevationGain Float?
+  minLat        Float
+  maxLat        Float
+  minLng        Float
+  maxLng        Float
+  centerLat     Float
+  centerLng     Float
+  usageCount    Int      @default(0)
+  lastUsedAt    DateTime?
+  routeHash     String
+  h3Path        Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("routes")
+}
+
+model Territory {
+  id          String   @id @default(uuid())
+  hexId       String   @unique
+  coordinates Json     // {lat, lng}
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id])
+  capturedAt  DateTime @default(now())
+
+  @@map("territories")
+}
+
+model Activity {
+  id                    String   @id @default(uuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // Route data
+  routePoints           Json     // Array of {latitude, longitude, timestamp, altitude?}
+  routeMapSnapshot      String?
+
+  // Metrics
+  distanceMeters        Float
+  duration              String   // PostgreSQL interval as string
+  averageSpeed          Float?
+  steps                 Int      @default(0)
+  caloriesBurned        Int      @default(0)
+
+  // Game data
+  territoriesCaptured   Int      @default(0)
+  pointsEarned          Int      @default(0)
+  capturedAreaSqMeters  Float?
+  capturedHexIds        Json?    // Array of hex IDs
+
+  // Timestamps
+  startTime DateTime
+  endTime   DateTime
+  createdAt DateTime @default(now())
+
+  @@map("activities")
+}

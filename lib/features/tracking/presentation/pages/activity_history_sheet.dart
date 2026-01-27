@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
+import '../../../../core/widgets/skeleton.dart';
 
 class ActivityHistorySheet extends StatefulWidget {
   const ActivityHistorySheet({super.key});
@@ -190,11 +191,7 @@ class _ActivityHistorySheetState extends State<ActivityHistorySheet> {
           // Activities List
           Expanded(
             child: _isLoading
-                ? Center(
-                    child: CircularProgressIndicator(
-                      color: Color(0xFF7FE87A),
-                    ),
-                  )
+                ? _buildSheetSkeleton()
                 : _error != null
                     ? Center(
                         child: Padding(
@@ -486,6 +483,22 @@ class _ActivityHistorySheetState extends State<ActivityHistorySheet> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSheetSkeleton() {
+    return SkeletonShimmer(
+      child: ListView.separated(
+        padding: const EdgeInsets.all(20),
+        itemCount: 4,
+        separatorBuilder: (context, index) => const SizedBox(height: 12),
+        itemBuilder: (context, index) {
+          return SkeletonBox(
+            height: 160,
+            borderRadius: BorderRadius.circular(16),
+          );
+        },
       ),
     );
   }

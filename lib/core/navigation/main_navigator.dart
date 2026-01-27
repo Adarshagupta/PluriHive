@@ -6,7 +6,6 @@ import '../../features/leaderboard/presentation/pages/leaderboard_screen.dart';
 import '../../features/achievements/presentation/pages/achievements_screen.dart';
 import '../../features/profile/presentation/pages/profile_screen.dart';
 import '../../features/auth/presentation/bloc/auth_bloc.dart';
-import '../theme/app_theme.dart';
 
 class MainNavigator extends StatefulWidget {
   const MainNavigator({super.key});
@@ -17,18 +16,18 @@ class MainNavigator extends StatefulWidget {
 
 class _MainNavigatorState extends State<MainNavigator> {
   int _currentIndex = 0;
-  
+
   List<Widget> get _screens => [
-    DashboardScreen(),
-    MapScreen(onNavigateHome: () {
-      setState(() {
-        _currentIndex = 0;
-      });
-    }),
-    LeaderboardScreen(),
-    AchievementsScreen(),
-    ProfileScreen(),
-  ];
+        DashboardScreen(),
+        MapScreen(onNavigateHome: () {
+          setState(() {
+            _currentIndex = 0;
+          });
+        }),
+        LeaderboardScreen(),
+        AchievementsScreen(),
+        ProfileScreen(),
+      ];
 
   @override
   void initState() {
@@ -44,49 +43,51 @@ class _MainNavigatorState extends State<MainNavigator> {
       },
       child: Scaffold(
         body: _screens[_currentIndex],
-        bottomNavigationBar: _currentIndex == 1 ? null : Container(
-          height: 70,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.08),
-                blurRadius: 20,
-                offset: const Offset(0, -5),
+        bottomNavigationBar: _currentIndex == 1
+            ? null
+            : Container(
+                height: 70,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.08),
+                      blurRadius: 20,
+                      offset: const Offset(0, -5),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildNavItem(
+                      icon: Icons.home_rounded,
+                      index: 0,
+                      color: Color(0xFF7FE87A),
+                    ),
+                    _buildNavItem(
+                      icon: Icons.map_rounded,
+                      index: 1,
+                      color: Color(0xFF64B5F6),
+                    ),
+                    _buildNavItem(
+                      icon: Icons.emoji_events_rounded,
+                      index: 2,
+                      color: Color(0xFFFFA726),
+                    ),
+                    _buildNavItem(
+                      icon: Icons.workspace_premium_rounded,
+                      index: 3,
+                      color: Color(0xFFAB47BC),
+                    ),
+                    _buildNavItem(
+                      icon: Icons.account_circle_rounded,
+                      index: 4,
+                      color: Color(0xFF66BB6A),
+                    ),
+                  ],
+                ),
               ),
-            ],
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _buildNavItem(
-                icon: Icons.home_rounded,
-                index: 0,
-                color: Color(0xFF2D3142),
-              ),
-              _buildNavItem(
-                icon: Icons.favorite_rounded,
-                index: 1,
-                color: Color(0xFF7D8491),
-              ),
-              _buildNavItem(
-                icon: Icons.explore_rounded,
-                index: 2,
-                color: Color(0xFF7D8491),
-              ),
-              _buildNavItem(
-                icon: Icons.person_rounded,
-                index: 3,
-                color: Color(0xFF7D8491),
-              ),
-              _buildNavItem(
-                icon: Icons.notifications_rounded,
-                index: 4,
-                color: Color(0xFF7F7FD5),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -97,7 +98,7 @@ class _MainNavigatorState extends State<MainNavigator> {
     required Color color,
   }) {
     final isSelected = _currentIndex == index;
-    
+
     return GestureDetector(
       onTap: () {
         setState(() {

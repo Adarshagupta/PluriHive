@@ -129,6 +129,15 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<CompleteOnboarding>(_onCompleteOnboarding);
     on<SignOut>(_onSignOut);
   }
+
+  Future<void> _connectWebSocket(User user) async {
+    final token = await authApiService.getToken();
+    if (token != null && token.isNotEmpty) {
+      webSocketService.connect(user.id, token: token);
+    } else {
+      print('⚠️ WebSocket token unavailable - not connecting');
+    }
+  }
   
   Future<void> _onCheckAuthStatus(
     CheckAuthStatus event,
@@ -150,7 +159,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         if (localUser != null) {
           // Use local user data, connect WebSocket
           print('✅ CheckAuthStatus: Using local user data');
-          webSocketService.connect(localUser.id);
+          await _connectWebSocket(localUser);
           emit(Authenticated(localUser));
           
           // Try to sync with backend in background (don't block or fail)
@@ -224,7 +233,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
             print('✅ CheckAuthStatus: User fetched and saved locally');
             
             // Connect WebSocket
-            webSocketService.connect(user.id);
+            await _connectWebSocket(user);
             
             emit(Authenticated(user));
           } catch (e) {
@@ -274,7 +283,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       print('✅ SignUp: User saved locally: ${user.email}');
       
       // Connect WebSocket
-      webSocketService.connect(user.id);
+      await _connectWebSocket(user);
       
       emit(Authenticated(user));
     } catch (e) {
@@ -327,7 +336,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       print('✅ SignIn: User saved locally: ${user.email}');
       
       // Connect WebSocket
-      webSocketService.connect(user.id);
+      await _connectWebSocket(user);
       print('✅ SignIn: WebSocket connected');
       
       emit(Authenticated(user));
@@ -383,7 +392,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       print('✅ Google SignIn: User saved locally: ${user.email}');
       
       // Connect WebSocket
-      webSocketService.connect(user.id);
+      await _connectWebSocket(user);
       print('✅ Google SignIn: WebSocket connected');
       
       emit(Authenticated(user));

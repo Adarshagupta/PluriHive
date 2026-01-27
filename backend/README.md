@@ -46,6 +46,10 @@ DATABASE_USER=postgres
 DATABASE_PASSWORD=your_password
 DATABASE_NAME=plurihive
 JWT_SECRET=your_super_secret_key
+JWT_EXPIRATION=7d
+CORS_ORIGINS=http://localhost:3000
+ADMIN_API_KEY=replace_with_strong_value
+SEED_LEADERBOARD=false
 ```
 
 ### Run the Server

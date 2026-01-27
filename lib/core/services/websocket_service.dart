@@ -10,9 +10,14 @@ class WebSocketService {
   String? _userId;
 
   // Initialize and connect
-  void connect(String userId) {
+  void connect(String userId, {String? token}) {
     if (_socket != null && _socket!.connected) {
       print('⚠️ WebSocket already connected');
+      return;
+    }
+
+    if (token == null || token.isEmpty) {
+      print('⚠️ WebSocket token missing - skipping connect');
       return;
     }
 
@@ -23,6 +28,8 @@ class WebSocketService {
       IO.OptionBuilder()
           .setTransports(['websocket'])
           .disableAutoConnect()
+          .setAuth({'token': token})
+          .setExtraHeaders({'Authorization': 'Bearer $token'})
           .build(),
     );
 

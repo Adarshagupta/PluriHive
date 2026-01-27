@@ -25,6 +25,7 @@ class GameLocalDataSourceImpl implements GameLocalDataSource {
         totalCaloriesBurned: 0,
         currentStreak: 0,
         longestStreak: 0,
+        streakFreezes: 0,
       );
     }
     

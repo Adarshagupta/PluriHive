@@ -8,6 +8,7 @@ class UserStats extends Equatable {
   final int totalCaloriesBurned;
   final int currentStreak;
   final int longestStreak;
+  final int streakFreezes;
   
   const UserStats({
     required this.totalPoints,
@@ -17,6 +18,7 @@ class UserStats extends Equatable {
     required this.totalCaloriesBurned,
     required this.currentStreak,
     required this.longestStreak,
+    required this.streakFreezes,
   });
   
   int get experiencePoints => totalPoints;
@@ -35,6 +37,7 @@ class UserStats extends Equatable {
     totalCaloriesBurned,
     currentStreak,
     longestStreak,
+    streakFreezes,
   ];
   
   Map<String, dynamic> toJson() => {
@@ -45,6 +48,7 @@ class UserStats extends Equatable {
     'totalCaloriesBurned': totalCaloriesBurned,
     'currentStreak': currentStreak,
     'longestStreak': longestStreak,
+    'streakFreezes': streakFreezes,
   };
   
   factory UserStats.fromJson(Map<String, dynamic> json) => UserStats(
@@ -55,6 +59,7 @@ class UserStats extends Equatable {
     totalCaloriesBurned: json['totalCaloriesBurned'] ?? 0,
     currentStreak: json['currentStreak'] ?? 0,
     longestStreak: json['longestStreak'] ?? 0,
+    streakFreezes: json['streakFreezes'] ?? 0,
   );
   
   UserStats copyWith({
@@ -65,6 +70,7 @@ class UserStats extends Equatable {
     int? totalCaloriesBurned,
     int? currentStreak,
     int? longestStreak,
+    int? streakFreezes,
   }) {
     return UserStats(
       totalPoints: totalPoints ?? this.totalPoints,
@@ -74,6 +80,7 @@ class UserStats extends Equatable {
       totalCaloriesBurned: totalCaloriesBurned ?? this.totalCaloriesBurned,
       currentStreak: currentStreak ?? this.currentStreak,
       longestStreak: longestStreak ?? this.longestStreak,
+      streakFreezes: streakFreezes ?? this.streakFreezes,
     );
   }
 }

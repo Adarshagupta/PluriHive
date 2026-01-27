@@ -1,9 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import '../../domain/entities/position.dart' as app;
 import '../../../../core/services/kalman_filter.dart';
 
 abstract class LocationDataSource {
-  Stream<app.Position> getLocationStream();
+  Stream<app.Position> getLocationStream({bool batterySaver = false});
   Future<app.Position> getCurrentPosition();
   Future<bool> isLocationServiceEnabled();
   Future<bool> checkPermissions();
@@ -12,26 +13,33 @@ abstract class LocationDataSource {
 
 class LocationDataSourceImpl implements LocationDataSource {
   final AdvancedGPSFilter _gpsFilter = AdvancedGPSFilter();
+
+  void _log(String message) {
+    if (kDebugMode) {
+      print(message);
+    }
+  }
   
   @override
-  Stream<app.Position> getLocationStream() {
-    print('🌐 LocationDataSource: Creating location stream...');
+  Stream<app.Position> getLocationStream({bool batterySaver = false}) {
+    _log('🌐 LocationDataSource: Creating location stream...');
     
     // ULTRA AGGRESSIVE: Get every update, no filtering
-    const locationSettings = geo.LocationSettings(
-      accuracy: geo.LocationAccuracy.bestForNavigation, // Highest accuracy
-      distanceFilter: 0, // NO DISTANCE FILTER - get all updates!
-      // NO timeLimit - let it run continuously
+    final locationSettings = geo.LocationSettings(
+      accuracy: batterySaver
+          ? geo.LocationAccuracy.low
+          : geo.LocationAccuracy.bestForNavigation,
+      distanceFilter: batterySaver ? 10 : 0,
     );
     
-    print('🌐 LocationDataSource: Location settings configured');
-    print('   - Accuracy: bestForNavigation');
-    print('   - Distance filter: 0m (all updates)');
-    print('   - Time limit: none (continuous)');
+    _log('🌐 LocationDataSource: Location settings configured');
+    _log('   - Accuracy: ${batterySaver ? "low" : "bestForNavigation"}');
+    _log('   - Distance filter: ${batterySaver ? "10m" : "0m (all updates)"}');
+    _log('   - Time limit: none (continuous)');
     
     return geo.Geolocator.getPositionStream(locationSettings: locationSettings)
         .map((position) {
-          print('🌐 RAW GPS: (${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}) accuracy: ${position.accuracy.toStringAsFixed(1)}m');
+          _log('🌐 RAW GPS: (${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}) accuracy: ${position.accuracy.toStringAsFixed(1)}m');
           
           // Apply Kalman filter for smooth, accurate positions
           final filtered = _gpsFilter.process(
@@ -41,7 +49,7 @@ class LocationDataSourceImpl implements LocationDataSource {
             timestamp: position.timestamp,
           );
           
-          print('🌐 FILTERED: (${filtered['latitude']!.toStringAsFixed(6)}, ${filtered['longitude']!.toStringAsFixed(6)})');
+          _log('🌐 FILTERED: (${filtered['latitude']!.toStringAsFixed(6)}, ${filtered['longitude']!.toStringAsFixed(6)})');
           
           return app.Position(
             latitude: filtered['latitude']!,

@@ -6,6 +6,7 @@ import 'core/di/injection_container.dart';
 import 'core/theme/app_theme.dart';
 import 'core/services/api_config.dart';
 import 'core/services/update_service.dart';
+import 'core/navigation/app_route_observer.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/auth/presentation/pages/splash_screen.dart';
 import 'features/tracking/presentation/bloc/location_bloc.dart';
@@ -60,6 +61,7 @@ class _TerritoryFitnessAppState extends State<TerritoryFitnessApp> {
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         themeMode: ThemeMode.light,
+        navigatorObservers: [appRouteObserver],
         home: const SplashScreen(),
       ),
     );

@@ -8,8 +8,8 @@ class LocationRepositoryImpl implements LocationRepository {
   LocationRepositoryImpl(this.dataSource);
   
   @override
-  Stream<Position> getLocationStream() {
-    return dataSource.getLocationStream();
+  Stream<Position> getLocationStream({bool batterySaver = false}) {
+    return dataSource.getLocationStream(batterySaver: batterySaver);
   }
   
   @override
@@ -18,7 +18,7 @@ class LocationRepositoryImpl implements LocationRepository {
   }
   
   @override
-  Future<void> startTracking() async {
+  Future<void> startTracking({bool batterySaver = false}) async {
     // Implementation for starting tracking service
     // This would be expanded with background service in production
   }

@@ -44,7 +44,7 @@ class AuthApiService {
           .timeout(ApiConfig.defaultTimeout);
 
       print('📡 Sign up response status: ${response.statusCode}');
-      print('📡 Sign up response body: ${response.body}');
+      print('📡 Sign up response received');
 
       final data = jsonDecode(response.body);
 
@@ -96,14 +96,14 @@ class AuthApiService {
           .timeout(ApiConfig.defaultTimeout);
 
       print('📡 Sign in response status: ${response.statusCode}');
-      print('📡 Sign in response body: ${response.body}');
+      print('📡 Sign in response received');
 
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final token = data['access_token'];
         final userId = data['user']['id'];
-        print('💾 SignIn: About to save token (${token?.substring(0, 20)}...) and userId: $userId');
+        print('💾 SignIn: Received token and userId: $userId');
         
         // Store token and user ID in secure storage
         await _secureStorage.write(key: _tokenKey, value: token);
@@ -248,7 +248,7 @@ class AuthApiService {
           .timeout(ApiConfig.defaultTimeout);
 
       print('📡 Google sign in response status: ${response.statusCode}');
-      print('📡 Google sign in response body: ${response.body}');
+      print('📡 Google sign in response received');
 
       final data = jsonDecode(response.body);
 
@@ -295,13 +295,13 @@ class AuthApiService {
     print('🔑 getToken: Reading from secure storage...');
     // Try secure storage first
     var token = await _secureStorage.read(key: _tokenKey);
-    print('🔑 getToken: Secure storage token = ${token != null ? "EXISTS (${token.substring(0, 20)}...)" : "NULL"}');
+    print('🔑 getToken: Secure storage token = ${token != null ? "EXISTS" : "NULL"}');
     
     // Fallback to SharedPreferences if secure storage fails
     if ((token == null || token.isEmpty) && _prefs != null) {
       print('🔑 getToken: Trying SharedPreferences fallback...');
       token = _prefs!.getString(_tokenKey);
-      print('🔑 getToken: SharedPreferences token = ${token != null ? "EXISTS (${token.substring(0, 20)}...)" : "NULL"}');
+      print('🔑 getToken: SharedPreferences token = ${token != null ? "EXISTS" : "NULL"}');
       
       // Restore to secure storage if found in SharedPreferences
       if (token != null && token.isNotEmpty) {

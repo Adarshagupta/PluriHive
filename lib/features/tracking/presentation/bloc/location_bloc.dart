@@ -18,9 +18,10 @@ abstract class LocationEvent extends Equatable {
 
 class StartLocationTracking extends LocationEvent {
   final bool useSimulation;  // Enable simulation mode
-  StartLocationTracking({this.useSimulation = false});
+  final bool batterySaver;
+  StartLocationTracking({this.useSimulation = false, this.batterySaver = false});
   @override
-  List<Object?> get props => [useSimulation];
+  List<Object?> get props => [useSimulation, batterySaver];
 }
 
 class StopLocationTracking extends LocationEvent {}
@@ -194,7 +195,7 @@ class LocationBloc extends Bloc<LocationEvent, LocationState> {
         }
         print('✅ Location services enabled');
         
-        await startTracking();
+        await startTracking(batterySaver: event.batterySaver);
         
         print('📍 Getting initial position...');
         final position = await getCurrentLocation();
@@ -208,7 +209,9 @@ class LocationBloc extends Bloc<LocationEvent, LocationState> {
         
         // Start listening to location stream
         print('📍 Starting location stream subscription...');
-        _locationSubscription = locationRepository.getLocationStream().listen(
+        _locationSubscription = locationRepository
+            .getLocationStream(batterySaver: event.batterySaver)
+            .listen(
           (position) {
             print('📍 LOCATION STREAM: Received position (${position.latitude}, ${position.longitude})');
             add(LocationUpdated(position));
@@ -266,19 +269,6 @@ class LocationBloc extends Bloc<LocationEvent, LocationState> {
     print('   📍 Input: (${event.position.latitude.toStringAsFixed(6)}, ${event.position.longitude.toStringAsFixed(6)})');
     print('   ⏱️  Timestamp: ${event.position.timestamp}');
     print('   📊 Current state: ${state.runtimeType}');
-    
-    // Auto-recover: If we're receiving location updates but not tracking, start tracking
-    if (state is LocationIdle) {
-      print('   ⚠️  WARNING: Receiving location updates in LocationIdle state!');
-      print('   🔄 AUTO-RECOVERY: Transitioning to LocationTracking state...');
-      emit(LocationTracking(
-        currentPosition: event.position,
-        routePoints: [event.position],
-        totalDistance: 0.0,
-      ));
-      print('   ✅ AUTO-RECOVERY: Now in LocationTracking state');
-      return;
-    }
     
     if (state is! LocationTracking) {
       print('   ❌ ABORT: State is not LocationTracking - STATE IS ${state.runtimeType}');

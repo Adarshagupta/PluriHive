@@ -1,0 +1,83 @@
+Lines 455-535 should be:
+
+          // Info when not connected or not available
+          if (!_isConnected) ...[
+            Divider(height: 1),
+            Padding(
+              padding: EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        (_isInstalled && _isAvailable)
+                            ? Icons.info_outline
+                            : Icons.warning_amber,
+                        size: 16,
+                        color: (_isInstalled && _isAvailable)
+                            ? Colors.grey.shade600
+                            : Colors.orange,
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          !_isInstalled
+                              ? 'Health Connect is not installed'
+                              : !_isAvailable
+                                  ? 'Health Connect needs setup'
+                                  : 'Sync your workouts with Health Connect',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: (_isInstalled && _isAvailable)
+                                ? Colors.grey.shade700
+                                : Colors.orange.shade800,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 12),
+                  Text(
+                    (_isInstalled && _isAvailable)
+                        ? '• Automatically sync steps, distance, and calories\n'
+                            '• View your fitness data across all apps\n'
+                            '• Keep your health data secure and private'
+                        : !_isInstalled
+                            ? '• Health Connect is required for fitness data sync\n'
+                                '• Download it from Google Play Store\n'
+                                '• Free and secure health data platform by Google'
+                            : '• Health Connect needs initial setup\n'
+                                '• Open the app and complete setup\n'
+                                '• Then return here to connect',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey.shade600,
+                      height: 1.5,
+                    ),
+                  ),
+                  if (!_isInstalled) ...[
+                    SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _showHealthConnectNotInstalledDialog,
+                        icon: Icon(Icons.download, size: 18),
+                        label: Text('Install Health Connect'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Color(0xFF4CAF50),
+                          side: BorderSide(color: Color(0xFF4CAF50)),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}

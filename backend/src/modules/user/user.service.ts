@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './user.entity';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateSettingsDto } from './dto/update-settings.dto';
 
 @Injectable()
 export class UserService {
@@ -17,11 +19,21 @@ export class UserService {
     });
   }
 
-  async updateProfile(userId: string, updates: Partial<User>): Promise<User> {
+  async updateProfile(userId: string, updates: UpdateProfileDto): Promise<User> {
     console.log('📝 updateProfile called for user:', userId);
     console.log('📝 Updates received:', JSON.stringify(updates, null, 2));
 
-    await this.userRepository.update(userId, updates);
+    const allowedUpdates: Partial<User> = {};
+    if (updates.name !== undefined) allowedUpdates.name = updates.name;
+    if (updates.weight !== undefined) allowedUpdates.weight = updates.weight;
+    if (updates.height !== undefined) allowedUpdates.height = updates.height;
+    if (updates.age !== undefined) allowedUpdates.age = updates.age;
+    if (updates.gender !== undefined) allowedUpdates.gender = updates.gender;
+    if (updates.profilePicture !== undefined) {
+      allowedUpdates.profilePicture = updates.profilePicture;
+    }
+
+    await this.userRepository.update(userId, allowedUpdates);
 
     const updatedUser = await this.findById(userId);
     console.log('✅ Profile updated. New values:', {
@@ -72,10 +84,99 @@ export class UserService {
     return this.userRepository.save(user);
   }
 
-  async updateSettings(userId: string, settings: any): Promise<User> {
+  async updateSettings(userId: string, settings: UpdateSettingsDto): Promise<User> {
     const user = await this.findById(userId);
     user.settings = { ...user.settings, ...settings };
     return this.userRepository.save(user);
+  }
+
+  async updateStreak(userId: string, activityDate: Date): Promise<void> {
+    const user = await this.findById(userId);
+
+    const today = this.toDateOnly(activityDate);
+    this.grantWeeklyFreezeIfNeeded(user, today);
+
+    if (!user.lastActiveDate) {
+      user.currentStreak = 1;
+      user.longestStreak = Math.max(user.longestStreak || 0, user.currentStreak);
+      user.lastActiveDate = today;
+      await this.userRepository.save(user);
+      return;
+    }
+
+    const lastActive = this.toDateOnly(new Date(user.lastActiveDate));
+    const daysSince = this.daysBetween(lastActive, today);
+
+    if (daysSince <= 0) {
+      // Same day or invalid ordering - nothing to do
+      return;
+    }
+
+    if (daysSince === 1) {
+      user.currentStreak = (user.currentStreak || 0) + 1;
+    } else if (daysSince === 2 && (user.streakFreezes || 0) > 0) {
+      user.streakFreezes = Math.max((user.streakFreezes || 0) - 1, 0);
+      user.currentStreak = (user.currentStreak || 0) + 1;
+    } else {
+      user.currentStreak = 1;
+    }
+
+    user.longestStreak = Math.max(user.longestStreak || 0, user.currentStreak);
+    user.lastActiveDate = today;
+
+    await this.userRepository.save(user);
+  }
+
+  private toDateOnly(date: Date): Date {
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  }
+
+  private daysBetween(start: Date, end: Date): number {
+    const msPerDay = 24 * 60 * 60 * 1000;
+    return Math.floor((end.getTime() - start.getTime()) / msPerDay);
+  }
+
+  private grantWeeklyFreezeIfNeeded(user: User, today: Date) {
+    const weekStart = this.getWeekStart(today);
+    const lastGrant = user.lastFreezeGrantDate
+      ? this.toDateOnly(new Date(user.lastFreezeGrantDate))
+      : null;
+
+    if (!lastGrant || lastGrant.getTime() < weekStart.getTime()) {
+      user.streakFreezes = Math.max(user.streakFreezes || 0, 1);
+      user.lastFreezeGrantDate = weekStart;
+    }
+  }
+
+  private getWeekStart(date: Date): Date {
+    const d = this.toDateOnly(date);
+    const day = d.getUTCDay(); // 0=Sun
+    const diff = (day + 6) % 7; // days since Monday
+    d.setUTCDate(d.getUTCDate() - diff);
+    return d;
+  }
+
+  sanitizeUser(user: User) {
+    // Ensure password is never serialized
+    const { password, ...safe } = user as User & { password?: string };
+    return safe;
+  }
+
+  async getPublicProfile(userId: string): Promise<Partial<User> | null> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: [
+        'id',
+        'name',
+        'profilePicture',
+        'level',
+        'totalPoints',
+        'totalDistanceKm',
+        'totalTerritoriesCaptured',
+        'totalWorkouts',
+      ],
+    });
+    return user || null;
   }
 
   async getUserStats(userId: string): Promise<{
@@ -87,6 +188,9 @@ export class UserService {
     level: number;
     totalCaloriesBurned: number;
     totalDurationSeconds: number;
+    currentStreak: number;
+    longestStreak: number;
+    streakFreezes: number;
   }> {
     const user = await this.findById(userId);
 
@@ -118,6 +222,9 @@ export class UserService {
       level: user.level,
       totalCaloriesBurned,
       totalDurationSeconds,
+      currentStreak: user.currentStreak || 0,
+      longestStreak: user.longestStreak || 0,
+      streakFreezes: user.streakFreezes || 0,
     };
   }
 }

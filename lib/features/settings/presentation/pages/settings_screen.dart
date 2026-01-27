@@ -2,14 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../../../../core/theme/app_theme.dart';
-import '../../../../core/widgets/common_app_bar.dart';
-import '../../../../core/widgets/patterned_background.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/pages/signin_screen.dart';
 import '../../../../core/services/api_config.dart';
 import '../../../../core/services/settings_api_service.dart';
 import '../../../../core/services/update_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
+import '../../../../core/widgets/skeleton.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -21,7 +20,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   String _selectedBackend = ApiConfig.localUrl;
   late final SettingsApiService _settingsService;
-  
+
   // Settings state
   String _units = 'metric';
   String _gpsAccuracy = 'high';
@@ -68,12 +67,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SnackBar(
           content: Text('Setting updated'),
           duration: Duration(seconds: 1),
+          backgroundColor: Colors.grey[800],
+          behavior: SnackBarBehavior.floating,
         ),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to update setting'),
+          backgroundColor: Colors.red[700],
+          behavior: SnackBarBehavior.floating,
         ),
       );
     }
@@ -91,11 +94,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _selectedBackend = newUrl;
     });
-    
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Backend changed to: ${newUrl == ApiConfig.localUrl ? "Local" : "Production"}'),
+          backgroundColor: Colors.grey[800],
+          behavior: SnackBarBehavior.floating,
         ),
       );
     }
@@ -104,253 +109,392 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return Scaffold(
-        body: PatternedBackground(
-          child: Center(
-            child: CircularProgressIndicator(),
-          ),
-        ),
-      );
+      return _buildSettingsSkeleton();
     }
 
-    return WillPopScope(
-      onWillPop: () async {
-        // Simply pop the current screen
-        Navigator.of(context).pop();
-        return false; // Prevent default back behavior
+    return BlocListener<AuthBloc, AuthState>(
+      listener: (context, state) {
+        if (state is Unauthenticated) {
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const SignInScreen()),
+            (route) => false,
+          );
+        }
       },
-      child: BlocListener<AuthBloc, AuthState>(
-        listener: (context, state) {
-          if (state is Unauthenticated) {
-            Navigator.of(context).pushAndRemoveUntil(
-              MaterialPageRoute(builder: (_) => const SignInScreen()),
-              (route) => false,
-            );
-          }
-        },
-        child: Scaffold(
-          body: PatternedBackground(
-          child: CustomScrollView(
-            slivers: [
-              CommonSliverAppBar(
-                title: 'Settings',
-                subtitle: 'Manage your preferences',
-                iconData: Icons.settings,
-                automaticallyImplyLeading: false,
-              ),
-              SliverList(
-                delegate: SliverChildListDelegate([
-                  const SizedBox(height: 8),
-          
-          // Account Section
-          _SectionHeader(title: 'Account'),
-          _SettingsTile(
-            icon: Icons.person,
-            title: 'Edit Profile',
-            onTap: () {},
-          ),
-          _SettingsTile(
-            icon: Icons.lock,
-            title: 'Change Password',
-            onTap: () {},
-          ),
-          _SettingsTile(
-            icon: Icons.privacy_tip,
-            title: 'Privacy',
-            onTap: () {},
-          ),
-          
-          const Divider(height: 32),
-          
-          // Activity Section
-          _SectionHeader(title: 'Activity'),
-          _SettingsTile(
-            icon: Icons.straighten,
-            title: 'Units',
-            subtitle: _units == 'metric' ? 'Metric (km, kg)' : 'Imperial (mi, lb)',
-            onTap: () => _showUnitsDialog(context),
-          ),
-          _SettingsTile(
-            icon: Icons.gps_fixed,
-            title: 'GPS Accuracy',
-            subtitle: _gpsAccuracy == 'high' ? 'High' : _gpsAccuracy == 'medium' ? 'Medium' : 'Low',
-            onTap: () => _showGpsAccuracyDialog(context),
-          ),
-          _SettingsTile(
-            icon: Icons.vibration,
-            title: 'Haptic Feedback',
-            trailing: Switch(
-              value: _hapticFeedback,
-              onChanged: (value) {
-                setState(() => _hapticFeedback = value);
-                _updateSetting('hapticFeedback', value);
-              },
+      child: Scaffold(
+        backgroundColor: Colors.grey[50],
+        appBar: AppBar(
+          title: Text(
+            'Settings',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[900],
             ),
           ),
-          
-          const Divider(height: 32),
-          
-          // Notifications Section
-          _SectionHeader(title: 'Notifications'),
-          _SettingsTile(
-            icon: Icons.notifications,
-            title: 'Push Notifications',
-            trailing: Switch(
-              value: _pushNotifications,
-              onChanged: (value) {
-                setState(() => _pushNotifications = value);
-                _updateSetting('pushNotifications', value);
-              },
-            ),
+          backgroundColor: Colors.white,
+          elevation: 0,
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: Colors.grey[800]),
+            onPressed: () => Navigator.of(context).pop(),
           ),
-          _SettingsTile(
-            icon: Icons.email,
-            title: 'Email Notifications',
-            trailing: Switch(
-              value: _emailNotifications,
-              onChanged: (value) {
-                setState(() => _emailNotifications = value);
-                _updateSetting('emailNotifications', value);
-              },
-            ),
+          bottom: PreferredSize(
+            preferredSize: Size.fromHeight(1),
+            child: Divider(height: 1, color: Colors.grey[200]),
           ),
-          _SettingsTile(
-            icon: Icons.local_fire_department,
-            title: 'Streak Reminders',
-            trailing: Switch(
-              value: _streakReminders,
-              onChanged: (value) {
-                setState(() => _streakReminders = value);
-                _updateSetting('streakReminders', value);
-              },
-            ),
-          ),
-          
-          const Divider(height: 32),
-          
-          // Developer Section
-          _SectionHeader(title: 'Developer'),
-          _SettingsTile(
-            icon: Icons.cloud,
-            title: 'Backend Server',
-            subtitle: _selectedBackend == ApiConfig.localUrl ? 'Local (10.1.80.11:3000)' : 'Production (Render)',
-            onTap: () => _showBackendDialog(context),
-          ),
-          
-          const Divider(height: 32),
-          
-          // App Section
-          _SectionHeader(title: 'App'),
-          _SettingsTile(
-            icon: Icons.dark_mode,
-            title: 'Dark Mode',
-            trailing: Switch(
-              value: _darkMode,
-              onChanged: (value) {
-                setState(() => _darkMode = value);
-                _updateSetting('darkMode', value);
-              },
-            ),
-          ),
-          _SettingsTile(
-            icon: Icons.language,
-            title: 'Language',
-            subtitle: _language,
-            onTap: () => _showLanguageDialog(context),
-          ),
-          _SettingsTile(
-            icon: Icons.download,
-            title: 'Download Maps',
-            onTap: () {},
-          ),
-          
-          const Divider(height: 32),
-          
-          // About Section
-          _SectionHeader(title: 'About'),
-          FutureBuilder<PackageInfo>(
-            future: PackageInfo.fromPlatform(),
-            builder: (context, snapshot) {
-              final version = snapshot.data?.version ?? '1.0.0';
-              final buildNumber = snapshot.data?.buildNumber ?? '1';
-              return _SettingsTile(
-                icon: Icons.info,
-                title: 'About App',
-                subtitle: 'Version $version ($buildNumber)',
-                onTap: () {},
-              );
-            },
-          ),
-          _SettingsTile(
-            icon: Icons.system_update,
-            title: 'Check for Updates',
-            onTap: () async {
-              showDialog(
-                context: context,
-                barrierDismissible: false,
-                builder: (context) => const Center(
-                  child: CircularProgressIndicator(),
+        ),
+        body: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          children: [
+            // Account Section
+            _buildSection(
+              title: 'Account',
+              children: [
+                _buildSettingsTile(
+                  icon: Icons.person_outline,
+                  title: 'Edit Profile',
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                  onTap: () {},
                 ),
-              );
-              
-              await UpdateService().checkForUpdate(
-                context,
-                showNoUpdateDialog: true,
-              );
-              
-              if (context.mounted) {
-                Navigator.of(context).pop();
-              }
-            },
-          ),
-          _SettingsTile(
-            icon: Icons.description,
-            title: 'Terms of Service',
-            onTap: () {},
-          ),
-          _SettingsTile(
-            icon: Icons.policy,
-            title: 'Privacy Policy',
-            onTap: () {},
-          ),
-          _SettingsTile(
-            icon: Icons.help,
-            title: 'Help & Support',
-            onTap: () {},
-          ),
-          
-          const SizedBox(height: 24),
-          
-          // Sign Out Button
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: ElevatedButton(
-              onPressed: () {
-                context.read<AuthBloc>().add(SignOut());
-              },
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 50),
-                shape: RoundedRectangleBorder(
+                _buildSettingsTile(
+                  icon: Icons.security_outlined,
+                  title: 'Privacy',
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                  onTap: () {},
+                ),
+              ],
+            ),
+
+            // Activity Section
+            _buildSection(
+              title: 'Activity',
+              children: [
+                _buildSettingsTile(
+                  icon: Icons.straighten_outlined,
+                  title: 'Units',
+                  subtitle: _units == 'metric' ? 'Kilometers, Celsius' : 'Miles, Fahrenheit',
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                  onTap: () => _showUnitsDialog(context),
+                ),
+                _buildSettingsTile(
+                  icon: Icons.gps_fixed_outlined,
+                  title: 'GPS Accuracy',
+                  subtitle: _gpsAccuracy.toUpperCase(),
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                  onTap: () => _showGpsAccuracyDialog(context),
+                ),
+                _buildSwitchTile(
+                  icon: Icons.vibration_outlined,
+                  title: 'Haptic Feedback',
+                  value: _hapticFeedback,
+                  onChanged: (value) {
+                    setState(() => _hapticFeedback = value);
+                    _updateSetting('hapticFeedback', value);
+                  },
+                ),
+              ],
+            ),
+
+            // Notifications Section
+            _buildSection(
+              title: 'Notifications',
+              children: [
+                _buildSwitchTile(
+                  icon: Icons.notifications_outlined,
+                  title: 'Push Notifications',
+                  value: _pushNotifications,
+                  onChanged: (value) {
+                    setState(() => _pushNotifications = value);
+                    _updateSetting('pushNotifications', value);
+                  },
+                ),
+                _buildSwitchTile(
+                  icon: Icons.email_outlined,
+                  title: 'Email Notifications',
+                  value: _emailNotifications,
+                  onChanged: (value) {
+                    setState(() => _emailNotifications = value);
+                    _updateSetting('emailNotifications', value);
+                  },
+                ),
+                _buildSwitchTile(
+                  icon: Icons.timeline_outlined,
+                  title: 'Streak Reminders',
+                  value: _streakReminders,
+                  onChanged: (value) {
+                    setState(() => _streakReminders = value);
+                    _updateSetting('streakReminders', value);
+                  },
+                ),
+              ],
+            ),
+
+            // Developer Section
+            _buildSection(
+              title: 'Developer',
+              children: [
+                _buildSettingsTile(
+                  icon: Icons.developer_mode_outlined,
+                  title: 'Backend Server',
+                  subtitle: _selectedBackend == ApiConfig.localUrl ? 'Local Development' : 'Production',
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                  onTap: () => _showBackendDialog(context),
+                ),
+              ],
+            ),
+
+            // App Section
+            _buildSection(
+              title: 'App',
+              children: [
+                _buildSettingsTile(
+                  icon: Icons.language_outlined,
+                  title: 'Language',
+                  subtitle: _language,
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                  onTap: () => _showLanguageDialog(context),
+                ),
+                FutureBuilder<PackageInfo>(
+                  future: PackageInfo.fromPlatform(),
+                  builder: (context, snapshot) {
+                    return _buildSettingsTile(
+                      icon: Icons.system_update_outlined,
+                      title: 'Check for Updates',
+                      subtitle: snapshot.hasData ? 'Version ${snapshot.data!.version}' : 'Loading...',
+                      trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                      onTap: () async {
+                        showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (context) => Center(
+                            child: Card(
+                              child: Padding(
+                                padding: EdgeInsets.all(20),
+                                child: CircularProgressIndicator(color: Colors.grey[600]),
+                              ),
+                            ),
+                          ),
+                        );
+
+                        await UpdateService().checkForUpdate(
+                          context,
+                          showNoUpdateDialog: true,
+                        );
+
+                        if (context.mounted) {
+                          Navigator.of(context).pop();
+                        }
+                      },
+                    );
+                  },
+                ),
+                _buildSettingsTile(
+                  icon: Icons.storage_outlined,
+                  title: 'Storage & Cache',
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                  onTap: () {},
+                ),
+                _buildSettingsTile(
+                  icon: Icons.help_outline,
+                  title: 'Help & Support',
+                  trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+                  onTap: () {},
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 24),
+
+            // Sign Out Button
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red[200]!),
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () {
+                      context.read<AuthBloc>().add(SignOut());
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.logout, color: Colors.red[600], size: 20),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Sign Out',
+                            style: TextStyle(
+                              color: Colors.red[600],
+                              fontWeight: FontWeight.w500,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ),
-              child: const Text(
-                'Sign Out',
+            ),
+
+            const SizedBox(height: 40),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSection({required String title, required List<Widget> children}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+          child: Text(
+            title.toUpperCase(),
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[600],
+              letterSpacing: 0.5,
+            ),
+          ),
+        ),
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey[200]!),
+          ),
+          child: Column(
+            children: _buildChildrenWithDividers(children),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildChildrenWithDividers(List<Widget> children) {
+    if (children.isEmpty) return [];
+
+    List<Widget> result = [children.first];
+
+    for (int i = 1; i < children.length; i++) {
+      result.add(Divider(height: 1, color: Colors.grey[100], indent: 56));
+      result.add(children[i]);
+    }
+
+    return result;
+  }
+
+  Widget _buildSettingsTile({
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    Widget? trailing,
+    VoidCallback? onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, size: 18, color: Colors.grey[700]),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.grey[900],
+                      ),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (trailing != null) trailing,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSwitchTile({
+    required IconData icon,
+    required String title,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, size: 18, color: Colors.grey[700]),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                title,
                 style: TextStyle(
                   fontSize: 16,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey[900],
                 ),
               ),
             ),
-          ),
-          
-          const SizedBox(height: 40),
-              ]),
+            Switch(
+              value: value,
+              onChanged: onChanged,
+              activeColor: Colors.grey[800],
+              inactiveThumbColor: Colors.grey[300],
+              inactiveTrackColor: Colors.grey[200],
             ),
           ],
         ),
-        ),
-      ),
       ),
     );
   }
@@ -358,305 +502,293 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _showBackendDialog(BuildContext context) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Select Backend Server'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            RadioListTile<String>(
-              title: const Text('Local Development'),
-              subtitle: const Text('http://10.1.80.11:3000'),
-              value: ApiConfig.localUrl,
-              groupValue: _selectedBackend,
-              onChanged: (value) {
-                if (value != null) {
-                  Navigator.pop(context);
-                  _changeBackend(value);
-                }
-              },
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(
+            'Select Backend',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[900],
             ),
-            RadioListTile<String>(
-              title: const Text('Production (Render)'),
-              subtitle: const Text('https://plurihubb.onrender.com'),
-              value: ApiConfig.productionUrl,
-              groupValue: _selectedBackend,
-              onChanged: (value) {
-                if (value != null) {
-                  Navigator.pop(context);
-                  _changeBackend(value);
-                }
-              },
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              RadioListTile<String>(
+                title: Text('Local Development', style: TextStyle(color: Colors.grey[900])),
+                subtitle: Text('10.1.80.11:3000', style: TextStyle(color: Colors.grey[600])),
+                value: ApiConfig.localUrl,
+                groupValue: _selectedBackend,
+                onChanged: (value) {
+                  if (value != null) {
+                    _changeBackend(value);
+                    Navigator.of(context).pop();
+                  }
+                },
+                activeColor: Colors.grey[800],
+              ),
+              RadioListTile<String>(
+                title: Text('Production', style: TextStyle(color: Colors.grey[900])),
+                subtitle: Text('Render Deployment', style: TextStyle(color: Colors.grey[600])),
+                value: ApiConfig.productionUrl,
+                groupValue: _selectedBackend,
+                onChanged: (value) {
+                  if (value != null) {
+                    _changeBackend(value);
+                    Navigator.of(context).pop();
+                  }
+                },
+                activeColor: Colors.grey[800],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
             ),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
 
   void _showUnitsDialog(BuildContext context) {
-    showModalBottomSheet(
+    showDialog(
       context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(
+            'Units',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[900],
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              RadioListTile<String>(
+                title: Text('Metric', style: TextStyle(color: Colors.grey[900])),
+                subtitle: Text('Kilometers, Celsius', style: TextStyle(color: Colors.grey[600])),
+                value: 'metric',
+                groupValue: _units,
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _units = value);
+                    _updateSetting('units', value);
+                    Navigator.of(context).pop();
+                  }
+                },
+                activeColor: Colors.grey[800],
               ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Select Units',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
+              RadioListTile<String>(
+                title: Text('Imperial', style: TextStyle(color: Colors.grey[900])),
+                subtitle: Text('Miles, Fahrenheit', style: TextStyle(color: Colors.grey[600])),
+                value: 'imperial',
+                groupValue: _units,
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _units = value);
+                    _updateSetting('units', value);
+                    Navigator.of(context).pop();
+                  }
+                },
+                activeColor: Colors.grey[800],
               ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
             ),
-            const SizedBox(height: 8),
-            RadioListTile<String>(
-              title: const Text('Metric'),
-              subtitle: const Text('Kilometers, Kilograms'),
-              value: 'metric',
-              groupValue: _units,
-              onChanged: (value) {
-                if (value != null) {
-                  Navigator.pop(context);
-                  setState(() => _units = value);
-                  _updateSetting('units', value);
-                }
-              },
-            ),
-            RadioListTile<String>(
-              title: const Text('Imperial'),
-              subtitle: const Text('Miles, Pounds'),
-              value: 'imperial',
-              groupValue: _units,
-              onChanged: (value) {
-                if (value != null) {
-                  Navigator.pop(context);
-                  setState(() => _units = value);
-                  _updateSetting('units', value);
-                }
-              },
-            ),
-            const SizedBox(height: 16),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
 
   void _showGpsAccuracyDialog(BuildContext context) {
-    showModalBottomSheet(
+    showDialog(
       context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(
+            'GPS Accuracy',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[900],
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              RadioListTile<String>(
+                title: Text('High', style: TextStyle(color: Colors.grey[900])),
+                subtitle: Text('Best accuracy, higher battery usage', style: TextStyle(color: Colors.grey[600])),
+                value: 'high',
+                groupValue: _gpsAccuracy,
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _gpsAccuracy = value);
+                    _updateSetting('gpsAccuracy', value);
+                    Navigator.of(context).pop();
+                  }
+                },
+                activeColor: Colors.grey[800],
               ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'GPS Accuracy',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
+              RadioListTile<String>(
+                title: Text('Medium', style: TextStyle(color: Colors.grey[900])),
+                subtitle: Text('Balanced accuracy and battery', style: TextStyle(color: Colors.grey[600])),
+                value: 'medium',
+                groupValue: _gpsAccuracy,
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _gpsAccuracy = value);
+                    _updateSetting('gpsAccuracy', value);
+                    Navigator.of(context).pop();
+                  }
+                },
+                activeColor: Colors.grey[800],
               ),
+              RadioListTile<String>(
+                title: Text('Low', style: TextStyle(color: Colors.grey[900])),
+                subtitle: Text('Lower accuracy, better battery life', style: TextStyle(color: Colors.grey[600])),
+                value: 'low',
+                groupValue: _gpsAccuracy,
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _gpsAccuracy = value);
+                    _updateSetting('gpsAccuracy', value);
+                    Navigator.of(context).pop();
+                  }
+                },
+                activeColor: Colors.grey[800],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cancel', style: TextStyle(color: Colors.grey[600])),
             ),
-            const SizedBox(height: 8),
-            RadioListTile<String>(
-              title: const Text('High'),
-              subtitle: const Text('Best accuracy, more battery usage'),
-              value: 'high',
-              groupValue: _gpsAccuracy,
-              onChanged: (value) {
-                if (value != null) {
-                  Navigator.pop(context);
-                  setState(() => _gpsAccuracy = value);
-                  _updateSetting('gpsAccuracy', value);
-                }
-              },
-            ),
-            RadioListTile<String>(
-              title: const Text('Medium'),
-              subtitle: const Text('Balanced accuracy and battery'),
-              value: 'medium',
-              groupValue: _gpsAccuracy,
-              onChanged: (value) {
-                if (value != null) {
-                  Navigator.pop(context);
-                  setState(() => _gpsAccuracy = value);
-                  _updateSetting('gpsAccuracy', value);
-                }
-              },
-            ),
-            RadioListTile<String>(
-              title: const Text('Low'),
-              subtitle: const Text('Lower accuracy, saves battery'),
-              value: 'low',
-              groupValue: _gpsAccuracy,
-              onChanged: (value) {
-                if (value != null) {
-                  Navigator.pop(context);
-                  setState(() => _gpsAccuracy = value);
-                  _updateSetting('gpsAccuracy', value);
-                }
-              },
-            ),
-            const SizedBox(height: 16),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
 
   void _showLanguageDialog(BuildContext context) {
     final languages = ['English', 'Spanish', 'French', 'German', 'Italian', 'Portuguese', 'Japanese', 'Korean', 'Chinese'];
-    
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) => Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
+      builder: (context) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Select Language',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Select Language',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey[900],
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            Flexible(
-              child: ListView.builder(
-                shrinkWrap: true,
-                itemCount: languages.length,
-                itemBuilder: (context, index) {
-                  final language = languages[index];
-                  return RadioListTile<String>(
-                    title: Text(language),
-                    value: language,
-                    groupValue: _language,
-                    onChanged: (value) {
-                      if (value != null) {
-                        Navigator.pop(context);
-                        setState(() => _language = value);
-                        _updateSetting('language', value);
-                      }
-                    },
-                  );
-                },
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: languages.length,
+                  itemBuilder: (context, index) {
+                    final language = languages[index];
+                    return ListTile(
+                      title: Text(
+                        language,
+                        style: TextStyle(color: Colors.grey[900]),
+                      ),
+                      trailing: _language == language
+                          ? Icon(Icons.check, color: Colors.grey[800])
+                          : null,
+                      onTap: () {
+                        setState(() => _language = language);
+                        _updateSetting('language', language);
+                        Navigator.of(context).pop();
+                      },
+                    );
+                  },
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
+              SizedBox(height: MediaQuery.of(context).padding.bottom),
+            ],
+          ),
+        );
+      },
     );
   }
-}
 
-class _SectionHeader extends StatelessWidget {
-  final String title;
-  
-  const _SectionHeader({required this.title});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      child: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-          color: AppTheme.textSecondary,
-          letterSpacing: 0.5,
-        ),
-      ),
-    );
-  }
-}
-
-class _SettingsTile extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String? subtitle;
-  final Widget? trailing;
-  final VoidCallback? onTap;
-  
-  const _SettingsTile({
-    required this.icon,
-    required this.title,
-    this.subtitle,
-    this.trailing,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: Icon(icon, color: AppTheme.textPrimary),
-      title: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.w500,
-          color: AppTheme.textPrimary,
-        ),
-      ),
-      subtitle: subtitle != null
-          ? Text(
-              subtitle!,
-              style: TextStyle(
-                fontSize: 13,
-                color: AppTheme.textSecondary,
+  Widget _buildSettingsSkeleton() {
+    return Scaffold(
+      backgroundColor: Colors.grey[50],
+      body: SafeArea(
+        child: SkeletonShimmer(
+          child: ListView(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+            children: [
+              const SkeletonLine(width: 140, height: 20),
+              const SizedBox(height: 24),
+              SkeletonBox(
+                height: 160,
+                borderRadius: BorderRadius.circular(12),
               ),
-            )
-          : null,
-      trailing: trailing ?? (onTap != null ? const Icon(Icons.chevron_right) : null),
-      onTap: onTap,
+              const SizedBox(height: 16),
+              SkeletonBox(
+                height: 200,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              const SizedBox(height: 16),
+              SkeletonBox(
+                height: 200,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              const SizedBox(height: 16),
+              SkeletonBox(
+                height: 140,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              const SizedBox(height: 24),
+              SkeletonBox(
+                height: 56,
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

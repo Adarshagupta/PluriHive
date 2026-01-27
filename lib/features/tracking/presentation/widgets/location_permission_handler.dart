@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import '../../../../core/widgets/skeleton.dart';
 
 class LocationPermissionHandler extends StatefulWidget {
   final Widget child;
@@ -81,49 +82,31 @@ class _LocationPermissionHandlerState extends State<LocationPermissionHandler> {
       return Scaffold(
         backgroundColor: const Color(0xFFF5F5F5),
         body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.04),
-                      blurRadius: 12,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: const Column(
-                  children: [
-                    CircularProgressIndicator(
-                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7FE87A)),
-                    ),
-                    SizedBox(height: 24),
-                    Text(
-                      'Requesting Location Permission',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF111827),
-                      ),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      'Please allow location access to use Plurihive',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Color(0xFF6B7280),
-                      ),
-                    ),
-                  ],
-                ),
+          child: SkeletonShimmer(
+            child: Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.04),
+                    blurRadius: 12,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
               ),
-            ],
+              child: const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SkeletonCircle(size: 40),
+                  SizedBox(height: 20),
+                  SkeletonLine(height: 14, width: 200),
+                  SizedBox(height: 12),
+                  SkeletonLine(height: 12, width: 240),
+                ],
+              ),
+            ),
           ),
         ),
       );

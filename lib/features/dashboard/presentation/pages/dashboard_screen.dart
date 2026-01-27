@@ -6,6 +6,7 @@ import '../../../../core/theme/app_constants.dart';
 import '../../../../core/widgets/common_app_bar.dart';
 import '../../../../core/widgets/common_card.dart';
 import '../../../../core/widgets/patterned_background.dart';
+import '../../../../core/widgets/skeleton.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
 
 class DashboardScreen extends StatelessWidget {
@@ -21,7 +22,7 @@ class DashboardScreen extends StatelessWidget {
         child: BlocBuilder<GameBloc, GameState>(
           builder: (context, state) {
           if (state is! GameLoaded) {
-            return const Center(child: CircularProgressIndicator());
+            return _buildDashboardSkeleton();
           }
           
           final stats = state.stats;
@@ -348,5 +349,103 @@ class DashboardScreen extends StatelessWidget {
       return '${(number / 1000).toStringAsFixed(1)}K';
     }
     return number.toString();
+  }
+
+  Widget _buildDashboardSkeleton() {
+    return SkeletonShimmer(
+      child: ListView(
+        padding: const EdgeInsets.all(AppConstants.spacingLg),
+        children: [
+          SkeletonBox(
+            height: 140,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          const SizedBox(height: AppConstants.spacingLg),
+          const SkeletonLine(height: 16, width: 120),
+          const SizedBox(height: AppConstants.spacingMd),
+          Row(
+            children: [
+              Expanded(
+                child: SkeletonBox(
+                  height: 110,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: SkeletonBox(
+                  height: 110,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: SkeletonBox(
+                  height: 110,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: SkeletonBox(
+                  height: 110,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: SkeletonBox(
+                  height: 110,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: SkeletonBox(
+                  height: 110,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          const SkeletonLine(height: 16, width: 110),
+          const SizedBox(height: 16),
+          SkeletonBox(
+            height: 90,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          const SizedBox(height: 24),
+          const SkeletonLine(height: 16, width: 120),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: SkeletonBox(
+                  height: 80,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: SkeletonBox(
+                  height: 80,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
   }
 }

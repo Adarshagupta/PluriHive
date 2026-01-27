@@ -5,7 +5,7 @@ class StartTracking {
   
   StartTracking(this.repository);
   
-  Future<void> call() {
-    return repository.startTracking();
+  Future<void> call({bool batterySaver = false}) {
+    return repository.startTracking(batterySaver: batterySaver);
   }
 }

@@ -89,11 +89,11 @@ class TerritoryApiService {
   }
 
   // Get All Territories (for universal map display)
-  Future<List<Map<String, dynamic>>> getAllTerritories() async {
+  Future<List<Map<String, dynamic>>> getAllTerritories({int limit = 500}) async {
     try {
       final response = await _client
           .get(
-            Uri.parse('${ApiConfig.baseUrl}/territories/all'),
+            Uri.parse('${ApiConfig.baseUrl}/territories/all?limit=$limit'),
             headers: {
               'Content-Type': 'application/json',
             },
@@ -138,6 +138,29 @@ class TerritoryApiService {
       }
     } catch (e) {
       throw Exception('Get nearby territories error: $e');
+    }
+  }
+
+  // Get Weekly Boss Territories
+  Future<List<Map<String, dynamic>>> getBossTerritories({int limit = 3}) async {
+    try {
+      final response = await _client
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/territories/boss?limit=$limit'),
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          )
+          .timeout(ApiConfig.defaultTimeout);
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      } else {
+        throw Exception('Failed to get boss territories');
+      }
+    } catch (e) {
+      throw Exception('Get boss territories error: $e');
     }
   }
 }

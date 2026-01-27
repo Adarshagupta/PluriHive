@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
+import { randomUUID } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { OAuth2Client } from 'google-auth-library';
 import { User } from '../user/user.entity';
@@ -34,6 +35,7 @@ export class AuthService {
 
     // Create user
     const user = this.userRepository.create({
+      id: randomUUID(),
       email,
       password: hashedPassword,
       name,
@@ -55,7 +57,11 @@ export class AuthService {
     const { email, password } = signInDto;
 
     // Find user
-    const user = await this.userRepository.findOne({ where: { email } });
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.password')
+      .where('user.email = :email', { email })
+      .getOne();
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }
@@ -98,6 +104,7 @@ export class AuthService {
       if (!user) {
         // Create new user with Google account
         user = this.userRepository.create({
+          id: randomUUID(),
           email,
           name: name || email.split('@')[0],
           profilePicture: picture,

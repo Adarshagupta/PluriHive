@@ -15,10 +15,15 @@ import '../../../../core/services/motion_detection_service.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/services/territory_api_service.dart';
 import '../../../../core/services/auth_api_service.dart';
+import '../../../../core/services/route_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/utils/picture_in_picture.dart';
 import '../../../../core/algorithms/geospatial_algorithms.dart';
+import '../../../../core/widgets/skeleton.dart';
+import '../../../../core/services/pip_service.dart';
+import '../../../../core/navigation/app_route_observer.dart';
 import '../../../tracking/domain/entities/activity.dart';
+import '../../../tracking/domain/entities/position.dart';
 import '../../../tracking/data/datasources/activity_local_data_source.dart';
 import '../bloc/location_bloc.dart';
 import '../../../territory/presentation/bloc/territory_bloc.dart';
@@ -40,11 +45,17 @@ class MapScreen extends StatefulWidget {
 
 enum TrackingState { stopped, started, paused }
 
-class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
+class _MapScreenState extends State<MapScreen>
+    with TickerProviderStateMixin, RouteAware {
+  final PipService _pipService = PipService();
   final Set<Polygon> _polygons = {};
   final Set<Polyline> _polylines = {};
   final Set<Marker> _territoryMarkers = {};
-  final Map<String, Map<String, dynamic>> _activityData = {}; // Store activity data by polylineId
+  final Map<String, Map<String, dynamic>> _activityData =
+      {}; // Store activity data by polylineId
+  final Set<Circle> _heatmapCircles = {};
+  bool _showHeatmap = false;
+  List<Map<String, dynamic>> _activityHistory = [];
   late AnimationController _animController;
   late AnimationController _buttonAnimController;
   GoogleMapController? _mapController;
@@ -53,8 +64,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   double _currentSpeed = 0.0; // km/h
   DateTime? _lastSpeedUpdate;
   final Set<String> _capturedHexIds = {};
-  List<LatLng> _territoryRoutePoints = []; // Actual route points for territory shape
-  Map<String, Map<String, dynamic>> _territoryData = {}; // Store territory info by hexId
+  List<LatLng> _territoryRoutePoints =
+      []; // Actual route points for territory shape
+  Map<String, Map<String, dynamic>> _territoryData =
+      {}; // Store territory info by hexId
   double _lastDistanceUpdate = 0.0;
   double _lastNotificationDistance =
       0.0; // Track distance for notification updates
@@ -100,6 +113,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   // Simulation mode toggle
   bool _useSimulation = false;
+  bool _batterySaverEnabled = false;
+  bool _showAdvancedControls = false;
+  bool _isPlanningRoute = false;
+  List<LatLng> _plannedRoutePoints = [];
+  List<SavedRoute> _savedRoutes = [];
+  List<SavedRoute> _popularRoutes = [];
+  bool _isLoadingSavedRoutes = false;
+  bool _isLoadingPopularRoutes = false;
+  SavedRoute? _selectedRoute;
+  double? _goalDistanceKm;
+  double? _goalAreaSqMeters;
   double _holdProgress = 0.0;
   Timer? _holdTimer;
   static const Duration _holdDuration = Duration(seconds: 5);
@@ -133,6 +157,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     // DISABLED: Don't load individual hex territories - they're just for backend tracking
     // Load all territories to show on map (visible to all users)
     _loadTerritoriesFromBackend();
+    _loadBossTerritoriesFromBackend();
 
     // Get initial location
     // IMPORTANT: Stop any previous tracking session first
@@ -141,12 +166,31 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     context.read<TerritoryBloc>().add(LoadTerritories());
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      appRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPushNext() {
+    _pipService.disablePip();
+  }
+
+  @override
+  void didPopNext() {
+    _pipService.enablePipForScreen('map');
+  }
+
   // Load all territories from backend to show on map (visible to all users)
   Future<void> _loadTerritoriesFromBackend() async {
     try {
       final territoryApiService = di.getIt<TerritoryApiService>();
       final territories = await territoryApiService.getAllTerritories();
-      
+
       // Get current user ID to differentiate ownership
       final authService = di.getIt<AuthApiService>();
       final currentUserId = await authService.getUserId();
@@ -161,13 +205,15 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           uniqueTerritories[hexId] = territory;
         }
       }
-      
+
       final displayTerritories = uniqueTerritories.values.toList();
-      print('🗺️ Filtered ${territories.length} territories down to ${displayTerritories.length} unique hexes');
+      print(
+          '🗺️ Filtered ${territories.length} territories down to ${displayTerritories.length} unique hexes');
 
       setState(() {
         // Remove only territory polygons, keep activity polygons
-        _polygons.removeWhere((polygon) => polygon.polygonId.value.startsWith('territory_'));
+        _polygons.removeWhere(
+            (polygon) => polygon.polygonId.value.startsWith('territory_'));
         _territoryMarkers.clear(); // Remove all markers
         _territoryData.clear(); // Clear old territory data (not activity data)
 
@@ -181,24 +227,28 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               : (territory['longitude'] as num).toDouble();
 
           final ownerId = territory['ownerId'];
-          
+
           // Different colors for own vs other territories
           final bool isOwnTerritory = ownerId == currentUserId;
-          final territoryColor = isOwnTerritory 
+          final territoryColor = isOwnTerritory
               ? Color(0xFF4CAF50) // Green for own territories
               : Color(0xFFFF5722); // Red/Orange for others' territories
 
           // Check if territory has actual route points
           final routePoints = territory['routePoints'] as List?;
-          
+
           if (routePoints != null && routePoints.isNotEmpty) {
             // Display the actual route shape as a polygon
             final polygonPoints = routePoints.map((p) {
-              final pointLat = p['lat'] is String ? double.parse(p['lat']) : (p['lat'] as num).toDouble();
-              final pointLng = p['lng'] is String ? double.parse(p['lng']) : (p['lng'] as num).toDouble();
+              final pointLat = p['lat'] is String
+                  ? double.parse(p['lat'])
+                  : (p['lat'] as num).toDouble();
+              final pointLng = p['lng'] is String
+                  ? double.parse(p['lng'])
+                  : (p['lng'] as num).toDouble();
               return LatLng(pointLat, pointLng);
             }).toList();
-            
+
             _polygons.add(
               Polygon(
                 polygonId: PolygonId('territory_${territory['hexId']}'),
@@ -208,8 +258,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 strokeWidth: 3,
               ),
             );
-            
-            
+
             // Store territory data for tap handling
             _territoryData[territory['hexId']] = {
               'polygonPoints': polygonPoints,
@@ -218,11 +267,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               'captureCount': territory['captureCount'] ?? 1,
               'isOwn': isOwnTerritory,
               'points': territory['points'],
-              'capturedAt': territory['capturedAt'] != null 
-                  ? DateTime.parse(territory['capturedAt']) 
+              'capturedAt': territory['capturedAt'] != null
+                  ? DateTime.parse(territory['capturedAt'])
                   : null,
-              'lastBattleAt': territory['lastBattleAt'] != null 
-                  ? DateTime.parse(territory['lastBattleAt']) 
+              'lastBattleAt': territory['lastBattleAt'] != null
+                  ? DateTime.parse(territory['lastBattleAt'])
                   : null,
               'areaSqMeters': _calculatePolygonArea(polygonPoints),
             };
@@ -240,7 +289,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 strokeWidth: 2,
               ),
             );
-            
+
             // Store territory data for tap handling
             _territoryData[territory['hexId']] = {
               'polygonPoints': circlePoints,
@@ -249,11 +298,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               'captureCount': territory['captureCount'] ?? 1,
               'isOwn': isOwnTerritory,
               'points': territory['points'],
-              'capturedAt': territory['capturedAt'] != null 
-                  ? DateTime.parse(territory['capturedAt']) 
+              'capturedAt': territory['capturedAt'] != null
+                  ? DateTime.parse(territory['capturedAt'])
                   : null,
-              'lastBattleAt': territory['lastBattleAt'] != null 
-                  ? DateTime.parse(territory['lastBattleAt']) 
+              'lastBattleAt': territory['lastBattleAt'] != null
+                  ? DateTime.parse(territory['lastBattleAt'])
                   : null,
               'areaSqMeters': _calculatePolygonArea(circlePoints),
             };
@@ -279,7 +328,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       final hexId = entry.key;
       final data = entry.value;
       final polygonPoints = data['polygonPoints'] as List<LatLng>;
-      
+
       // Check if tap is inside this polygon
       if (_isPointInPolygon(tapPosition, polygonPoints)) {
         _showTerritoryInfo(
@@ -290,6 +339,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           capturedAt: data['capturedAt'],
           lastBattleAt: data['lastBattleAt'],
           areaSqMeters: data['areaSqMeters'],
+          isBoss: data['isBoss'] == true,
+          bossRewardPoints: data['bossRewardPoints'],
         );
         break;
       }
@@ -302,7 +353,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     for (int i = 0; i < polygon.length; i++) {
       final vertex1 = polygon[i];
       final vertex2 = polygon[(i + 1) % polygon.length];
-      
+
       if (_rayCastIntersect(point, vertex1, vertex2)) {
         intersectCount++;
       }
@@ -317,7 +368,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     final v1y = vertex1.latitude;
     final v2x = vertex2.longitude;
     final v2y = vertex2.latitude;
-    
+
     if ((v1y > py) != (v2y > py)) {
       final intersectX = (v2x - v1x) * (py - v1y) / (v2y - v1y) + v1x;
       if (px < intersectX) {
@@ -336,6 +387,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     DateTime? capturedAt,
     DateTime? lastBattleAt,
     double? areaSqMeters,
+    bool isBoss = false,
+    int? bossRewardPoints,
   }) {
     showDialog(
       context: context,
@@ -361,6 +414,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (isBoss) ...[
+                _buildDetailRow(
+                  icon: Icons.emoji_events,
+                  label: 'Boss',
+                  value: bossRewardPoints != null
+                      ? '$bossRewardPoints pts reward'
+                      : 'Weekly boss territory',
+                  color: Colors.amber,
+                ),
+                SizedBox(height: 12),
+              ],
               // Owner
               _buildDetailRow(
                 icon: Icons.person_outline,
@@ -369,7 +433,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 color: isOwn ? Colors.green : Colors.orange,
               ),
               SizedBox(height: 12),
-              
+
               // Captures
               _buildDetailRow(
                 icon: Icons.flag_outlined,
@@ -378,7 +442,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 color: Colors.blue,
               ),
               SizedBox(height: 12),
-              
+
               // Points
               if (points != null) ...[
                 _buildDetailRow(
@@ -389,7 +453,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 ),
                 SizedBox(height: 12),
               ],
-              
+
               // Area
               if (areaSqMeters != null) ...[
                 _buildDetailRow(
@@ -402,7 +466,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 ),
                 SizedBox(height: 12),
               ],
-              
+
               // Captured Date
               if (capturedAt != null) ...[
                 _buildDetailRow(
@@ -413,7 +477,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 ),
                 SizedBox(height: 12),
               ],
-              
+
               // Last Battle
               if (lastBattleAt != null) ...[
                 _buildDetailRow(
@@ -433,7 +497,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text('Start tracking to challenge this territory!'),
+                    content:
+                        Text('Start tracking to challenge this territory!'),
                     backgroundColor: Colors.orange,
                   ),
                 );
@@ -450,7 +515,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       ),
     );
   }
-
 
   Widget _buildDetailRow({
     required IconData icon,
@@ -479,7 +543,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   String _formatDate(DateTime date) {
     final now = DateTime.now();
     final difference = now.difference(date);
-    
+
     if (difference.inDays == 0) {
       if (difference.inHours == 0) {
         return '${difference.inMinutes} min ago';
@@ -523,21 +587,30 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     try {
       print('📂 Loading saved captured areas from backend...');
       final trackingApiService = di.getIt<TrackingApiService>();
-      final activitiesData = await trackingApiService.getUserActivities(limit: 50);
-      
+      final activitiesData =
+          await trackingApiService.getUserActivities(limit: 50);
+
       print('📦 Received ${activitiesData.length} activities from backend');
+
+      _activityHistory = activitiesData;
+      if (_showHeatmap) {
+        _buildHeatmapCircles();
+      }
 
       int loadedCount = 0;
       setState(() {
         // Remove only activity polygons and polylines, keep territory polygons
-        _polygons.removeWhere((polygon) => polygon.polygonId.value.startsWith('saved_area_'));
+        _polygons.removeWhere(
+            (polygon) => polygon.polygonId.value.startsWith('saved_area_'));
         _polylines.clear();
-        
+
         // Clear only activity-related markers (not territory markers)
-        _territoryMarkers.removeWhere((marker) => marker.markerId.value.startsWith('label_'));
-        
+        _territoryMarkers.removeWhere(
+            (marker) => marker.markerId.value.startsWith('label_'));
+
         // Clear only activity data, keep territory data
-        _activityData.removeWhere((key, value) => key.startsWith('saved_area_') || key.startsWith('saved_route_'));
+        _activityData.removeWhere((key, value) =>
+            key.startsWith('saved_area_') || key.startsWith('saved_route_'));
 
         // Load each activity's captured area (only those with territories captured)
         for (int i = 0; i < activitiesData.length; i++) {
@@ -546,20 +619,23 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           if (activityData.containsKey('user')) {
             final userData = activityData['user'];
             print('👤 User data found: $userData');
-            print('   - Name: ${userData is Map ? userData['name'] : 'not a map'}');
-            print('   - Email: ${userData is Map ? userData['email'] : 'not a map'}');
+            print(
+                '   - Name: ${userData is Map ? userData['name'] : 'not a map'}');
+            print(
+                '   - Email: ${userData is Map ? userData['email'] : 'not a map'}');
           } else {
             print('❌ No user data in activity');
           }
           final territoriesCaptured = activityData['territoriesCaptured'] ?? 0;
-          
+
           // Only render activities that captured territories
           if (territoriesCaptured > 0) {
             final routeData = activityData['routePoints'] as List<dynamic>?;
             if (routeData != null && routeData.length >= 3) {
               // Convert route points to LatLng
               final routePoints = routeData
-                  .map((p) => LatLng(p['latitude'] as double, p['longitude'] as double))
+                  .map((p) =>
+                      LatLng(p['latitude'] as double, p['longitude'] as double))
                   .toList();
 
               // Add filled area polygon matching the walked path
@@ -569,7 +645,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 Polygon(
                   polygonId: PolygonId(polygonId),
                   points: routePoints,
-                  fillColor: Color(0xFF4CAF50).withOpacity(0.3), // Green for captured territory
+                  fillColor: Color(0xFF4CAF50)
+                      .withOpacity(0.3), // Green for captured territory
                   strokeColor: Color(0xFF2E7D32),
                   strokeWidth: 2,
                   consumeTapEvents: true,
@@ -604,9 +681,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 _territoryMarkers.add(
                   Marker(
                     markerId: MarkerId('label_${activityData['id']}'),
-                    position: LatLng(
-                        sumLat / routePoints.length, sumLng / routePoints.length),
-                    icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+                    position: LatLng(sumLat / routePoints.length,
+                        sumLng / routePoints.length),
+                    icon: BitmapDescriptor.defaultMarkerWithHue(
+                        BitmapDescriptor.hueBlue),
                   ),
                 );
               }
@@ -692,6 +770,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
     _stepCountStream?.cancel();
     _motionDetection.stopDetection(); // Stop advanced motion detection
     _animController.dispose();
@@ -797,9 +876,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                       polygons: _polygons,
                       polylines: _polylines,
                       markers: _territoryMarkers,
-                      circles: _startPointCircle != null
-                          ? {_startPointCircle!}
-                          : {}, // Show start point marker
+                      circles: _getMapCircles(),
                       onMapCreated: (controller) {
                         _mapController = controller;
                         if (locationState is LocationIdle &&
@@ -813,12 +890,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                             ),
                           );
                         }
-                        
+
                         // Load territories when map is ready
                         print('🗺️ Map created, loading territories...');
                         _loadTerritoriesFromBackend();
+                        _loadBossTerritoriesFromBackend();
                       },
                       onTap: (LatLng position) {
+                        if (_isPlanningRoute) {
+                          _addPlannedRoutePoint(position);
+                          return;
+                        }
                         // Check if tap is inside any activity polygon to show drawer
                         _handleMapTapForActivities(position);
                       },
@@ -841,15 +923,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   opacity: _animController,
                   child: _buildMinimalStatsBar(),
                 ),
-              ),
-            ),
-
-            // Simulation toggle (top left)
-            Positioned(
-              left: 16,
-              top: 120,
-              child: SafeArea(
-                child: _buildSimulationToggle(),
               ),
             ),
 
@@ -1024,6 +1097,170 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
+  Future<void> _showTrackingModeSelector(BuildContext context) async {
+    final selection = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Container(
+          margin: EdgeInsets.all(16),
+          padding: EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 20,
+                offset: Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Start Tracking',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 8),
+              ListTile(
+                leading: Icon(Icons.gps_fixed, color: Colors.green),
+                title: Text('Real GPS'),
+                subtitle: Text('Use live location'),
+                onTap: () => Navigator.pop(context, false),
+              ),
+              ListTile(
+                leading: Icon(Icons.computer, color: Colors.blue),
+                title: Text('Simulation'),
+                subtitle: Text('Developer testing mode'),
+                onTap: () => Navigator.pop(context, true),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selection == null) return;
+    setState(() {
+      _useSimulation = selection;
+    });
+    _handleStart(context);
+  }
+
+  Future<void> _showGoalSetter(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Container(
+          margin: EdgeInsets.all(16),
+          padding: EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 20,
+                offset: Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Set Goal',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 8),
+              ListTile(
+                leading: Icon(Icons.directions_run, color: Colors.blue),
+                title: Text('Distance goal (km)'),
+                subtitle: Text(_goalDistanceKm != null
+                    ? 'Current: ${_goalDistanceKm!.toStringAsFixed(1)} km'
+                    : 'Not set'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final value = await _showGoalInput(context, 'Distance (km)');
+                  if (value != null) {
+                    setState(() {
+                      _goalDistanceKm = value;
+                      _goalAreaSqMeters = null;
+                    });
+                  }
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.crop_square, color: Colors.purple),
+                title: Text('Area goal (m²)'),
+                subtitle: Text(_goalAreaSqMeters != null
+                    ? 'Current: ${_goalAreaSqMeters!.toStringAsFixed(0)} m²'
+                    : 'Not set'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final value = await _showGoalInput(context, 'Area (m²)');
+                  if (value != null) {
+                    setState(() {
+                      _goalAreaSqMeters = value;
+                      _goalDistanceKm = null;
+                    });
+                  }
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.clear, color: Colors.grey),
+                title: Text('Clear goal'),
+                onTap: () {
+                  setState(() {
+                    _goalDistanceKm = null;
+                    _goalAreaSqMeters = null;
+                  });
+                  Navigator.pop(context);
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<double?> _showGoalInput(BuildContext context, String label) async {
+    final controller = TextEditingController();
+    final result = await showDialog<double>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(label),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              hintText: label,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                final value = double.tryParse(controller.text.trim());
+                Navigator.pop(context, value);
+              },
+              child: Text('Set'),
+            ),
+          ],
+        );
+      },
+    );
+    return result;
+  }
+
   Widget _buildMinimalStatsBar() {
     return BlocBuilder<GameBloc, GameState>(builder: (context, gameState) {
       return BlocBuilder<LocationBloc, LocationState>(
@@ -1120,6 +1357,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               _buildStatItem(
                 '${gameState.stats.totalPoints}',
                 'Points',
+                isTracking,
+              ),
+              Container(
+                width: 1,
+                height: 30,
+                color: isTracking ? Colors.white30 : Colors.grey.shade300,
+              ),
+              _buildStatItem(
+                '${gameState.stats.currentStreak}d',
+                'Streak',
                 isTracking,
               ),
             ],
@@ -1406,7 +1653,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           Marker(
             markerId: MarkerId('label_$ownerId'),
             position: LatLng(centerLat, centerLng),
-            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueGreen),
           ),
         );
       }
@@ -1796,7 +2044,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             markerId: MarkerId('username_label_$areaId'),
             position: LatLng(
                 sumLat / routePoints.length, sumLng / routePoints.length),
-            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueGreen),
           ),
         );
       }
@@ -1842,20 +2091,771 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       mainAxisSize: MainAxisSize.min,
       children: [
         _buildControlButton(
-          icon: Icons.threed_rotation,
-          label: '3D',
-          isActive: _is3DMode,
-          onTap: _toggle3DMode,
+          icon: Icons.my_location,
+          label: 'Me',
+          isActive: false,
+          onTap: _centerOnUser,
         ),
         SizedBox(height: 8),
         _buildControlButton(
-          icon: Icons.layers,
-          label: 'View',
-          isActive: _currentMapType != MapType.normal,
-          onTap: _toggleMapType,
+          icon: _showAdvancedControls ? Icons.expand_less : Icons.tune,
+          label: _showAdvancedControls ? 'Less' : 'More',
+          isActive: _showAdvancedControls,
+          onTap: () {
+            setState(() {
+              _showAdvancedControls = !_showAdvancedControls;
+            });
+          },
+        ),
+        AnimatedSize(
+          duration: Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+          child: _showAdvancedControls
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(height: 8),
+                    _buildControlButton(
+                      icon: Icons.threed_rotation,
+                      label: '3D',
+                      isActive: _is3DMode,
+                      onTap: _toggle3DMode,
+                    ),
+                    SizedBox(height: 8),
+                    _buildControlButton(
+                      icon: Icons.alt_route,
+                      label: 'Routes',
+                      isActive: _selectedRoute != null,
+                      onTap: _openRoutesSheet,
+                    ),
+                    SizedBox(height: 8),
+                    _buildControlButton(
+                      icon: Icons.layers,
+                      label: 'View',
+                      isActive: _currentMapType != MapType.normal,
+                      onTap: _toggleMapType,
+                    ),
+                    SizedBox(height: 8),
+                    _buildControlButton(
+                      icon: Icons.whatshot,
+                      label: 'Heat',
+                      isActive: _showHeatmap,
+                      onTap: _toggleHeatmap,
+                    ),
+                    SizedBox(height: 8),
+                    _buildControlButton(
+                      icon: Icons.flag,
+                      label: 'Goal',
+                      isActive:
+                          _goalDistanceKm != null || _goalAreaSqMeters != null,
+                      onTap: () => _showGoalSetter(context),
+                    ),
+                    SizedBox(height: 8),
+                    _buildControlButton(
+                      icon: Icons.eco,
+                      label: 'Eco',
+                      isActive: _batterySaverEnabled,
+                      onTap: () {
+                        setState(() {
+                          _batterySaverEnabled = !_batterySaverEnabled;
+                        });
+                      },
+                    ),
+                  ],
+                )
+              : SizedBox.shrink(),
         ),
       ],
     );
+  }
+
+  Future<void> _centerOnUser() async {
+    if (_mapController == null) return;
+
+    LatLng? target;
+    final locationState = context.read<LocationBloc>().state;
+
+    if (locationState is LocationTracking) {
+      target = LatLng(
+        locationState.currentPosition.latitude,
+        locationState.currentPosition.longitude,
+      );
+    } else if (locationState is LocationIdle &&
+        locationState.lastPosition != null) {
+      target = LatLng(
+        locationState.lastPosition!.latitude,
+        locationState.lastPosition!.longitude,
+      );
+    } else {
+      try {
+        final position = await geo.Geolocator.getCurrentPosition(
+          desiredAccuracy: geo.LocationAccuracy.high,
+        );
+        target = LatLng(position.latitude, position.longitude);
+      } catch (e) {
+        print('❌ Failed to get current location: $e');
+      }
+    }
+
+    if (target != null) {
+      _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: target,
+            zoom: _is3DMode ? 18 : 16,
+            tilt: _is3DMode ? 45 : 0,
+            bearing: 0,
+          ),
+        ),
+      );
+    }
+  }
+
+  void _addPlannedRoutePoint(LatLng point) {
+    setState(() {
+      _plannedRoutePoints.add(point);
+      _updatePlannedRoutePolyline();
+    });
+  }
+
+  void _undoPlannedRoutePoint() {
+    if (_plannedRoutePoints.isEmpty) return;
+    setState(() {
+      _plannedRoutePoints.removeLast();
+      _updatePlannedRoutePolyline();
+    });
+  }
+
+  void _clearPlannedRoute() {
+    setState(() {
+      _plannedRoutePoints.clear();
+      _updatePlannedRoutePolyline();
+    });
+  }
+
+  void _updatePlannedRoutePolyline() {
+    _polylines.removeWhere(
+      (polyline) => polyline.polylineId.value == 'route_plan',
+    );
+    if (_plannedRoutePoints.length < 2) {
+      return;
+    }
+
+    _polylines.add(
+      Polyline(
+        polylineId: PolylineId('route_plan'),
+        points: _plannedRoutePoints,
+        color: Colors.blueAccent,
+        width: 5,
+        patterns: [PatternItem.dash(12), PatternItem.gap(8)],
+      ),
+    );
+  }
+
+  void _previewRoute(SavedRoute route) {
+    _polylines.removeWhere(
+      (polyline) => polyline.polylineId.value == 'route_preview',
+    );
+    if (route.points.length >= 2) {
+      _polylines.add(
+        Polyline(
+          polylineId: PolylineId('route_preview'),
+          points: route.points,
+          color: Colors.deepPurpleAccent,
+          width: 5,
+        ),
+      );
+    }
+    setState(() {
+      _selectedRoute = route;
+    });
+  }
+
+  Future<void> _loadSavedRoutes() async {
+    setState(() {
+      _isLoadingSavedRoutes = true;
+    });
+    try {
+      final routeApi = di.getIt<RouteApiService>();
+      final data = await routeApi.getMyRoutes();
+      setState(() {
+        _savedRoutes = data.map((item) => SavedRoute.fromMap(item)).toList();
+      });
+    } catch (e) {
+      print('❌ Failed to load saved routes: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingSavedRoutes = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadPopularRoutes() async {
+    setState(() {
+      _isLoadingPopularRoutes = true;
+    });
+    try {
+      final routeApi = di.getIt<RouteApiService>();
+      final locationState = context.read<LocationBloc>().state;
+      LatLng? target;
+      if (locationState is LocationTracking) {
+        target = LatLng(
+          locationState.currentPosition.latitude,
+          locationState.currentPosition.longitude,
+        );
+      } else if (locationState is LocationIdle &&
+          locationState.lastPosition != null) {
+        target = LatLng(
+          locationState.lastPosition!.latitude,
+          locationState.lastPosition!.longitude,
+        );
+      }
+      if (target == null) {
+        return;
+      }
+      final data = await routeApi.getPopularRoutes(
+        lat: target.latitude,
+        lng: target.longitude,
+        radiusKm: 5,
+        limit: 10,
+      );
+      setState(() {
+        _popularRoutes = data.map((item) => SavedRoute.fromMap(item)).toList();
+      });
+    } catch (e) {
+      print('❌ Failed to load popular routes: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingPopularRoutes = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _openRoutesSheet() async {
+    await _loadSavedRoutes();
+    await _loadPopularRoutes();
+
+    if (!mounted) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return DefaultTabController(
+          length: 3,
+          child: Container(
+            margin: EdgeInsets.all(16),
+            padding: EdgeInsets.symmetric(vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.15),
+                  blurRadius: 20,
+                  offset: Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Routes',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Spacer(),
+                      if (_selectedRoute != null)
+                        Text(
+                          'Selected: ${_selectedRoute!.name}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                SizedBox(height: 8),
+                TabBar(
+                  labelColor: Colors.black87,
+                  unselectedLabelColor: Colors.grey.shade500,
+                  tabs: const [
+                    Tab(text: 'Create'),
+                    Tab(text: 'Saved'),
+                    Tab(text: 'Popular'),
+                  ],
+                ),
+                SizedBox(height: 8),
+                SizedBox(
+                  height: 320,
+                  child: TabBarView(
+                    children: [
+                      _buildCreateRouteTab(),
+                      _buildSavedRoutesTab(),
+                      _buildPopularRoutesTab(),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCreateRouteTab() {
+    final distanceKm = _plannedRoutePoints.length < 2
+        ? 0.0
+        : _calculatePlannedRouteDistanceKm();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _isPlanningRoute
+                ? 'Tap on the map to add points'
+                : 'Start planning by enabling route draw',
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+          ),
+          SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _isPlanningRoute = !_isPlanningRoute;
+                    });
+                  },
+                  icon: Icon(_isPlanningRoute ? Icons.close : Icons.edit_road),
+                  label:
+                      Text(_isPlanningRoute ? 'Stop Planning' : 'Plan Route'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor:
+                        _isPlanningRoute ? Colors.red.shade400 : Colors.black,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 12),
+          Row(
+            children: [
+              Text(
+                'Distance: ${distanceKm.toStringAsFixed(2)} km',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Colors.black87,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Spacer(),
+              Text(
+                '${_plannedRoutePoints.length} pts',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+            ],
+          ),
+          SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _plannedRoutePoints.isEmpty
+                      ? null
+                      : _undoPlannedRoutePoint,
+                  child: Text('Undo'),
+                ),
+              ),
+              SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed:
+                      _plannedRoutePoints.isEmpty ? null : _clearPlannedRoute,
+                  child: Text('Clear'),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 12),
+          ElevatedButton(
+            onPressed:
+                _plannedRoutePoints.length < 2 ? null : _savePlannedRoute,
+            style: ElevatedButton.styleFrom(
+              minimumSize: Size(double.infinity, 44),
+              backgroundColor: Colors.blueGrey.shade800,
+              foregroundColor: Colors.white,
+            ),
+            child: Text('Save Route'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSavedRoutesTab() {
+    if (_isLoadingSavedRoutes) {
+      return _buildRouteListSkeleton();
+    }
+    if (_savedRoutes.isEmpty) {
+      return Center(
+        child: Text('No saved routes yet',
+            style: TextStyle(color: Colors.grey.shade600)),
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      itemCount: _savedRoutes.length,
+      separatorBuilder: (_, __) => Divider(height: 1),
+      itemBuilder: (context, index) {
+        final route = _savedRoutes[index];
+        return ListTile(
+          title: Text(route.name),
+          subtitle: Text('${route.distanceKm.toStringAsFixed(2)} km'),
+          trailing: Icon(Icons.chevron_right),
+          onTap: () {
+            _previewRoute(route);
+            Navigator.pop(context);
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildPopularRoutesTab() {
+    if (_isLoadingPopularRoutes) {
+      return _buildRouteListSkeleton();
+    }
+    if (_popularRoutes.isEmpty) {
+      return Center(
+        child: Text('No popular routes nearby',
+            style: TextStyle(color: Colors.grey.shade600)),
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      itemCount: _popularRoutes.length,
+      separatorBuilder: (_, __) => Divider(height: 1),
+      itemBuilder: (context, index) {
+        final route = _popularRoutes[index];
+        return ListTile(
+          title: Text(route.name),
+          subtitle: Text(
+              '${route.distanceKm.toStringAsFixed(2)} km • ${route.usageCount} uses'),
+          trailing: Icon(Icons.chevron_right),
+          onTap: () {
+            _previewRoute(route);
+            Navigator.pop(context);
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildRouteListSkeleton() {
+    return SkeletonShimmer(
+      child: ListView.separated(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        itemCount: 6,
+        separatorBuilder: (_, __) => const SizedBox(height: 12),
+        itemBuilder: (context, index) => SkeletonBox(
+          height: 56,
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    );
+  }
+
+  double _calculatePlannedRouteDistanceKm() {
+    if (_plannedRoutePoints.length < 2) return 0;
+    double total = 0;
+    for (int i = 1; i < _plannedRoutePoints.length; i++) {
+      total += _calculateGeodesicDistance(
+        _plannedRoutePoints[i - 1],
+        _plannedRoutePoints[i],
+      );
+    }
+    return total / 1000;
+  }
+
+  Future<void> _savePlannedRoute() async {
+    final controller = TextEditingController();
+    bool isPublic = false;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              title: Text('Save Route'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: controller,
+                    decoration: InputDecoration(
+                      labelText: 'Route name',
+                    ),
+                  ),
+                  SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: isPublic,
+                        onChanged: (value) {
+                          setStateDialog(() {
+                            isPublic = value ?? false;
+                          });
+                        },
+                      ),
+                      Text('Make public'),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result != true) return;
+
+    final name = controller.text.trim();
+    if (name.isEmpty) return;
+
+    try {
+      final routeApi = di.getIt<RouteApiService>();
+      await routeApi.createRoute(
+        name: name,
+        isPublic: isPublic,
+        routePoints: _plannedRoutePoints
+            .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+            .toList(),
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Route saved')),
+      );
+      setState(() {
+        _isPlanningRoute = false;
+        _plannedRoutePoints.clear();
+        _updatePlannedRoutePolyline();
+      });
+      await _loadSavedRoutes();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save route')),
+      );
+    }
+  }
+
+  Future<void> _recordSelectedRouteUsage() async {
+    if (_selectedRoute == null) return;
+    try {
+      final routeApi = di.getIt<RouteApiService>();
+      await routeApi.recordRouteUsage(_selectedRoute!.id);
+    } catch (e) {
+      print('⚠️ Failed to record route usage: $e');
+    }
+  }
+
+  Future<void> _loadBossTerritoriesFromBackend() async {
+    try {
+      final territoryApiService = di.getIt<TerritoryApiService>();
+      final bosses = await territoryApiService.getBossTerritories(limit: 3);
+
+      // Get current user ID to differentiate ownership
+      final authService = di.getIt<AuthApiService>();
+      final currentUserId = await authService.getUserId();
+
+      setState(() {
+        _polygons.removeWhere(
+            (polygon) => polygon.polygonId.value.startsWith('boss_'));
+        _territoryMarkers
+            .removeWhere((marker) => marker.markerId.value.startsWith('boss_'));
+
+        for (final boss in bosses) {
+          final hexId = boss['hexId'];
+          final lat = boss['latitude'] is String
+              ? double.parse(boss['latitude'])
+              : (boss['latitude'] as num).toDouble();
+          final lng = boss['longitude'] is String
+              ? double.parse(boss['longitude'])
+              : (boss['longitude'] as num).toDouble();
+
+          final ownerId = boss['ownerId'];
+          final bool isOwnTerritory = ownerId == currentUserId;
+          final bossColor = Colors.amber;
+
+          final routePoints = boss['routePoints'] as List?;
+          List<LatLng> polygonPoints;
+
+          if (routePoints != null && routePoints.isNotEmpty) {
+            polygonPoints = routePoints.map((p) {
+              final pointLat = p['lat'] is String
+                  ? double.parse(p['lat'])
+                  : (p['lat'] as num).toDouble();
+              final pointLng = p['lng'] is String
+                  ? double.parse(p['lng'])
+                  : (p['lng'] as num).toDouble();
+              return LatLng(pointLat, pointLng);
+            }).toList();
+          } else {
+            polygonPoints = _generateCirclePoints(LatLng(lat, lng), 60);
+          }
+
+          _polygons.add(
+            Polygon(
+              polygonId: PolygonId('boss_$hexId'),
+              points: polygonPoints,
+              fillColor: bossColor.withOpacity(0.2),
+              strokeColor: bossColor,
+              strokeWidth: 3,
+            ),
+          );
+
+          _territoryMarkers.add(
+            Marker(
+              markerId: MarkerId('boss_$hexId'),
+              position: LatLng(lat, lng),
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                  BitmapDescriptor.hueOrange),
+              onTap: () {
+                _showTerritoryInfo(
+                  ownerName: boss['owner']?['name'] ?? 'Unknown',
+                  captureCount: boss['captureCount'] ?? 1,
+                  isOwn: isOwnTerritory,
+                  points: boss['points'],
+                  capturedAt: boss['capturedAt'] != null
+                      ? DateTime.parse(boss['capturedAt'])
+                      : null,
+                  lastBattleAt: boss['lastBattleAt'] != null
+                      ? DateTime.parse(boss['lastBattleAt'])
+                      : null,
+                  areaSqMeters: _calculatePolygonArea(polygonPoints),
+                  isBoss: true,
+                  bossRewardPoints: boss['bossRewardPoints'],
+                );
+              },
+            ),
+          );
+
+          _territoryData[hexId] = {
+            'polygonPoints': polygonPoints,
+            'ownerId': ownerId,
+            'ownerName': boss['owner']?['name'] ?? 'Unknown',
+            'captureCount': boss['captureCount'] ?? 1,
+            'isOwn': isOwnTerritory,
+            'points': boss['points'],
+            'capturedAt': boss['capturedAt'] != null
+                ? DateTime.parse(boss['capturedAt'])
+                : null,
+            'lastBattleAt': boss['lastBattleAt'] != null
+                ? DateTime.parse(boss['lastBattleAt'])
+                : null,
+            'areaSqMeters': _calculatePolygonArea(polygonPoints),
+            'isBoss': true,
+            'bossRewardPoints': boss['bossRewardPoints'],
+          };
+        }
+      });
+    } catch (e) {
+      print('❌ Failed to load boss territories: $e');
+    }
+  }
+
+  void _toggleHeatmap() {
+    setState(() {
+      _showHeatmap = !_showHeatmap;
+    });
+    if (_showHeatmap) {
+      _buildHeatmapCircles();
+    }
+  }
+
+  void _buildHeatmapCircles() {
+    if (_activityHistory.isEmpty) {
+      _heatmapCircles.clear();
+      return;
+    }
+
+    const double gridSize = 0.0005; // ~55m
+    const int maxCircles = 200;
+    final Map<String, _HeatCell> cells = {};
+
+    for (final activity in _activityHistory) {
+      final routePoints = activity['routePoints'] as List<dynamic>?;
+      if (routePoints == null || routePoints.isEmpty) continue;
+
+      for (int i = 0; i < routePoints.length; i += 5) {
+        final p = routePoints[i];
+        final lat = (p['latitude'] as num).toDouble();
+        final lng = (p['longitude'] as num).toDouble();
+        final key = '${(lat / gridSize).round()}:${(lng / gridSize).round()}';
+        final cell = cells.putIfAbsent(key, () => _HeatCell());
+        cell.count += 1;
+        cell.sumLat += lat;
+        cell.sumLng += lng;
+      }
+    }
+
+    final entries = cells.values.toList()
+      ..sort((a, b) => b.count.compareTo(a.count));
+
+    _heatmapCircles.clear();
+    for (final cell in entries.take(maxCircles)) {
+      final lat = cell.sumLat / cell.count;
+      final lng = cell.sumLng / cell.count;
+      final intensity = (cell.count / 10).clamp(0.1, 0.6);
+      final radius = 20 + (cell.count * 4).clamp(0, 60);
+      _heatmapCircles.add(
+        Circle(
+          circleId: CircleId(
+              'heat_${lat.toStringAsFixed(5)}_${lng.toStringAsFixed(5)}'),
+          center: LatLng(lat, lng),
+          radius: radius.toDouble(),
+          fillColor: Colors.red.withOpacity(intensity),
+          strokeColor: Colors.red.withOpacity(intensity + 0.1),
+          strokeWidth: 1,
+        ),
+      );
+    }
+  }
+
+  Set<Circle> _getMapCircles() {
+    final circles = <Circle>{};
+    if (_startPointCircle != null) {
+      circles.add(_startPointCircle!);
+    }
+    if (_showHeatmap) {
+      circles.addAll(_heatmapCircles);
+    }
+    return circles;
   }
 
   // Simulation toggle button
@@ -1965,6 +2965,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     // Show if tracking and either moving OR has steps
     final locationState = context.read<LocationBloc>().state;
     final isTracking = locationState is LocationTracking;
+    final currentDistanceKm = locationState is LocationTracking
+        ? locationState.totalDistance / 1000
+        : 0.0;
 
     if (!isTracking && _currentSpeed == 0.0) return SizedBox.shrink();
 
@@ -2090,6 +3093,34 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ],
             ),
           ],
+          if (_goalDistanceKm != null || _goalAreaSqMeters != null) ...[
+            SizedBox(height: 6),
+            Divider(height: 1),
+            SizedBox(height: 6),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.flag,
+                  size: 12,
+                  color: Colors.blueGrey,
+                ),
+                SizedBox(width: 4),
+                Text(
+                  _goalDistanceKm != null
+                      ? 'Goal: ${(currentDistanceKm / _goalDistanceKm! * 100).clamp(0, 100).toStringAsFixed(0)}%'
+                      : _estimatedAreaSqMeters > 0
+                          ? 'Goal: ${(_estimatedAreaSqMeters / _goalAreaSqMeters! * 100).clamp(0, 100).toStringAsFixed(0)}%'
+                          : 'Goal set',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.blueGrey,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -2148,7 +3179,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   // Show activity route on map
   void _showActivityOnMap(Map<String, dynamic> activity) {
     if (_mapController == null) return;
-    
+
     // Get route points from activity
     final routePoints = activity['routePoints'] as List<dynamic>?;
     if (routePoints == null || routePoints.isEmpty) {
@@ -2172,10 +3203,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     setState(() {
       _polylines.clear();
       _activityData.clear();
-      
+
       // Store activity data
       _activityData['activity_route'] = activity;
-      
+
       _polylines.add(
         Polyline(
           polylineId: PolylineId('activity_route'),
@@ -2247,21 +3278,23 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   /// HANDLE MAP TAP - Check if inside activity area and show drawer
   /// ═══════════════════════════════════════════════════════════════════════════
   void _handleMapTapForActivities(LatLng tapPosition) {
-    print('🗺️ Map tapped at: ${tapPosition.latitude}, ${tapPosition.longitude}');
+    print(
+        '🗺️ Map tapped at: ${tapPosition.latitude}, ${tapPosition.longitude}');
     print('📊 Total activity data entries: ${_activityData.length}');
     print('�️ Total territory data entries: ${_territoryData.length}');
-    
+
     // First check activity polygons (user's own completed loops)
     for (final entry in _activityData.entries) {
       if (entry.key.startsWith('saved_area_')) {
         final activity = entry.value;
         final routeData = activity['routePoints'] as List<dynamic>?;
-        
+
         if (routeData != null && routeData.length >= 3) {
           final routePoints = routeData
-              .map((p) => LatLng(p['latitude'] as double, p['longitude'] as double))
+              .map((p) =>
+                  LatLng(p['latitude'] as double, p['longitude'] as double))
               .toList();
-          
+
           if (_isPointInPolygon(tapPosition, routePoints)) {
             print('✅ Tap is inside activity polygon: ${entry.key}');
             showModalBottomSheet(
@@ -2275,17 +3308,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         }
       }
     }
-    
+
     // Then check territory polygons (all territories including others')
     for (final entry in _territoryData.entries) {
       final hexId = entry.key;
       final data = entry.value;
       final polygonPoints = data['polygonPoints'] as List<LatLng>;
-      
+
       if (_isPointInPolygon(tapPosition, polygonPoints)) {
         print('✅ Tap is inside territory: $hexId');
         print('   Owner: ${data['ownerName']}');
-        
+
         // Show territory owner info drawer
         _showTerritoryOwnerDrawer(
           ownerName: data['ownerName'],
@@ -2295,10 +3328,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         return;
       }
     }
-    
+
     print('❌ Tap not inside any activity or territory area');
   }
-  
+
   /// Show territory owner info in bottom drawer
   void _showTerritoryOwnerDrawer({
     required String ownerName,
@@ -2334,7 +3367,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            
+
             // Header
             Padding(
               padding: const EdgeInsets.all(24),
@@ -2345,7 +3378,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                       Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                          color: (isOwn ? Colors.green : Colors.orange).withOpacity(0.1),
+                          color: (isOwn ? Colors.green : Colors.orange)
+                              .withOpacity(0.1),
                           borderRadius: BorderRadius.circular(16),
                         ),
                         child: Icon(
@@ -2611,13 +3645,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             GestureDetector(
               onTap: () {
                 if (_trackingState == TrackingState.stopped) {
+                  _useSimulation = false;
                   _handleStart(context);
                 }
               },
               onLongPressStart: (_) {
-                if (_trackingState != TrackingState.stopped) {
-                  _startHoldTimer(context);
+                if (_trackingState == TrackingState.stopped) {
+                  _showTrackingModeSelector(context);
+                  return;
                 }
+                _startHoldTimer(context);
               },
               onLongPressEnd: (_) {
                 _cancelHoldTimer();
@@ -2671,19 +3708,20 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 ],
               ),
             ),
-            
+
             // History button (only visible when not tracking)
             if (!isExpanded) ...[
               SizedBox(width: 20),
               GestureDetector(
                 onTap: () async {
-                  final selectedActivity = await showModalBottomSheet<Map<String, dynamic>>(
+                  final selectedActivity =
+                      await showModalBottomSheet<Map<String, dynamic>>(
                     context: context,
                     isScrollControlled: true,
                     backgroundColor: Colors.transparent,
                     builder: (context) => ActivityHistorySheet(),
                   );
-                  
+
                   if (selectedActivity != null) {
                     _showActivityOnMap(selectedActivity);
                   }
@@ -2787,7 +3825,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       });
 
       // Resume location tracking
-      context.read<LocationBloc>().add(StartLocationTracking());
+      context.read<LocationBloc>().add(
+            StartLocationTracking(
+              useSimulation: _useSimulation,
+              batterySaver: _batterySaverEnabled,
+            ),
+          );
       _motionDetection.startDetection();
 
       final locationState = context.read<LocationBloc>().state;
@@ -2859,12 +3902,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
     // Check if loop was completed (returned within 100m of start)
     final bool loopCompleted = _distanceToStart < 100;
-    final int newTerritoryCount = loopCompleted ? 1 : 0; // 1 territory per completed loop
-    
-    print('🔄 Loop completed: $loopCompleted (distance to start: ${_distanceToStart.toStringAsFixed(1)}m)');
-    
+    final int newTerritoryCount =
+        loopCompleted ? 1 : 0; // 1 territory per completed loop
+
+    print(
+        '🔄 Loop completed: $loopCompleted (distance to start: ${_distanceToStart.toStringAsFixed(1)}m)');
+
     // If loop completed, create a territory with the actual route shape
-    if (loopCompleted && locationState is LocationTracking && locationState.routePoints.isNotEmpty) {
+    if (loopCompleted &&
+        locationState is LocationTracking &&
+        locationState.routePoints.isNotEmpty) {
       // Calculate center point of the route
       double sumLat = 0;
       double sumLng = 0;
@@ -2874,22 +3921,24 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       }
       final centerLat = sumLat / locationState.routePoints.length;
       final centerLng = sumLng / locationState.routePoints.length;
-      
+
       // Generate hex ID for this territory (for uniqueness)
       final hexId = TerritoryGridHelper.getHexId(centerLat, centerLng);
       _capturedHexIds.clear();
       _capturedHexIds.add(hexId);
-      
+
       // Store the actual route points for the territory shape
       _territoryRoutePoints = locationState.routePoints
           .map((p) => LatLng(p.latitude, p.longitude))
           .toList();
-      
-      print('🏆 Territory created: loop shape with ${_territoryRoutePoints.length} points');
+
+      print(
+          '🏆 Territory created: loop shape with ${_territoryRoutePoints.length} points');
     }
-    
+
     // 1 point per 100 meters walked
-    final pointsEarned = (distance * 10).round(); // distance in km, so * 10 = per 100m
+    final pointsEarned =
+        (distance * 10).round(); // distance in km, so * 10 = per 100m
 
     print('✅ Territories captured: $newTerritoryCount');
     print('💰 Points earned: $pointsEarned');
@@ -2988,11 +4037,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         print('🚀 STARTING TRACKING NOW!');
 
         // Start actual tracking with simulation mode based on toggle
-        context
-            .read<LocationBloc>()
-            .add(StartLocationTracking(useSimulation: _useSimulation));
+        context.read<LocationBloc>().add(
+              StartLocationTracking(
+                useSimulation: _useSimulation,
+                batterySaver: _batterySaverEnabled,
+              ),
+            );
         print(
-            '${_useSimulation ? "🎮" : "📍"} LocationBloc: StartLocationTracking (${_useSimulation ? "SIMULATION" : "REAL GPS"} MODE) event sent');
+            '${_useSimulation ? "🎮" : "📍"} LocationBloc: StartLocationTracking (${_useSimulation ? "SIMULATION" : "REAL GPS"} MODE, ${_batterySaverEnabled ? "BATTERY SAVER" : "FULL ACCURACY"})');
 
         // Start ADVANCED motion detection
         _motionDetection.startDetection();
@@ -3010,6 +4062,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           currentDistance: 0.0,
           territoriesCount: 0,
         );
+
+        _recordSelectedRouteUsage();
 
         print(
             '🚀 ADVANCED TRACKING STARTED - Real-time GPS + Motion Detection Active!');
@@ -3033,6 +4087,31 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       print('❌ Error capturing map screenshot: $e');
       return null;
     }
+  }
+
+  List<Position> _limitRoutePoints(List<Position> points) {
+    const maxPoints = 2000;
+    if (points.length <= maxPoints) {
+      return points;
+    }
+
+    final step = (points.length / maxPoints).ceil();
+    final reduced = <Position>[];
+    for (int i = 0; i < points.length; i += step) {
+      reduced.add(points[i]);
+    }
+
+    if (reduced.isNotEmpty) {
+      final last = points.last;
+      final lastReduced = reduced.last;
+      if (last.latitude != lastReduced.latitude ||
+          last.longitude != lastReduced.longitude ||
+          last.timestamp != lastReduced.timestamp) {
+        reduced.add(last);
+      }
+    }
+
+    return reduced;
   }
 
   // Save completed workout to history
@@ -3068,9 +4147,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       // Capture map screenshot before saving
       final mapSnapshot = await _captureMapScreenshot();
 
+      final routePointsToSave = _limitRoutePoints(locationState.routePoints);
+
       final activity = Activity(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
-        route: locationState.routePoints,
+        route: routePointsToSave,
         distanceMeters: distance * 1000,
         duration: activeDuration,
         startTime: _trackingStartTime ?? DateTime.now(),
@@ -3097,11 +4178,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         print('   Steps: $sessionSteps');
         print('   Territories: $territoriesCount');
         print('   Points: $pointsEarned');
-        print('   Route points: ${locationState.routePoints.length}');
+        print('   Route points: ${routePointsToSave.length}');
         print('   Captured hex IDs: ${_capturedHexIds.length}');
 
         final activityResult = await trackingApiService.saveActivity(
-          routePoints: locationState.routePoints
+          routePoints: routePointsToSave
               .map((p) => {
                     'latitude': p.latitude,
                     'longitude': p.longitude,
@@ -3147,8 +4228,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           print('   routePoints count: ${_territoryRoutePoints.length}');
 
           // Convert route points to API format
-          final routePointsArray = _territoryRoutePoints.isNotEmpty 
-              ? [_territoryRoutePoints.map((p) => {'lat': p.latitude, 'lng': p.longitude}).toList()]
+          final routePointsArray = _territoryRoutePoints.isNotEmpty
+              ? [
+                  _territoryRoutePoints
+                      .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+                      .toList()
+                ]
               : null;
 
           final result = await territoryApiService.captureTerritories(
@@ -3185,6 +4270,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           zoom: 15,
         );
 
+        bool isTracking = false;
+        bool isPaused = false;
+
         if (locationState is LocationIdle &&
             locationState.lastPosition != null) {
           cameraPosition = CameraPosition(
@@ -3202,23 +4290,115 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
             zoom: 16,
           );
+          isTracking = _trackingState == TrackingState.started;
+          isPaused = _trackingState == TrackingState.paused;
         }
 
-        return GoogleMap(
-          initialCameraPosition: cameraPosition,
-          myLocationEnabled: true,
-          myLocationButtonEnabled: false,
-          zoomControlsEnabled: false,
-          mapToolbarEnabled: false,
-          compassEnabled: false,
-          polygons: _polygons,
-          polylines: _polylines,
-          mapType: _currentMapType,
-          onMapCreated: (GoogleMapController controller) {
-            // Don't store controller in PiP mode to avoid conflicts
-          },
+        return Stack(
+          children: [
+            // Map view
+            GoogleMap(
+              initialCameraPosition: cameraPosition,
+              myLocationEnabled: true,
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: false,
+              mapToolbarEnabled: false,
+              compassEnabled: false,
+              rotateGesturesEnabled: false,
+              scrollGesturesEnabled: false,
+              zoomGesturesEnabled: false,
+              tiltGesturesEnabled: false,
+              polygons: _polygons,
+              polylines: _polylines,
+              mapType: _currentMapType,
+              onMapCreated: (GoogleMapController controller) {
+                // Don't store controller in PiP mode to avoid conflicts
+              },
+            ),
+
+            // Minimal tracking indicator
+            if (isTracking || isPaused)
+              Positioned(
+                top: 8,
+                left: 8,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isPaused ? Colors.orange : Colors.green,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        isPaused ? 'Paused' : 'Tracking',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
         );
       },
+    );
+  }
+
+}
+
+class _HeatCell {
+  int count = 0;
+  double sumLat = 0.0;
+  double sumLng = 0.0;
+}
+
+class SavedRoute {
+  final String id;
+  final String name;
+  final double distanceKm;
+  final bool isPublic;
+  final int usageCount;
+  final List<LatLng> points;
+
+  SavedRoute({
+    required this.id,
+    required this.name,
+    required this.distanceKm,
+    required this.isPublic,
+    required this.usageCount,
+    required this.points,
+  });
+
+  factory SavedRoute.fromMap(Map<String, dynamic> map) {
+    final rawPoints = map['routePoints'] as List? ?? [];
+    final points = rawPoints
+        .map((p) => LatLng(
+              (p['lat'] as num).toDouble(),
+              (p['lng'] as num).toDouble(),
+            ))
+        .toList();
+
+    return SavedRoute(
+      id: map['id'] ?? '',
+      name: map['name'] ?? 'Route',
+      distanceKm: ((map['distanceKm'] ?? 0) as num).toDouble(),
+      isPublic: map['isPublic'] == true,
+      usageCount: (map['usageCount'] ?? 0) as int,
+      points: points,
     );
   }
 }

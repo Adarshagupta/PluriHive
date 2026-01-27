@@ -7,9 +7,9 @@ import '../../../leaderboard/presentation/pages/leaderboard_screen.dart';
 import '../../../history/presentation/pages/activity_history_screen.dart';
 import '../../../tracking/presentation/bloc/location_bloc.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
-import '../../../../core/utils/picture_in_picture.dart';
 import '../../../../core/services/persistent_step_counter_service.dart';
 import '../../../../core/widgets/permission_gate.dart';
+import '../../../../core/services/pip_service.dart';
 import 'home_tab.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -19,70 +19,88 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObserver {
+class _DashboardScreenState extends State<DashboardScreen>
+    with WidgetsBindingObserver {
   int _currentIndex = 0;
   int _previousIndex = 0;
   bool _permissionsChecked = false;
   bool _isInPipMode = false;
-  
+  final PipService _pipService = PipService();
+
   List<Widget> get _screens => [
-    HomeTab(onNavigateToTab: (index) {
-      setState(() {
-        _currentIndex = index;
-      });
-    }),
-    MapScreen(onNavigateHome: () {
-      setState(() {
-        _previousIndex = _currentIndex;
-        _currentIndex = 0;
-      });
-      // Reload game data when returning to home
-      context.read<GameBloc>().add(LoadGameData());
-    }),
-    ActivityHistoryScreen(),
-    LeaderboardScreen(),
-    ProfileScreen(),
-  ];
+        HomeTab(onNavigateToTab: (index) {
+          _setCurrentIndex(index);
+        }),
+        MapScreen(onNavigateHome: () {
+          _setCurrentIndex(0);
+        }),
+        ActivityHistoryScreen(),
+        LeaderboardScreen(),
+        ProfileScreen(),
+      ];
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    PictureInPictureManager.onPipModeChanged = _onPipModeChanged;
+    _initializePipListener();
     _requestLocationPermissions();
+    _pipService.disablePip();
     // Disabled: Auto-start of step counter (was showing unwanted notification)
     // _initializePersistentStepCounter();
   }
-  
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    PictureInPictureManager.onPipModeChanged = null;
+    _pipService.removePipModeListener(_handlePipModeChange);
     super.dispose();
   }
-  
-  void _onPipModeChanged(bool isInPip) {
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // PiP is handled by individual screens (permission and map)
+  }
+
+  Future<void> _initializePipListener() async {
+    await _pipService.initialize();
+    _pipService.addPipModeListener(_handlePipModeChange);
+    final inPip = await _pipService.isInPipMode();
+    if (mounted) {
+      setState(() {
+        _isInPipMode = inPip;
+      });
+    }
+  }
+
+  void _handlePipModeChange(bool isInPip, String screen) {
     if (mounted) {
       setState(() {
         _isInPipMode = isInPip;
       });
     }
   }
-  
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    _checkPipStatus();
-  }
-  
-  Future<void> _checkPipStatus() async {
-    final inPip = await PictureInPictureManager.isInPipMode();
-    if (mounted && inPip != _isInPipMode) {
-      setState(() {
-        _isInPipMode = inPip;
-      });
+
+  void _setCurrentIndex(int index) {
+    if (_currentIndex == index) return;
+
+    setState(() {
+      _previousIndex = _currentIndex;
+      _currentIndex = index;
+      if (index != 1) {
+        _isInPipMode = false;
+      }
+    });
+
+    if (index != 1) {
+      _pipService.disablePip();
+    }
+
+    if (index == 0) {
+      context.read<GameBloc>().add(LoadGameData());
     }
   }
-  
+
   Future<void> _initializePersistentStepCounter() async {
     await PersistentStepCounterService.initialize();
     await PersistentStepCounterService.startBackgroundService();
@@ -104,7 +122,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
     // Check current permission status
     LocationPermission permission = await Geolocator.checkPermission();
-    
+
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
@@ -114,7 +132,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         return;
       }
     }
-    
+
     if (permission == LocationPermission.deniedForever) {
       if (mounted) {
         _showPermissionDeniedForeverDialog();
@@ -123,13 +141,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     }
 
     // Permission granted - initialize location tracking
-    if (permission == LocationPermission.whileInUse || 
+    if (permission == LocationPermission.whileInUse ||
         permission == LocationPermission.always) {
       if (mounted) {
-        print('📍 DASHBOARD: Location permission granted, starting tracking...');
+        print(
+            '📍 DASHBOARD: Location permission granted, loading initial location...');
         context.read<LocationBloc>().add(GetInitialLocation());
-        context.read<LocationBloc>().add(StartLocationTracking());
-        print('✅ DASHBOARD: StartLocationTracking event sent');
       }
     }
   }
@@ -247,40 +264,42 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             child: _screens[_currentIndex],
           ),
         ),
-        bottomNavigationBar: _isInPipMode || _currentIndex == 1 ? null : Padding(
-          padding: const EdgeInsets.all(20),
-          child: Container(
-            height: 70,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(35),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 20,
-                  offset: const Offset(0, 5),
+        bottomNavigationBar: _isInPipMode || _currentIndex == 1
+            ? null
+            : Padding(
+                padding: const EdgeInsets.all(20),
+                child: Container(
+                  height: 70,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(35),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 20,
+                        offset: const Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildNavItem(0, Icons.home_rounded),
+                        _buildNavItem(1, Icons.map_rounded),
+                        _buildNavItem(2, Icons.history_rounded),
+                        _buildNavItem(3, Icons.leaderboard_rounded),
+                        _buildNavItem(4, Icons.person_rounded),
+                      ],
+                    ),
+                  ),
                 ),
-              ],
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  _buildNavItem(0, Icons.home_rounded),
-                  _buildNavItem(1, Icons.map_rounded),
-                  _buildNavItem(2, Icons.history_rounded),
-                  _buildNavItem(3, Icons.leaderboard_rounded),
-                  _buildNavItem(4, Icons.person_rounded),
-                ],
               ),
-            ),
-          ),
-        ),
       ),
     );
   }
-  
+
   Widget _buildNavItem(int index, IconData icon) {
     final isSelected = _currentIndex == index;
     final colors = [
@@ -290,17 +309,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       Color(0xFFB0B0B0), // gray for leaderboard
       Color(0xFF7B68EE), // purple for profile
     ];
-    
+
     return GestureDetector(
       onTap: () {
-        setState(() {
-          _previousIndex = _currentIndex;
-          _currentIndex = index;
-        });
-        // Reload game data when navigating to home tab
-        if (index == 0) {
-          context.read<GameBloc>().add(LoadGameData());
-        }
+        _setCurrentIndex(index);
       },
       child: Container(
         width: 50,

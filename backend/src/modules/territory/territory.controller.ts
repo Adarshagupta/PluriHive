@@ -1,6 +1,7 @@
 import { Controller, Post, Get, Body, UseGuards, Request, Param, Query } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TerritoryService } from './territory.service';
+import { CaptureTerritoryDto } from './dto/capture-territory.dto';
 
 @Controller('territories')
 export class TerritoryController {
@@ -10,11 +11,7 @@ export class TerritoryController {
   @UseGuards(JwtAuthGuard)
   async captureTerritories(
     @Request() req,
-    @Body() body: { 
-      hexIds: string[]; 
-      coordinates: { lat: number; lng: number }[];
-      routePoints?: { lat: number; lng: number }[][];
-    },
+    @Body() body: CaptureTerritoryDto,
   ) {
     return this.territoryService.captureTerritories(
       req.user.id,
@@ -25,8 +22,9 @@ export class TerritoryController {
   }
 
   @Get('all')
-  async getAllTerritories() {
-    return this.territoryService.getAllTerritories();
+  async getAllTerritories(@Query('limit') limit?: number) {
+    const parsedLimit = limit ? Math.min(Number(limit), 500) : 500;
+    return this.territoryService.getAllTerritories(parsedLimit);
   }
 
   @Get('user/:userId')
@@ -41,5 +39,11 @@ export class TerritoryController {
     @Query('radius') radius?: number,
   ) {
     return this.territoryService.getNearbyTerritories(lat, lng, radius);
+  }
+
+  @Get('boss')
+  async getBossTerritories(@Query('limit') limit?: number) {
+    const parsedLimit = limit ? Math.min(Number(limit), 10) : 3;
+    return this.territoryService.getBossTerritories(parsedLimit);
   }
 }

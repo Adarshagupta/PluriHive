@@ -10,6 +10,7 @@ import '../../../tracking/data/datasources/activity_local_data_source.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import 'package:intl/intl.dart';
+import '../../../../core/widgets/skeleton.dart';
 
 class ActivityHistoryScreen extends StatefulWidget {
   const ActivityHistoryScreen({super.key});
@@ -72,11 +73,7 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
     return Scaffold(
       backgroundColor: Colors.white,
       body: _isLoading
-          ? Center(
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation(Color(0xFF667EEA)),
-              ),
-            )
+          ? _buildHistorySkeleton()
           : _activities.isEmpty
               ? Center(
                   child: Column(
@@ -257,6 +254,47 @@ Started at $time
       return '${hours}h ${minutes}m';
     }
     return '${minutes}m';
+  }
+
+  Widget _buildHistorySkeleton() {
+    return SkeletonShimmer(
+      child: ListView.separated(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        itemCount: 3,
+        separatorBuilder: (_, __) => const SizedBox(height: 16),
+        itemBuilder: (context, index) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SkeletonLine(width: 180, height: 14),
+              const SizedBox(height: 12),
+              SkeletonBox(
+                height: 280,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: SkeletonBox(
+                      height: 60,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: SkeletonBox(
+                      height: 60,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 }
 
