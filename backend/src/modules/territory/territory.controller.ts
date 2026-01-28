@@ -18,13 +18,18 @@ export class TerritoryController {
       body.hexIds,
       body.coordinates,
       body.routePoints,
+      body.captureSessionId,
     );
   }
 
   @Get('all')
-  async getAllTerritories(@Query('limit') limit?: number) {
+  async getAllTerritories(
+    @Query('limit') limit?: number,
+    @Query('offset') offset?: number,
+  ) {
     const parsedLimit = limit ? Math.min(Number(limit), 5000) : 5000;
-    return this.territoryService.getAllTerritories(parsedLimit);
+    const parsedOffset = offset ? Math.max(Number(offset), 0) : 0;
+    return this.territoryService.getAllTerritories(parsedLimit, parsedOffset);
   }
 
   @Get('user/:userId')

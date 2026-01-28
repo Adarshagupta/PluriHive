@@ -6,6 +6,8 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/patterned_background.dart';
 import '../../../../core/services/strict_permission_service.dart';
 import '../../../../core/services/pip_service.dart';
+import '../../../../core/di/injection_container.dart' as di;
+import '../../../../core/services/territory_prefetch_service.dart';
 import '../bloc/auth_bloc.dart';
 import 'profile_setup_screen.dart';
 import 'signup_screen.dart';
@@ -20,6 +22,8 @@ class PermissionScreen extends StatefulWidget {
 class _PermissionScreenState extends State<PermissionScreen> {
   final _permissionService = StrictPermissionService();
   final _pipService = PipService();
+  final TerritoryPrefetchService _territoryPrefetchService =
+      di.getIt<TerritoryPrefetchService>();
   bool _locationGranted = false;
   bool _activityRecognitionGranted = false;
   bool _notificationGranted = false;
@@ -105,6 +109,9 @@ class _PermissionScreenState extends State<PermissionScreen> {
 
   void _navigateToNextScreen() {
     if (!mounted) return;
+
+    // Prefetch nearby territories as soon as permissions are granted.
+    _territoryPrefetchService.prefetchAroundUser();
 
     final authState = context.read<AuthBloc>().state;
 

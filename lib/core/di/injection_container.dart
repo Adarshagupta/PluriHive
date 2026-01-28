@@ -44,6 +44,7 @@ import '../services/settings_api_service.dart';
 import '../services/user_stats_api_service.dart';
 import '../services/offline_sync_service.dart';
 import '../services/user_profile_api_service.dart';
+import '../services/territory_prefetch_service.dart';
 
 final getIt = GetIt.instance;
 
@@ -117,6 +118,16 @@ Future<void> initializeDependencies() async {
   // PiP Service
   getIt.registerLazySingleton<PipService>(() => PipService());
 
+  // Territory Prefetch Service (websocket-based)
+  getIt.registerLazySingleton<TerritoryPrefetchService>(
+    () => TerritoryPrefetchService(
+      webSocketService: getIt(),
+      authApiService: getIt(),
+      territoryApiService: getIt(),
+      prefs: getIt(),
+    ),
+  );
+
   // Data Sources
   getIt.registerLazySingleton<AuthLocalDataSource>(
     () => AuthLocalDataSourceImpl(getIt()),
@@ -185,6 +196,7 @@ Future<void> initializeDependencies() async {
         authApiService: getIt(),
         webSocketService: getIt(),
         offlineSyncService: getIt(),
+        territoryPrefetchService: getIt(),
       ));
 
   getIt.registerFactory(() => LocationBloc(

@@ -227,6 +227,8 @@ class ExtendedKalmanFilter2D {
 /// ═══════════════════════════════════════════════════════════════════════════
 class AdvancedGPSFilter {
   final ExtendedKalmanFilter2D _ekf = ExtendedKalmanFilter2D();
+
+  double _maxAccuracyMeters;
   
   // Position history for advanced analysis
   final List<_GPSReading> _history = [];
@@ -243,6 +245,9 @@ class AdvancedGPSFilter {
   // Statistical tracking for adaptive thresholds
   double _meanAccuracy = 10.0;
   double _stdAccuracy = 5.0;
+
+  AdvancedGPSFilter({double maxAccuracyMeters = 30.0})
+      : _maxAccuracyMeters = maxAccuracyMeters;
 
   void _log(String message) {
     if (kDebugMode) {
@@ -331,7 +336,8 @@ class AdvancedGPSFilter {
   /// STRICT accuracy validation
   bool _isAccuracyAcceptable(double accuracy) {
     // Adaptive threshold based on historical accuracy
-    final threshold = max(30.0, _meanAccuracy + 3 * _stdAccuracy);
+    final adaptive = max(30.0, _meanAccuracy + 3 * _stdAccuracy);
+    final threshold = min(_maxAccuracyMeters, adaptive);
     return accuracy <= threshold;
   }
   
@@ -479,6 +485,11 @@ class AdvancedGPSFilter {
     _smoothedSpeed = 0.0;
     _meanAccuracy = 10.0;
     _stdAccuracy = 5.0;
+  }
+
+  void setMaxAccuracyMeters(double value) {
+    if (!value.isFinite || value <= 0) return;
+    _maxAccuracyMeters = value;
   }
   
   double get currentSpeed => _smoothedSpeed;

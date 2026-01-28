@@ -11,6 +11,7 @@ import {
   Max,
   Min,
   ValidateNested,
+  MaxLength,
 } from 'class-validator';
 
 export class RoutePointDto {
@@ -89,4 +90,9 @@ export class CreateActivityDto {
   @ArrayMaxSize(5000)
   @IsString({ each: true })
   capturedHexIds?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  clientId?: string;
 }

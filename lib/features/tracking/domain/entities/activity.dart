@@ -4,6 +4,7 @@ import 'position.dart';
 
 class Activity extends Equatable {
   final String id;
+  final String? clientId;
   final List<Position> route;
   final double distanceMeters;
   final Duration duration;
@@ -20,6 +21,7 @@ class Activity extends Equatable {
   
   const Activity({
     required this.id,
+    this.clientId,
     required this.route,
     required this.distanceMeters,
     required this.duration,
@@ -38,6 +40,7 @@ class Activity extends Equatable {
   @override
   List<Object?> get props => [
     id,
+    clientId,
     route,
     distanceMeters,
     duration,
@@ -55,6 +58,7 @@ class Activity extends Equatable {
   
   Map<String, dynamic> toJson() => {
     'id': id,
+    'clientId': clientId,
     'route': route.map((p) => p.toJson()).toList(),
     'distanceMeters': distanceMeters,
     'durationSeconds': duration.inSeconds,
@@ -109,6 +113,7 @@ class Activity extends Equatable {
     
     return Activity(
       id: json['id'].toString(),
+      clientId: json['clientId']?.toString(),
       route: route,
       distanceMeters: (json['distanceMeters'] is String) 
           ? double.parse(json['distanceMeters']) 

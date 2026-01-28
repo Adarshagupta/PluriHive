@@ -4,6 +4,7 @@ import { Repository, In } from 'typeorm';
 import { Territory } from './territory.entity';
 import { UserService } from '../user/user.service';
 import { RedisService } from '../redis/redis.service';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 
 @Injectable()
 export class TerritoryService {
@@ -12,13 +13,15 @@ export class TerritoryService {
     private territoryRepository: Repository<Territory>,
     private userService: UserService,
     private redisService: RedisService,
+    private realtimeGateway: RealtimeGateway,
   ) {}
 
   async captureTerritories(
     userId: string, 
     hexIds: string[], 
     coordinates: { lat: number; lng: number }[],
-    routePointsArray?: { lat: number; lng: number }[][]
+    routePointsArray?: { lat: number; lng: number }[][],
+    captureSessionId?: string
   ) {
     if (hexIds.length !== coordinates.length) {
       throw new BadRequestException('hexIds and coordinates length mismatch');
@@ -33,12 +36,15 @@ export class TerritoryService {
     const newTerritories = [];
     const recapturedTerritories = [];
     const toSave: Territory[] = [];
+    const updatedHexIds = new Set<string>();
 
     const existingTerritories = await this.territoryRepository.find({
       where: { hexId: In(hexIds) },
       relations: ['owner'],
     });
     const existingMap = new Map(existingTerritories.map((t) => [t.hexId, t]));
+
+    const sessionId = captureSessionId?.trim() || undefined;
 
     for (let i = 0; i < hexIds.length; i++) {
       const hexId = hexIds[i];
@@ -56,6 +62,13 @@ export class TerritoryService {
       const existing = existingMap.get(hexId);
 
       if (existing) {
+        if (
+          sessionId &&
+          existing.ownerId === userId &&
+          existing.lastCaptureSessionId === sessionId
+        ) {
+          continue;
+        }
         // Territory exists - update it
         if (existing.ownerId !== userId) {
           // Recapture from another user
@@ -63,16 +76,20 @@ export class TerritoryService {
           existing.captureCount++;
           existing.points = 0;
           existing.lastBattleAt = new Date();
+          existing.lastCaptureSessionId = sessionId;
           if (routePoints) existing.routePoints = routePoints;
 
           toSave.push(existing);
           recapturedTerritories.push(existing);
+          updatedHexIds.add(hexId);
         } else {
           // Same user recapturing their own territory
           existing.captureCount++;
           existing.capturedAt = new Date();
+          existing.lastCaptureSessionId = sessionId;
           if (routePoints) existing.routePoints = routePoints;
           toSave.push(existing);
+          updatedHexIds.add(hexId);
         }
       } else {
         // New territory
@@ -83,10 +100,12 @@ export class TerritoryService {
           ownerId: userId,
           points: 0,
           routePoints: routePoints || [],
+          lastCaptureSessionId: sessionId,
         });
 
         toSave.push(territory);
         newTerritories.push(territory);
+        updatedHexIds.add(hexId);
       }
     }
 
@@ -102,6 +121,14 @@ export class TerritoryService {
 
     await this.redisService.bumpVersion(this.getTerritoriesVersionKey());
 
+    if (updatedHexIds.size > 0) {
+      const broadcastTerritories = await this.territoryRepository.find({
+        where: { hexId: In(Array.from(updatedHexIds)) },
+        relations: ['owner'],
+      });
+      this.realtimeGateway.emitTerritoriesCaptured(broadcastTerritories);
+    }
+
     return {
       newTerritories,
       recapturedTerritories,
@@ -110,10 +137,13 @@ export class TerritoryService {
     };
   }
 
-  async getAllTerritories(limit: number = 5000): Promise<Territory[]> {
+  async getAllTerritories(
+    limit: number = 5000,
+    offset: number = 0,
+  ): Promise<Territory[]> {
     if (this.redisService.isEnabled()) {
       const version = await this.redisService.getVersion(this.getTerritoriesVersionKey());
-      const cacheKey = `territories:all:v${version}:limit:${limit}`;
+      const cacheKey = `territories:all:v${version}:limit:${limit}:offset:${offset}`;
       const cached = await this.redisService.getJson<Territory[]>(cacheKey);
       if (cached) {
         return cached;
@@ -122,6 +152,7 @@ export class TerritoryService {
         relations: ['owner'],
         order: { capturedAt: 'DESC' },
         take: limit,
+        skip: offset,
       });
       const ttlSeconds = this.redisService.getDefaultTtlSeconds();
       if (ttlSeconds > 0) {
@@ -134,6 +165,7 @@ export class TerritoryService {
       relations: ['owner'],
       order: { capturedAt: 'DESC' },
       take: limit,
+      skip: offset,
     });
   }
 

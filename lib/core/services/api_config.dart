@@ -34,7 +34,13 @@ class ApiConfig {
   // Check if using production
   static bool get isProduction => baseUrl == productionUrl;
 
-  static const String wsUrl = 'ws://10.1.80.51:3000';
+  /// WebSocket base URL derived from the current API baseUrl.
+  /// Ensures ws:// for http:// and wss:// for https://.
+  static String get wsUrl {
+    final uri = Uri.parse(baseUrl);
+    final scheme = uri.scheme == 'https' ? 'wss' : 'ws';
+    return uri.replace(scheme: scheme).toString();
+  }
 
   // Auth endpoints
   static const String signUpEndpoint = '/auth/signup';

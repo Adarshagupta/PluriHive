@@ -12,6 +12,8 @@
     "migration:generate": "npm run typeorm -- -d src/data-source.ts migration:generate",
     "migration:run": "npm run typeorm -- -d src/data-source.ts migration:run",
     "migration:revert": "npm run typeorm -- -d src/data-source.ts migration:revert",
+    "backfill:territory-routepoints": "ts-node src/scripts/backfill-territory-routepoints.ts",
+    "reset:territories": "ts-node src/scripts/reset-territories.ts",
     "fix-db": "node fix-database.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",

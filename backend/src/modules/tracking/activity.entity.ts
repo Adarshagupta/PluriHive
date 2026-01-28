@@ -5,10 +5,12 @@ import {
   CreateDateColumn,
   ManyToOne,
   BeforeInsert,
+  Index,
 } from "typeorm";
 import { User } from "../user/user.entity";
 
 @Entity("activities")
+@Index(["userId", "clientId"], { unique: true })
 export class Activity {
   @PrimaryColumn("uuid")
   id: string;
@@ -25,6 +27,9 @@ export class Activity {
 
   @Column({ type: "uuid" })
   userId: string;
+
+  @Column({ type: "varchar", length: 64, nullable: true })
+  clientId?: string;
 
   @ManyToOne(() => User, (user) => user.activities)
   user: User;

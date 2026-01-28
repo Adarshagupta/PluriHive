@@ -92,6 +92,7 @@ class ActivityDetailDrawer extends StatelessWidget {
       }
     }
     final ownerEmail = user?['email']?.toString() ?? '';
+    final clientId = activity['clientId']?.toString();
 
     return Container(
       decoration: BoxDecoration(
@@ -213,6 +214,42 @@ class ActivityDetailDrawer extends StatelessWidget {
                     ],
                   ),
                 ),
+                if (clientId != null && clientId.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Color(0xFFF9FAFB),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Color(0xFFE5E7EB), width: 1),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Client ID',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF6B7280),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        SelectableText(
+                          clientId,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF111827),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

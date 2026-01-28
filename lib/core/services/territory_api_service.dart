@@ -18,6 +18,7 @@ class TerritoryApiService {
     required List<String> hexIds,
     required List<Map<String, double>> coordinates,
     List<List<Map<String, double>>>? routePoints,
+    String? captureSessionId,
   }) async {
     try {
       final token = await _authService.getToken();
@@ -25,11 +26,15 @@ class TerritoryApiService {
         throw Exception('Not authenticated');
       }
 
-      final body = {
+      final Map<String, dynamic> body = {
         'hexIds': hexIds,
         'coordinates': coordinates,
       };
       
+      if (captureSessionId != null) {
+        body['captureSessionId'] = captureSessionId;
+      }
+
       if (routePoints != null) {
         body['routePoints'] = routePoints;
       }
@@ -122,11 +127,16 @@ class TerritoryApiService {
   }
 
   // Get All Territories (for universal map display)
-  Future<List<Map<String, dynamic>>> getAllTerritories({int limit = 5000}) async {
+  Future<List<Map<String, dynamic>>> getAllTerritories({
+    int limit = 5000,
+    int? offset,
+  }) async {
     try {
+      final offsetParam = offset != null ? '&offset=$offset' : '';
       final response = await _client
           .get(
-            Uri.parse('${ApiConfig.baseUrl}/territories/all?limit=$limit'),
+            Uri.parse(
+                '${ApiConfig.baseUrl}/territories/all?limit=$limit$offsetParam'),
             headers: {
               'Content-Type': 'application/json',
             },

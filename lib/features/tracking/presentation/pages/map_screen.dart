@@ -9,6 +9,7 @@ import 'package:pedometer/pedometer.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_fonts/google_fonts.dart';
+import 'package:uuid/uuid.dart';
 import 'dart:async';
 import 'dart:math';
 import 'dart:convert';
@@ -87,6 +88,23 @@ class _MapScreenState extends State<MapScreen>
   final Set<Marker> _territoryMarkers = {};
   final Map<String, Map<String, dynamic>> _activityData =
       {}; // Store activity data by polylineId
+  Timer? _territoryFetchDebounce;
+  LatLng? _lastTerritoryFetchCenter;
+  int _territoryFetchToken = 0;
+  final Map<String, DateTime> _territoryFetchTimestamps = {};
+  bool _allTerritoriesLoaded = false;
+  bool _allTerritoriesLoading = false;
+  static const int _territoryAllPageSize = 2000;
+  static const List<double> _territoryFetchRadiiKm = [
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    10.0,
+  ];
+  static const double _territoryRefetchDistanceMeters = 250.0;
+  static const Duration _territoryFetchTtl = Duration(minutes: 3);
+  Timer? _territoryRefreshTimer;
   final Set<Circle> _heatmapCircles = {};
   bool _showHeatmap = false;
   List<Map<String, dynamic>> _activityHistory = [];
@@ -113,6 +131,11 @@ class _MapScreenState extends State<MapScreen>
   TrackingState _trackingState = TrackingState.stopped;
   Duration _pausedDuration = Duration.zero;
   DateTime? _pauseStartTime;
+  int _loopStartIndex = 0;
+  double _loopStartDistanceMeters = 0.0;
+  bool _loopCaptureInFlight = false;
+  DateTime? _lastLoopCaptureAt;
+  final Set<String> _reportedHexIds = {};
 
   // Loop closure feedback
   bool _hasGivenCloseLoopFeedback = false;
@@ -171,6 +194,8 @@ class _MapScreenState extends State<MapScreen>
   static const String _popularRoutesCacheKeyPrefix = 'routes_popular_cache_v1';
   static const String _popularRoutesCacheKeyLast =
       'routes_popular_cache_last_v1';
+  final Uuid _uuid = Uuid();
+  String? _currentLoopId;
   SavedRoute? _selectedRoute;
   bool _isRealtimeRouteEnabled = true;
   RouteTravelMode _routeTravelMode = RouteTravelMode.walk;
@@ -232,6 +257,9 @@ class _MapScreenState extends State<MapScreen>
 
     _authApiService.getUserId().then((id) => _currentUserId = id);
     _webSocketService.onUserLocation(_handleUserLocation);
+    _webSocketService.onTerritoryCaptured(_handleTerritoryCaptured);
+    _webSocketService.onTerritorySnapshot(_handleTerritorySnapshot);
+    _ensureWebSocketConnected();
     _locationBroadcastTimer = Timer.periodic(
       const Duration(seconds: 6),
       (_) => _emitMyLocationUpdate(),
@@ -241,9 +269,21 @@ class _MapScreenState extends State<MapScreen>
       (_) => _pruneStaleUsers(),
     );
 
+    _territoryRefreshTimer = Timer.periodic(
+      const Duration(seconds: 45),
+      (_) {
+        if (!mounted) return;
+        if (!_webSocketService.isConnected) {
+          _ensureWebSocketConnected();
+          _refreshRecentTerritories();
+        }
+      },
+    );
+
     // DISABLED: Don't load individual hex territories - they're just for backend tracking
     // Load all territories to show on map (visible to all users)
     _loadTerritoriesFromBackend();
+    _loadCachedNearbyTerritories();
     _loadBossTerritoriesFromBackend();
 
     // Get initial location
@@ -272,33 +312,143 @@ class _MapScreenState extends State<MapScreen>
     _pipService.enablePipForScreen('map');
   }
 
-  // Load all territories from backend to show on map (visible to all users)
-  Future<void> _loadTerritoriesFromBackend() async {
+  Future<void> _ensureWebSocketConnected() async {
+    if (_webSocketService.isConnected) return;
+    try {
+      final userId = await _authApiService.getUserId();
+      final token = await _authApiService.getToken();
+      if (userId != null && token != null && token.isNotEmpty) {
+        _webSocketService.connect(userId, token: token);
+      }
+    } catch (e) {
+      print('Failed to ensure WebSocket connection: $e');
+    }
+  }
+
+  void _pruneTerritoryFetchKeys() {
+    final cutoff = DateTime.now().subtract(_territoryFetchTtl);
+    _territoryFetchTimestamps.removeWhere((_, ts) => ts.isBefore(cutoff));
+  }
+
+  Future<void> _refreshRecentTerritories() async {
     try {
       final territoryApiService = di.getIt<TerritoryApiService>();
       final authService = di.getIt<AuthApiService>();
       final currentUserId = await authService.getUserId() ?? '';
-
-      final cached = await _territoryCacheDataSource.getAllTerritories();
-      if (cached.isNotEmpty && mounted) {
-        print('Using cached territories (${cached.length})');
-        _renderTerritories(cached, currentUserId);
-      }
-
-      try {
-        final territories = await territoryApiService.getAllTerritories();
-        await _territoryCacheDataSource.saveAllTerritories(territories);
-        if (mounted) {
-          _renderTerritories(territories, currentUserId);
-        }
-      } catch (e) {
-        print('Failed to load territories from backend: $e');
-        if (cached.isEmpty) {
-          print('No cached territories available');
-        }
-      }
+      final territories = await territoryApiService.getAllTerritories(
+        limit: 250,
+        offset: 0,
+      );
+      if (!mounted) return;
+      _renderTerritories(territories, currentUserId);
     } catch (e) {
-      print('Failed to load territories: $e');
+      print('Failed to refresh recent territories: $e');
+    }
+  }
+
+  // Load every territory (public data) so all users see the full map.
+  Future<void> _loadTerritoriesFromBackend({LatLng? center}) async {
+    if (_allTerritoriesLoaded || _allTerritoriesLoading) return;
+    _allTerritoriesLoading = true;
+
+    final territoryApiService = di.getIt<TerritoryApiService>();
+    final authService = di.getIt<AuthApiService>();
+    final currentUserId = await authService.getUserId() ?? '';
+
+    try {
+      int offset = 0;
+      while (mounted) {
+        final territories = await territoryApiService.getAllTerritories(
+          limit: _territoryAllPageSize,
+          offset: offset,
+        );
+        if (!mounted) return;
+        if (territories.isEmpty) break;
+        _renderTerritories(territories, currentUserId);
+        offset += territories.length;
+        if (territories.length < _territoryAllPageSize) break;
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+      _allTerritoriesLoaded = true;
+    } catch (e) {
+      print('Failed to load all territories: $e');
+    } finally {
+      _allTerritoriesLoading = false;
+    }
+  }
+
+  Future<void> _loadCachedNearbyTerritories() async {
+    try {
+      final cached = await _territoryCacheDataSource.getNearbyTerritories();
+      if (cached.isEmpty || !mounted) return;
+      final currentUserId = _currentUserIdFromAuth() ?? _currentUserId ?? '';
+      _renderTerritories(cached, currentUserId);
+    } catch (e) {
+      print('Failed to load cached nearby territories: $e');
+    }
+  }
+
+  String _territoryFetchKey(LatLng center, double radiusKm) {
+    final lat = center.latitude.toStringAsFixed(3);
+    final lng = center.longitude.toStringAsFixed(3);
+    final r = radiusKm.toStringAsFixed(2);
+    return 'lat:$lat,lng:$lng,r:$r';
+  }
+
+  void _scheduleTerritoryFetch(LatLng center, {bool force = false}) {
+    if (_allTerritoriesLoaded || _allTerritoriesLoading) {
+      return;
+    }
+    _pruneTerritoryFetchKeys();
+    if (!force && _lastTerritoryFetchCenter != null) {
+      final moved = GeodesicCalculator.fastDistance(
+        _lastTerritoryFetchCenter!,
+        center,
+      );
+      if (moved < _territoryRefetchDistanceMeters) {
+        return;
+      }
+    }
+
+    _lastTerritoryFetchCenter = center;
+    _territoryFetchToken += 1;
+    final token = _territoryFetchToken;
+
+    _territoryFetchDebounce?.cancel();
+    _territoryFetchDebounce = Timer(const Duration(milliseconds: 500), () {
+      _fetchTerritoriesProgressively(center, token);
+    });
+  }
+
+  Future<void> _fetchTerritoriesProgressively(
+    LatLng center,
+    int token,
+  ) async {
+    final territoryApiService = di.getIt<TerritoryApiService>();
+    final authService = di.getIt<AuthApiService>();
+    final currentUserId = await authService.getUserId() ?? '';
+
+    for (final radiusKm in _territoryFetchRadiiKm) {
+      if (!mounted || token != _territoryFetchToken) return;
+      final key = _territoryFetchKey(center, radiusKm);
+      final lastFetchAt = _territoryFetchTimestamps[key];
+      if (lastFetchAt != null &&
+          DateTime.now().difference(lastFetchAt) < _territoryFetchTtl) {
+        continue;
+      }
+      _territoryFetchTimestamps[key] = DateTime.now();
+      try {
+        final territories = await territoryApiService.getNearbyTerritories(
+          lat: center.latitude,
+          lng: center.longitude,
+          radius: radiusKm,
+        );
+        if (!mounted || token != _territoryFetchToken) return;
+        _renderTerritories(territories, currentUserId);
+      } catch (e) {
+        print('Failed to load nearby territories (r=$radiusKm): $e');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 400));
     }
   }
 
@@ -323,19 +473,11 @@ class _MapScreenState extends State<MapScreen>
     );
 
     setState(() {
-      _polygons.removeWhere(
-        (polygon) => polygon.polygonId.value.startsWith('territory_'),
-      );
-      _territoryMarkers.removeWhere(
-        (marker) => marker.markerId.value.startsWith('territory_'),
-      );
-      final bossEntries = Map<String, Map<String, dynamic>>.fromEntries(
-        _territoryData.entries.where((entry) => entry.value['isBoss'] == true),
-      );
-      _territoryData.clear();
-      _territoryData.addAll(bossEntries);
-
       for (final territory in displayTerritories) {
+        final hexId = territory['hexId']?.toString() ?? '';
+        if (hexId.isEmpty) {
+          continue;
+        }
         final lat = territory['latitude'] is String
             ? double.parse(territory['latitude'])
             : (territory['latitude'] as num).toDouble();
@@ -361,11 +503,17 @@ class _MapScreenState extends State<MapScreen>
           }
         }
 
-        polygonPoints ??= _generateCirclePoints(LatLng(lat, lng), 50);
+        if (polygonPoints == null) {
+          polygonPoints = _generateCirclePoints(LatLng(lat, lng), 25);
+        }
 
+        final polygonId = 'territory_$hexId';
+        _polygons.removeWhere(
+          (polygon) => polygon.polygonId.value == polygonId,
+        );
         _polygons.add(
           Polygon(
-            polygonId: PolygonId('territory_${territory['hexId']}'),
+          polygonId: PolygonId(polygonId),
             points: polygonPoints,
             fillColor: territoryColor.withOpacity(0.25),
             strokeColor: territoryColor,
@@ -373,8 +521,9 @@ class _MapScreenState extends State<MapScreen>
           ),
         );
 
-        _territoryData[territory['hexId']] = {
+        _territoryData[hexId] = {
           'polygonPoints': polygonPoints,
+          'territoryId': territory['id']?.toString(),
           'ownerId': ownerId,
           'ownerName': territory['owner']?['name'] ?? 'Unknown',
           'captureCount': territory['captureCount'] ?? 1,
@@ -428,6 +577,7 @@ class _MapScreenState extends State<MapScreen>
           isBoss: data['isBoss'] == true,
           bossRewardPoints: data['bossRewardPoints'],
           avatarSource: avatarSource,
+          territoryId: data['territoryId']?.toString(),
         );
         break;
       }
@@ -477,12 +627,14 @@ class _MapScreenState extends State<MapScreen>
     bool isBoss = false,
     int? bossRewardPoints,
     String? avatarSource,
+    String? territoryId,
   }) {
     final accent = isBoss
         ? const Color(0xFFF5B700)
         : (isOwn ? const Color(0xFF2ECC71) : const Color(0xFFF39C12));
     final headline = isOwn ? 'Your Territory' : 'Territory';
     final subtitle = isOwn ? 'Owned by you' : 'Owned by $ownerName';
+    final territoryIdText = territoryId?.trim();
 
     showModalBottomSheet(
       context: context,
@@ -659,6 +811,16 @@ class _MapScreenState extends State<MapScreen>
                                   label: 'Last battle',
                                   value: _formatDate(lastBattleAt),
                                 ),
+                              if (territoryIdText != null &&
+                                  territoryIdText.isNotEmpty) ...[
+                                if (capturedAt != null || lastBattleAt != null)
+                                  const SizedBox(height: 10),
+                                _buildTerritoryInfoRow(
+                                  icon: Icons.tag,
+                                  label: 'Territory ID',
+                                  value: territoryIdText,
+                                ),
+                              ],
                               const SizedBox(height: 20),
                               Row(
                                 children: [
@@ -1241,146 +1403,149 @@ class _MapScreenState extends State<MapScreen>
               (capturedAreaSqMeters != null && capturedAreaSqMeters > 0) ||
               (capturedHexIds is List && capturedHexIds.isNotEmpty);
 
-          // Only render activities that captured territories/area
-          if (hasCapturedArea) {
-            final routeData = activityData['routePoints'] as List<dynamic>?;
-            if (routeData != null && routeData.isNotEmpty) {
-              // Convert route points to LatLng safely
-              final routePoints = routeData
-                  .map(_parseRoutePoint)
-                  .whereType<LatLng>()
-                  .toList();
-              if (routePoints.length < 3) {
-                print('[warn] Skipping activity ${activityData['id']} - not enough valid points');
-                continue;
-              }
+          final routeData = activityData['routePoints'] as List<dynamic>?;
+          if (routeData == null || routeData.isEmpty) {
+            continue;
+          }
 
-              // Add filled area polygon matching the walked path
-              final polygonId = 'saved_area_${activityData['id']}';
-              _activityData[polygonId] = activityData;
-              _polygons.add(
-                Polygon(
-                  polygonId: PolygonId(polygonId),
-                  points: routePoints,
-                  fillColor: Color(
-                    0xFF4CAF50,
-                  ).withOpacity(0.3), // Green for captured territory
-                  strokeColor: Color(0xFF2E7D32),
-                  strokeWidth: 2,
-                  consumeTapEvents: true,
+          // Convert route points to LatLng safely
+          final routePoints = routeData
+              .map(_parseRoutePoint)
+              .whereType<LatLng>()
+              .toList();
+          if (routePoints.length < 2) {
+            print('[warn] Skipping activity ${activityData['id']} - not enough valid points');
+            continue;
+          }
+
+          if (hasCapturedArea && routePoints.length >= 3) {
+            // Add filled area polygon matching the walked path
+            final polygonId = 'saved_area_${activityData['id']}';
+            _activityData[polygonId] = activityData;
+            _polygons.add(
+              Polygon(
+                polygonId: PolygonId(polygonId),
+                points: routePoints,
+                fillColor: Color(
+                  0xFF4CAF50,
+                ).withOpacity(0.3), // Green for captured territory
+                strokeColor: Color(0xFF2E7D32),
+                strokeWidth: 2,
+                consumeTapEvents: true,
+              ),
+            );
+          }
+
+          // Add tappable polyline for route (always)
+          final polylineId = 'saved_route_${activityData['id']}';
+          _activityData[polylineId] = activityData;
+          _polylines.add(
+            Polyline(
+              polylineId: PolylineId(polylineId),
+              points: routePoints,
+              color: hasCapturedArea
+                  ? Color(0xFF2196F3) // Brighter blue
+                  : Colors.blueGrey.withOpacity(0.7),
+              width: hasCapturedArea ? 10 : 6,
+              consumeTapEvents: true,
+              onTap: () {
+                print('Polyline tapped: $polylineId');
+                _handlePolylineTap(PolylineId(polylineId));
+              },
+            ),
+          );
+
+          // Add marker at center with username (captured areas only)
+          if (hasCapturedArea && routePoints.isNotEmpty) {
+            double sumLat = 0, sumLng = 0;
+            for (final point in routePoints) {
+              sumLat += point.latitude;
+              sumLng += point.longitude;
+            }
+            final center = LatLng(
+              sumLat / routePoints.length,
+              sumLng / routePoints.length,
+            );
+            final markerId = 'label_${activityData['id']}';
+            final userData = activityData['user'];
+            final ownerName = userData is Map
+                ? (userData['name']?.toString() ?? 'You')
+                : 'You';
+            final ownerId = userData is Map
+                ? (userData['id']?.toString() ??
+                    userData['userId']?.toString())
+                : null;
+            final isOwn =
+                ownerId == null || ownerId == _currentUserIdFromAuth();
+            final captureCountRaw = _toIntSafe(
+              activityData['territoriesCaptured'],
+            );
+            final captureCount =
+                captureCountRaw > 0 ? captureCountRaw : 1;
+            final points = activityData['pointsEarned'] != null
+                ? _toIntSafe(activityData['pointsEarned'])
+                : null;
+            final areaSqMeters =
+                _toDoubleSafe(activityData['capturedAreaSqMeters']);
+            final capturedAt = _parseDateTimeSafe(
+              activityData['startTime'] ??
+                  activityData['capturedAt'] ??
+                  activityData['createdAt'],
+            );
+
+            _territoryMarkers.add(
+              Marker(
+                markerId: MarkerId(markerId),
+                position: center,
+                icon: BitmapDescriptor.defaultMarkerWithHue(
+                  BitmapDescriptor.hueBlue,
                 ),
-              );
+                onTap: () {
+                  _showTerritoryInfo(
+                    ownerName: ownerName,
+                    captureCount: captureCount,
+                    isOwn: isOwn,
+                    points: points,
+                    capturedAt: capturedAt,
+                    areaSqMeters: areaSqMeters,
+                    avatarSource:
+                        _extractAvatarSource(activityData) ??
+                        _currentUserAvatarSource(),
+                  );
+                },
+              ),
+            );
 
-              // Add tappable polyline for route
-              final polylineId = 'saved_route_${activityData['id']}';
-              _activityData[polylineId] = activityData;
-              _polylines.add(
-                Polyline(
-                  polylineId: PolylineId(polylineId),
-                  points: routePoints,
-                  color: Color(0xFF2196F3), // Brighter blue
-                  width: 10,
-                  consumeTapEvents: true,
-                  onTap: () {
-                    print('🔵 Polyline tapped: $polylineId');
-                    _handlePolylineTap(PolylineId(polylineId));
-                  },
-                ),
-              );
-
-              // Add marker at center with username
-              if (routePoints.isNotEmpty) {
-                double sumLat = 0, sumLng = 0;
-                for (final point in routePoints) {
-                  sumLat += point.latitude;
-                  sumLng += point.longitude;
-                }
-                final center = LatLng(
-                  sumLat / routePoints.length,
-                  sumLng / routePoints.length,
-                );
-                final markerId = 'label_${activityData['id']}';
-                final userData = activityData['user'];
-                final ownerName = userData is Map
-                    ? (userData['name']?.toString() ?? 'You')
-                    : 'You';
-                final ownerId = userData is Map
-                    ? (userData['id']?.toString() ??
-                        userData['userId']?.toString())
-                    : null;
-                final isOwn =
-                    ownerId == null || ownerId == _currentUserIdFromAuth();
-                final captureCountRaw = _toIntSafe(
-                  activityData['territoriesCaptured'],
-                );
-                final captureCount =
-                    captureCountRaw > 0 ? captureCountRaw : 1;
-                final points = activityData['pointsEarned'] != null
-                    ? _toIntSafe(activityData['pointsEarned'])
-                    : null;
-                final areaSqMeters =
-                    _toDoubleSafe(activityData['capturedAreaSqMeters']);
-                final capturedAt = _parseDateTimeSafe(
-                  activityData['startTime'] ??
-                      activityData['capturedAt'] ??
-                      activityData['createdAt'],
-                );
-
-                _territoryMarkers.add(
-                  Marker(
-                    markerId: MarkerId(markerId),
-                    position: center,
-                    icon: BitmapDescriptor.defaultMarkerWithHue(
-                      BitmapDescriptor.hueBlue,
-                    ),
-                    onTap: () {
-                      _showTerritoryInfo(
-                        ownerName: ownerName,
-                        captureCount: captureCount,
-                        isOwn: isOwn,
-                        points: points,
-                        capturedAt: capturedAt,
-                        areaSqMeters: areaSqMeters,
-                        avatarSource:
-                            _extractAvatarSource(activityData) ??
-                            _currentUserAvatarSource(),
-                      );
-                    },
-                  ),
-                );
-
-                final avatarSource =
-                    _extractAvatarSource(activityData) ??
-                    _currentUserAvatarSource();
-                final avatarCacheKey = userData is Map
-                    ? (userData['id']?.toString() ??
-                        userData['userId']?.toString())
-                    : null;
-                final cacheKey =
-                    avatarCacheKey ?? _currentUserIdFromAuth() ?? markerId;
-                if (avatarSource != null && avatarSource.isNotEmpty) {
-                  pendingAvatarMarkers.add({
-                    'markerId': markerId,
-                    'position': center,
-                    'avatarSource': avatarSource,
-                    'cacheKey': cacheKey,
-                    'onTap': () {
-                      _showTerritoryInfo(
-                        ownerName: ownerName,
-                        captureCount: captureCount,
-                        isOwn: isOwn,
-                        points: points,
-                        capturedAt: capturedAt,
-                        areaSqMeters: areaSqMeters,
-                        avatarSource: avatarSource,
-                      );
-                    },
-                  });
-                }
-              }
-              loadedCount++;
+            final avatarSource =
+                _extractAvatarSource(activityData) ??
+                _currentUserAvatarSource();
+            final avatarCacheKey = userData is Map
+                ? (userData['id']?.toString() ??
+                    userData['userId']?.toString())
+                : null;
+            final cacheKey =
+                avatarCacheKey ?? _currentUserIdFromAuth() ?? markerId;
+            if (avatarSource != null && avatarSource.isNotEmpty) {
+              pendingAvatarMarkers.add({
+                'markerId': markerId,
+                'position': center,
+                'avatarSource': avatarSource,
+                'cacheKey': cacheKey,
+                'onTap': () {
+                  _showTerritoryInfo(
+                    ownerName: ownerName,
+                    captureCount: captureCount,
+                    isOwn: isOwn,
+                    points: points,
+                    capturedAt: capturedAt,
+                    areaSqMeters: areaSqMeters,
+                    avatarSource: avatarSource,
+                  );
+                },
+              });
             }
           }
+          loadedCount++;
         }
       });
 
@@ -1480,9 +1645,13 @@ class _MapScreenState extends State<MapScreen>
     _holdTimer?.cancel();
     _endTimer?.cancel();
     _syncStatusTimer?.cancel();
+    _territoryRefreshTimer?.cancel();
     _locationBroadcastTimer?.cancel();
     _liveUserCleanupTimer?.cancel();
+    _territoryFetchDebounce?.cancel();
     _webSocketService.offUserLocation(_handleUserLocation);
+    _webSocketService.offTerritoryCaptured(_handleTerritoryCaptured);
+    _webSocketService.offTerritorySnapshot(_handleTerritorySnapshot);
     BackgroundTrackingService.stopTracking();
     super.dispose();
   }
@@ -1510,7 +1679,9 @@ class _MapScreenState extends State<MapScreen>
                   state.currentPosition.latitude,
                   state.currentPosition.longitude,
                 );
+                _scheduleTerritoryFetch(_lastKnownLocation!);
                 // Update all UI elements in real-time
+                _checkRealtimeLoopCapture(state);
                 _updateRoutePolyline(state);
                 _calculateSpeed(state);
                 _updateStartPointMarker(state);
@@ -1540,6 +1711,7 @@ class _MapScreenState extends State<MapScreen>
                   state.lastPosition!.latitude,
                   state.lastPosition!.longitude,
                 );
+                _scheduleTerritoryFetch(_lastKnownLocation!);
                 _refreshRoutePreviewFromLocation(_lastKnownLocation);
                 _updateCurrentUserMarker(_lastKnownLocation!);
               }
@@ -2302,75 +2474,7 @@ class _MapScreenState extends State<MapScreen>
   }
 
   void _updateStartPointMarker(LocationTracking state) {
-    if (state.routePoints.isEmpty) return;
-
-    final startPoint = state.routePoints.first;
-    final currentPoint = state.currentPosition;
-
-    // Calculate distance to start
-    _distanceToStart = _calculateDistanceBetweenPoints(
-      startPoint,
-      currentPoint,
-    );
-
-    // Create start point circle marker
-    setState(() {
-      Color circleColor = Colors.green;
-      double radius = 50; // 50 meters
-
-      // Change color based on distance to start
-      if (_distanceToStart < 100) {
-        circleColor = Colors.greenAccent; // Very close!
-        radius = 100;
-      } else if (_distanceToStart < 200) {
-        circleColor = Colors.yellow; // Getting close
-        radius = 75;
-      }
-
-      _startPointCircle = Circle(
-        circleId: CircleId('start_point'),
-        center: LatLng(startPoint.latitude, startPoint.longitude),
-        radius: radius,
-        fillColor: circleColor.withOpacity(0.3),
-        strokeColor: circleColor,
-        strokeWidth: 3,
-      );
-    });
-
-    // Loop closure haptic feedback (only once per approach)
-    if (_distanceToStart < 100 &&
-        !_hasGivenCloseLoopFeedback &&
-        state.routePoints.length > 10) {
-      _hasGivenCloseLoopFeedback = true;
-      HapticFeedback.heavyImpact();
-      // Audio removed - file not available
-
-      // Calculate estimated area for user feedback
-      _estimatedAreaSqMeters = _calculatePolygonArea(state.routePoints);
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              Icon(Icons.check_circle, color: Colors.white),
-              SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Loop ready! ~${_formatArea(_estimatedAreaSqMeters)} capturable',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-          duration: Duration(seconds: 3),
-        ),
-      );
-    } else if (_distanceToStart >= 150) {
-      // Reset feedback when user moves away from start
-      _hasGivenCloseLoopFeedback = false;
-    }
+    // Disabled: no start point circle.
   }
 
   // Calculate polygon area using industry-grade spherical geometry
@@ -2599,6 +2703,158 @@ class _MapScreenState extends State<MapScreen>
     if (diff.inHours < 1) return '${diff.inMinutes}m ago';
     if (diff.inDays < 1) return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
+  }
+
+  void _checkRealtimeLoopCapture(LocationTracking state) {
+    if (_trackingState != TrackingState.started) return;
+    if (state.routePoints.length < 3) return;
+
+    if (_loopStartIndex >= state.routePoints.length) {
+      _loopStartIndex = max(0, state.routePoints.length - 1);
+      _loopStartDistanceMeters = state.totalDistance;
+    }
+
+    final startPoint = state.routePoints[_loopStartIndex];
+    final lastPoint = state.routePoints.last;
+    final distanceToStart =
+        _calculateDistanceBetweenPoints(startPoint, lastPoint);
+    _distanceToStart = distanceToStart;
+
+    if (distanceToStart < 150 &&
+        state.routePoints.length - _loopStartIndex >= 3) {
+      final segmentLatLngs = state.routePoints
+          .sublist(_loopStartIndex)
+          .map((p) => LatLng(p.latitude, p.longitude))
+          .toList();
+      if (segmentLatLngs.length >= 3) {
+        _estimatedAreaSqMeters = _calculatePolygonAreaSqMeters(segmentLatLngs);
+      }
+    } else if (_estimatedAreaSqMeters != 0.0 && distanceToStart > 200) {
+      _estimatedAreaSqMeters = 0.0;
+    }
+
+    final distanceSinceLoopStart =
+        state.totalDistance - _loopStartDistanceMeters;
+    if (distanceToStart > 100) return;
+    if (distanceSinceLoopStart < 100) return;
+    if (_loopCaptureInFlight) return;
+    if (_lastLoopCaptureAt != null &&
+        DateTime.now().difference(_lastLoopCaptureAt!) <
+            const Duration(seconds: 8)) {
+      return;
+    }
+
+    final segmentPoints = state.routePoints.sublist(_loopStartIndex);
+    if (segmentPoints.length < 3) return;
+    _captureLoopSegmentRealtime(state, segmentPoints);
+  }
+
+  Future<void> _captureLoopSegmentRealtime(
+    LocationTracking state,
+    List<Position> segmentPoints,
+  ) async {
+    if (_loopCaptureInFlight) return;
+    _loopCaptureInFlight = true;
+    var didCapture = false;
+
+    try {
+      final routeLatLngs =
+          segmentPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
+      if (routeLatLngs.length < 3) return;
+
+      final simplified = _simplifyRoute(routeLatLngs, 3.0);
+      if (simplified.length < 3) return;
+
+      double minLat = simplified.first.latitude;
+      double maxLat = simplified.first.latitude;
+      double minLng = simplified.first.longitude;
+      double maxLng = simplified.first.longitude;
+
+      for (final point in simplified) {
+        if (point.latitude < minLat) minLat = point.latitude;
+        if (point.latitude > maxLat) maxLat = point.latitude;
+        if (point.longitude < minLng) minLng = point.longitude;
+        if (point.longitude > maxLng) maxLng = point.longitude;
+      }
+
+      const double metersPerDegreeLat = 111000.0;
+      final avgLat = (minLat + maxLat) / 2;
+      final metersPerDegreeLng = metersPerDegreeLat * cos(avgLat * pi / 180);
+      final heightMeters = (maxLat - minLat) * metersPerDegreeLat;
+      final widthMeters = (maxLng - minLng) * metersPerDegreeLng;
+      final boundingAreaSqMeters = heightMeters * widthMeters;
+      if (boundingAreaSqMeters < 100) {
+        return;
+      }
+
+      final capturedHexIds = <String>{};
+      const double latStep = 0.00018; // ~20 meters latitude
+      final double lngStep = 0.00018 / cos(avgLat * pi / 180);
+
+      for (double lat = minLat; lat <= maxLat; lat += latStep) {
+        for (double lng = minLng; lng <= maxLng; lng += lngStep) {
+          if (_isPointInPolygon(LatLng(lat, lng), simplified)) {
+            capturedHexIds.add(TerritoryGridHelper.getHexId(lat, lng));
+          }
+        }
+      }
+
+      if (capturedHexIds.isEmpty) return;
+
+      setState(() {
+        _currentSessionTerritories += 1;
+        _capturedHexIds.addAll(capturedHexIds);
+        _territoryRoutePoints = simplified;
+      });
+
+      _showCapturedArea(simplified);
+
+      final loopId = _uuid.v4();
+      final hexCoordinates = <Map<String, double>>[];
+      for (final hexId in capturedHexIds) {
+        final (centerLat, centerLng) = TerritoryGridHelper.getHexCenter(hexId);
+        hexCoordinates.add({'lat': centerLat, 'lng': centerLng});
+      }
+
+      final limitedTerritoryPoints = _limitLatLngPoints(simplified);
+      final routePointsArray = [
+        limitedTerritoryPoints
+            .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+            .toList(),
+      ];
+
+      final payload = {
+        'hexIds': capturedHexIds.toList(),
+        'coordinates': hexCoordinates,
+        'captureSessionId': loopId,
+        'routePoints': routePointsArray,
+      };
+
+      try {
+        final territoryApiService = di.getIt<TerritoryApiService>();
+        await territoryApiService.captureTerritoriesPayload(payload);
+        _reportedHexIds.addAll(capturedHexIds);
+        didCapture = true;
+      } catch (e) {
+        try {
+          await _offlineSyncService.queueTerritoryPayload(payload);
+          _reportedHexIds.addAll(capturedHexIds);
+          _triggerBackgroundSync();
+          didCapture = true;
+        } catch (queueError) {
+          print('[warn] Failed to queue realtime territory payload: $queueError');
+        }
+      }
+    } finally {
+      if (didCapture) {
+        _loopStartIndex = max(0, state.routePoints.length - 1);
+        _loopStartDistanceMeters = state.totalDistance;
+        _distanceToStart = double.infinity;
+        _estimatedAreaSqMeters = 0.0;
+      }
+      _lastLoopCaptureAt = DateTime.now();
+      _loopCaptureInFlight = false;
+    }
   }
 
   void _captureTerritoriesRealTime(LocationTracking state) {
@@ -4354,10 +4610,10 @@ class _MapScreenState extends State<MapScreen>
         final bossColor = Colors.amber;
 
         final routePoints = boss['routePoints'] as List?;
-        List<LatLng> polygonPoints;
+        List<LatLng>? polygonPoints;
 
         if (routePoints != null && routePoints.isNotEmpty) {
-          polygonPoints = routePoints.map((p) {
+          final parsedPoints = routePoints.map((p) {
             final pointLat = p['lat'] is String
                 ? double.parse(p['lat'])
                 : (p['lat'] as num).toDouble();
@@ -4366,8 +4622,13 @@ class _MapScreenState extends State<MapScreen>
                 : (p['lng'] as num).toDouble();
             return LatLng(pointLat, pointLng);
           }).toList();
-        } else {
-          polygonPoints = _generateCirclePoints(LatLng(lat, lng), 60);
+          if (parsedPoints.length >= 3) {
+            polygonPoints = parsedPoints;
+          }
+        }
+
+        if (polygonPoints == null) {
+          polygonPoints = _generateCirclePoints(LatLng(lat, lng), 25);
         }
 
         _polygons.add(
@@ -4406,6 +4667,7 @@ class _MapScreenState extends State<MapScreen>
             isBoss: true,
             bossRewardPoints: boss['bossRewardPoints'],
             avatarSource: ownerAvatarSource,
+            territoryId: boss['id']?.toString(),
           );
         };
 
@@ -4425,6 +4687,7 @@ class _MapScreenState extends State<MapScreen>
         pendingBossMarkers.add({
           'markerId': markerId,
           'position': markerPosition,
+          'territoryId': boss['id']?.toString(),
           'ownerId': ownerId,
           'ownerName': ownerName,
           'captureCount': bossCaptureCount,
@@ -4438,6 +4701,7 @@ class _MapScreenState extends State<MapScreen>
 
         _territoryData[hexId] = {
           'polygonPoints': polygonPoints,
+          'territoryId': boss['id']?.toString(),
           'ownerId': ownerId,
           'ownerName': boss['owner']?['name'] ?? 'Unknown',
           'captureCount': boss['captureCount'] ?? 1,
@@ -4449,7 +4713,7 @@ class _MapScreenState extends State<MapScreen>
           'lastBattleAt': boss['lastBattleAt'] != null
               ? DateTime.parse(boss['lastBattleAt'])
               : null,
-          'areaSqMeters': _calculatePolygonArea(polygonPoints),
+          'areaSqMeters': bossAreaSqMeters,
           'isBoss': true,
           'bossRewardPoints': boss['bossRewardPoints'],
         };
@@ -4484,6 +4748,7 @@ class _MapScreenState extends State<MapScreen>
           isBoss: true,
           bossRewardPoints: bossRewardPoints,
           avatarSource: avatar,
+          territoryId: pending['territoryId']?.toString(),
         );
       }
 
@@ -4546,6 +4811,98 @@ class _MapScreenState extends State<MapScreen>
     setState(() {
       _userMarkersById[userId] = marker;
     });
+  }
+
+  void _handleTerritoryCaptured(dynamic payload) {
+    if (!mounted) return;
+
+    String? eventId;
+    int? eventTs;
+    dynamic rawTerritories = payload;
+
+    if (payload is Map) {
+      if (payload['territories'] is List) {
+        rawTerritories = payload['territories'];
+      }
+      eventId = payload['eventId']?.toString();
+      final tsRaw = payload['ts'];
+      if (tsRaw is num) {
+        eventTs = tsRaw.toInt();
+      } else if (tsRaw != null) {
+        eventTs = int.tryParse(tsRaw.toString());
+      }
+    }
+
+    final List<Map<String, dynamic>> territories = [];
+    if (rawTerritories is List) {
+      for (final item in rawTerritories) {
+        if (item is Map) {
+          territories.add(Map<String, dynamic>.from(item));
+        }
+      }
+    } else if (rawTerritories is Map) {
+      territories.add(Map<String, dynamic>.from(rawTerritories));
+    }
+
+    if (territories.isEmpty) return;
+    final currentUserId = _currentUserIdFromAuth() ?? _currentUserId ?? '';
+    _renderTerritories(territories, currentUserId);
+
+    if (eventId != null && eventTs != null) {
+      _webSocketService.emitTerritoryAck(eventId: eventId, ts: eventTs);
+    }
+  }
+
+  Future<void> _handleTerritorySnapshot(dynamic payload) async {
+    if (!mounted) return;
+
+    dynamic rawTerritories = payload;
+    if (payload is Map && payload['territories'] is List) {
+      rawTerritories = payload['territories'];
+    }
+
+    final List<Map<String, dynamic>> territories = [];
+    if (rawTerritories is List) {
+      for (final item in rawTerritories) {
+        if (item is Map) {
+          territories.add(Map<String, dynamic>.from(item));
+        }
+      }
+    } else if (rawTerritories is Map) {
+      territories.add(Map<String, dynamic>.from(rawTerritories));
+    }
+
+    if (territories.isEmpty) return;
+    final currentUserId = _currentUserIdFromAuth() ?? _currentUserId ?? '';
+    _renderTerritories(territories, currentUserId);
+    await _mergeAndCacheNearby(territories);
+  }
+
+  Future<void> _mergeAndCacheNearby(
+    List<Map<String, dynamic>> territories,
+  ) async {
+    if (territories.isEmpty) return;
+    try {
+      final cached = await _territoryCacheDataSource.getNearbyTerritories();
+      final merged = <String, Map<String, dynamic>>{};
+      for (final territory in cached) {
+        final hexId = territory['hexId']?.toString();
+        if (hexId != null && hexId.isNotEmpty) {
+          merged[hexId] = territory;
+        }
+      }
+      for (final territory in territories) {
+        final hexId = territory['hexId']?.toString();
+        if (hexId != null && hexId.isNotEmpty) {
+          merged[hexId] = territory;
+        }
+      }
+      await _territoryCacheDataSource.saveNearbyTerritories(
+        merged.values.toList(),
+      );
+    } catch (e) {
+      print('Failed to merge nearby territories: $e');
+    }
   }
 
   Future<Map<String, dynamic>?> _ensureUserProfile(String userId) async {
@@ -4774,7 +5131,7 @@ class _MapScreenState extends State<MapScreen>
 
   Set<Circle> _getMapCircles() {
     final circles = <Circle>{};
-    if (_startPointCircle != null) {
+    if (_trackingState == TrackingState.started && _startPointCircle != null) {
       circles.add(_startPointCircle!);
     }
     if (_showHeatmap) {
@@ -5243,6 +5600,7 @@ class _MapScreenState extends State<MapScreen>
           ownerName: data['ownerName'],
           isOwn: data['isOwn'],
           captureCount: data['captureCount'],
+          territoryId: data['territoryId']?.toString(),
         );
         return;
       }
@@ -5256,7 +5614,9 @@ class _MapScreenState extends State<MapScreen>
     required String ownerName,
     required bool isOwn,
     required int captureCount,
+    String? territoryId,
   }) {
+    final territoryIdText = territoryId?.trim();
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -5370,6 +5730,39 @@ class _MapScreenState extends State<MapScreen>
                       ],
                     ),
                   ),
+                  if (territoryIdText != null && territoryIdText.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Color(0xFFF9FAFB),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Color(0xFFE5E7EB), width: 1),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Territory ID',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF6B7280),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          SelectableText(
+                            territoryIdText,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF111827),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -5756,7 +6149,17 @@ class _MapScreenState extends State<MapScreen>
 
     _offlineSyncService
         .syncPending()
-        .then((_) => _refreshSyncStatus())
+        .then((synced) async {
+          await _refreshSyncStatus();
+          if (synced > 0) {
+            await _loadSavedCapturedAreas();
+            if (_lastKnownLocation != null) {
+              _scheduleTerritoryFetch(_lastKnownLocation!, force: true);
+            } else {
+              await _refreshRecentTerritories();
+            }
+          }
+        })
         .whenComplete(() {
       if (mounted) {
         setState(() {
@@ -5770,8 +6173,17 @@ class _MapScreenState extends State<MapScreen>
 
   void _handleStart(BuildContext context) {
     setState(() {
+      _currentLoopId = _uuid.v4();
       _trackingState = TrackingState.started;
       _followUser = true;
+      // Prevent stale start marker from previous sessions.
+      _startPointCircle = null;
+      _loopStartIndex = 0;
+      _loopStartDistanceMeters = 0.0;
+      _loopCaptureInFlight = false;
+      _lastLoopCaptureAt = null;
+      _reportedHexIds.clear();
+      _capturedHexIds.clear();
     });
     _buttonAnimController.forward();
     _startCountdown(context);
@@ -5885,17 +6297,32 @@ class _MapScreenState extends State<MapScreen>
       print('Paused Duration: $_pausedDuration');
       print('LocationState type BEFORE stop: ${locationState.runtimeType}');
 
+      // Ensure loop distance is computed even when start-point tracking is off.
+      var loopDistanceToStart = _distanceToStart;
+      if (loopDistanceToStart.isInfinite &&
+          locationState is LocationTracking &&
+          locationState.routePoints.length >= 2) {
+        loopDistanceToStart = _calculateDistanceBetweenPoints(
+          locationState.routePoints.first,
+          locationState.routePoints.last,
+        );
+        _distanceToStart = loopDistanceToStart;
+      }
+
       // Check if loop was completed (returned within 100m of start)
-      final bool loopCompleted = _distanceToStart < 100;
-      final int newTerritoryCount =
-          loopCompleted ? 1 : 0; // 1 territory per completed loop
+      final bool loopCompleted = loopDistanceToStart < 100;
+      final int newTerritoryCount = _currentSessionTerritories > 0
+          ? _currentSessionTerritories
+          : (loopCompleted ? 1 : 0); // 1 territory per completed loop
 
       print(
-        '🔄 Loop completed: $loopCompleted (distance to start: ${_distanceToStart.toStringAsFixed(1)}m)',
+        '🔄 Loop completed: $loopCompleted (distance to start: ${loopDistanceToStart.toStringAsFixed(1)}m)',
       );
 
       // If loop completed, create a territory with the actual route shape
-      if (loopCompleted &&
+      if (_currentSessionTerritories == 0 &&
+          _capturedHexIds.isEmpty &&
+          loopCompleted &&
           locationState is LocationTracking &&
           locationState.routePoints.isNotEmpty) {
         // Calculate center point of the route
@@ -5910,7 +6337,6 @@ class _MapScreenState extends State<MapScreen>
 
         // Generate hex ID for this territory (for uniqueness)
         final hexId = TerritoryGridHelper.getHexId(centerLat, centerLng);
-        _capturedHexIds.clear();
         _capturedHexIds.add(hexId);
 
         // Store the actual route points for the territory shape
@@ -5977,6 +6403,12 @@ class _MapScreenState extends State<MapScreen>
         _pauseStartTime = null;
         _hasGivenCloseLoopFeedback = false;
         _estimatedAreaSqMeters = 0.0;
+        _currentLoopId = null;
+        _loopStartIndex = 0;
+        _loopStartDistanceMeters = 0.0;
+        _loopCaptureInFlight = false;
+        _lastLoopCaptureAt = null;
+        _reportedHexIds.clear();
       });
 
       _buttonAnimController.reverse();
@@ -6052,6 +6484,11 @@ class _MapScreenState extends State<MapScreen>
         _lastDistanceUpdate = 0.0;
         _lastNotificationDistance = 0.0;
         _currentSessionTerritories = 0; // Reset session territories
+        _loopStartIndex = 0;
+        _loopStartDistanceMeters = 0.0;
+        _loopCaptureInFlight = false;
+        _lastLoopCaptureAt = null;
+        _reportedHexIds.clear();
         _trackingStartTime = DateTime.now();
         _sessionStartSteps = _steps;
 
@@ -6112,6 +6549,30 @@ class _MapScreenState extends State<MapScreen>
     return reduced;
   }
 
+  List<LatLng> _limitLatLngPoints(List<LatLng> points,
+      {int maxPoints = 2000}) {
+    if (points.length <= maxPoints) {
+      return points;
+    }
+
+    final step = (points.length / maxPoints).ceil();
+    final reduced = <LatLng>[];
+    for (int i = 0; i < points.length; i += step) {
+      reduced.add(points[i]);
+    }
+
+    if (reduced.isNotEmpty) {
+      final last = points.last;
+      final lastReduced = reduced.last;
+      if (last.latitude != lastReduced.latitude ||
+          last.longitude != lastReduced.longitude) {
+        reduced.add(last);
+      }
+    }
+
+    return reduced;
+  }
+
   // Save completed workout to history
   Future<void> _saveActivityToHistory({
     required LocationState locationState,
@@ -6148,8 +6609,12 @@ class _MapScreenState extends State<MapScreen>
 
       final routePointsToSave = _limitRoutePoints(locationState.routePoints);
 
+      final loopId = _currentLoopId ?? _uuid.v4();
+      _currentLoopId ??= loopId;
+
       final activity = Activity(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
+        clientId: loopId,
         route: routePointsToSave,
         distanceMeters: distance * 1000,
         duration: activeDuration,
@@ -6171,6 +6636,7 @@ class _MapScreenState extends State<MapScreen>
       await _activityLocalDataSource.saveActivity(activity);
 
       final activityPayload = {
+        'clientId': loopId,
         'routePoints': routePointsToSave
             .map(
               (p) => {
@@ -6200,10 +6666,11 @@ class _MapScreenState extends State<MapScreen>
       await _refreshSyncStatus();
 
       // Queue captured territories for background sync
-      if (_capturedHexIds.isNotEmpty) {
+      final unsyncedHexIds = _capturedHexIds.difference(_reportedHexIds);
+      if (unsyncedHexIds.isNotEmpty) {
         // FIXED: Decode each hex ID to get its actual center coordinates
         final hexCoordinates = <Map<String, double>>[];
-        for (final hexId in _capturedHexIds) {
+        for (final hexId in unsyncedHexIds) {
           // Use TerritoryGridHelper to get the true center of each hex
           final (centerLat, centerLng) = TerritoryGridHelper.getHexCenter(
             hexId,
@@ -6212,20 +6679,24 @@ class _MapScreenState extends State<MapScreen>
         }
 
         // Convert route points to API format
-        final routePointsArray = _territoryRoutePoints.isNotEmpty
+        final limitedTerritoryPoints =
+            _limitLatLngPoints(_territoryRoutePoints);
+        final routePointsArray = limitedTerritoryPoints.isNotEmpty
             ? [
-                _territoryRoutePoints
+                limitedTerritoryPoints
                     .map((p) => {'lat': p.latitude, 'lng': p.longitude})
                     .toList(),
               ]
             : null;
 
         final territoryPayload = {
-          'hexIds': _capturedHexIds.toList(),
+          'hexIds': unsyncedHexIds.toList(),
           'coordinates': hexCoordinates,
+          'captureSessionId': loopId,
           if (routePointsArray != null) 'routePoints': routePointsArray,
         };
         await _offlineSyncService.queueTerritoryPayload(territoryPayload);
+        _reportedHexIds.addAll(unsyncedHexIds);
         print('[sync] Territories queued for background sync');
         await _refreshSyncStatus();
       } else {
@@ -6416,3 +6887,6 @@ class SavedRoute {
     );
   }
 }
+
+
+

@@ -27,6 +27,16 @@ export class TrackingService {
     activityData: CreateActivityDto | Partial<Activity>,
   ): Promise<Activity> {
     const normalizedData = this.normalizeActivityData(activityData);
+    const clientId = normalizedData.clientId?.toString().trim();
+
+    if (clientId) {
+      const existing = await this.activityRepository.findOne({
+        where: { userId, clientId },
+      });
+      if (existing) {
+        return existing;
+      }
+    }
 
     if (
       !normalizedData.routePoints ||
@@ -99,6 +109,7 @@ export class TrackingService {
     const activity = this.activityRepository.create({
       ...normalizedData,
       userId,
+      clientId: clientId || undefined,
     });
 
     const savedActivity = await this.activityRepository.save(activity);
@@ -158,6 +169,10 @@ export class TrackingService {
 
     return {
       ...activityData,
+      clientId:
+        typeof (activityData as any).clientId === "string"
+          ? (activityData as any).clientId.trim()
+          : undefined,
       routePoints,
       startTime,
       endTime,

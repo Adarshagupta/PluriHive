@@ -50,6 +50,9 @@ export class Territory {
   @Column({ default: 50 })
   points: number; // Points earned
 
+  @Column({ type: "varchar", length: 64, nullable: true })
+  lastCaptureSessionId?: string;
+
   @Column({ type: "timestamp", nullable: true })
   lastBattleAt: Date;
 

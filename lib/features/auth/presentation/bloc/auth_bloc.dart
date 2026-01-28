@@ -6,6 +6,7 @@ import '../../../../core/services/auth_api_service.dart';
 import '../../../../core/services/websocket_service.dart';
 import '../../../../core/services/offline_sync_service.dart';
 import '../../../../core/services/user_data_cleanup_service.dart';
+import '../../../../core/services/territory_prefetch_service.dart';
 
 // Events
 abstract class AuthEvent extends Equatable {
@@ -133,12 +134,14 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   final AuthApiService authApiService;
   final WebSocketService webSocketService;
   final OfflineSyncService offlineSyncService;
+  final TerritoryPrefetchService territoryPrefetchService;
   
   AuthBloc({
     required this.repository,
     required this.authApiService,
     required this.webSocketService,
     required this.offlineSyncService,
+    required this.territoryPrefetchService,
   }) : super(AuthInitial()) {
     on<CheckAuthStatus>(_onCheckAuthStatus);
     on<SignUpUser>(_onSignUpUser);
@@ -154,6 +157,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     final token = await authApiService.getToken();
     if (token != null && token.isNotEmpty) {
       webSocketService.connect(user.id, token: token);
+      territoryPrefetchService.prefetchAroundUser();
     } else {
       print('⚠️ WebSocket token unavailable - not connecting');
     }

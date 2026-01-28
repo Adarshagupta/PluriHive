@@ -9,14 +9,11 @@ class WebSocketService {
   IO.Socket? _socket;
   String? _userId;
   final List<Function(dynamic)> _pendingUserStatsListeners = [];
+  final List<Function(dynamic)> _pendingTerritorySnapshotListeners = [];
+  int? _lastTerritoryEventAt;
 
   // Initialize and connect
   void connect(String userId, {String? token}) {
-    if (_socket != null && _socket!.connected) {
-      print('⚠️ WebSocket already connected');
-      return;
-    }
-
     if (token == null || token.isEmpty) {
       print('⚠️ WebSocket token missing - skipping connect');
       return;
@@ -24,17 +21,29 @@ class WebSocketService {
 
     _userId = userId;
 
+    if (_socket != null) {
+      if (_socket!.connected && _userId == userId) {
+        print('⚠️ WebSocket already connected');
+        return;
+      }
+      _socket!.dispose();
+      _socket = null;
+    }
+
     _socket = IO.io(
-      ApiConfig.baseUrl,
+      ApiConfig.wsUrl,
       IO.OptionBuilder()
           .setTransports(['websocket'])
           .disableAutoConnect()
+          .enableReconnection()
+          .setReconnectionAttempts(10)
+          .setReconnectionDelay(500)
+          .setReconnectionDelayMax(2000)
+          .setTimeout(8000)
           .setAuth({'token': token})
           .setExtraHeaders({'Authorization': 'Bearer $token'})
           .build(),
     );
-
-    _socket!.connect();
 
     _socket!.onConnect((_) {
       print('✅ WebSocket connected');
@@ -44,10 +53,21 @@ class WebSocketService {
       for (final listener in _pendingUserStatsListeners) {
         _socket!.on('user:stats:update', listener);
       }
+      _socket!.off('territory:snapshot');
+      for (final listener in _pendingTerritorySnapshotListeners) {
+        _socket!.on('territory:snapshot', listener);
+      }
+      if (_lastTerritoryEventAt != null) {
+        _socket!.emit('territory:replay', {'since': _lastTerritoryEventAt});
+      }
     });
 
     _socket!.onDisconnect((_) {
       print('❌ WebSocket disconnected');
+    });
+
+    _socket!.onReconnect((attempt) {
+      print('🔄 WebSocket reconnected (attempt $attempt)');
     });
 
     _socket!.onConnectError((error) {
@@ -57,6 +77,8 @@ class WebSocketService {
     _socket!.onError((error) {
       print('❌ WebSocket error: $error');
     });
+
+    _socket!.connect();
   }
 
   // Disconnect
@@ -87,6 +109,19 @@ class WebSocketService {
     }
   }
 
+  // Ack territory events so server can track last delivered timestamp
+  void emitTerritoryAck({required String eventId, required int ts}) {
+    if (_socket != null && _socket!.connected) {
+      _updateLastTerritoryEventAt(ts);
+      _socket!.emit('territory:ack', {
+        'eventId': eventId,
+        'ts': ts,
+      });
+    } else {
+      _updateLastTerritoryEventAt(ts);
+    }
+  }
+
   // Emit location update
   void emitLocationUpdate({
     required String userId,
@@ -107,6 +142,29 @@ class WebSocketService {
   // Listen for territory contested
   void onTerritoryContested(Function(dynamic) callback) {
     _socket?.on('territory:contested', callback);
+  }
+
+  // Listen for territory captured (server broadcast)
+  void onTerritoryCaptured(Function(dynamic) callback) {
+    _socket?.on('territory:captured', callback);
+  }
+
+  void offTerritoryCaptured(Function(dynamic) callback) {
+    _socket?.off('territory:captured', callback);
+  }
+
+  // Listen for territory snapshots (bulk data)
+  void onTerritorySnapshot(Function(dynamic) callback) {
+    if (_socket != null) {
+      _socket!.on('territory:snapshot', callback);
+    } else {
+      _pendingTerritorySnapshotListeners.add(callback);
+    }
+  }
+
+  void offTerritorySnapshot(Function(dynamic) callback) {
+    _socket?.off('territory:snapshot', callback);
+    _pendingTerritorySnapshotListeners.remove(callback);
   }
 
   // Listen for user location
@@ -146,10 +204,37 @@ class WebSocketService {
   // Remove all listeners
   void removeAllListeners() {
     _socket?.off('territory:contested');
+    _socket?.off('territory:captured');
+    _socket?.off('territory:snapshot');
     _socket?.off('user:location');
     _socket?.off('leaderboard:update');
     _socket?.off('achievement:unlocked');
     _socket?.off('user:stats:update');
+  }
+
+  // Request territory snapshot around a location
+  void requestTerritorySnapshot({
+    required double lat,
+    required double lng,
+    List<double>? radiiKm,
+    double? radiusKm,
+    int? batchSize,
+  }) {
+    if (_socket == null) return;
+    final payload = {
+      'lat': lat,
+      'lng': lng,
+      if (radiiKm != null && radiiKm.isNotEmpty) 'radiiKm': radiiKm,
+      if (radiusKm != null) 'radiusKm': radiusKm,
+      if (batchSize != null) 'batchSize': batchSize,
+    };
+    _socket!.emit('territory:subscribe', payload);
+  }
+
+  void _updateLastTerritoryEventAt(int ts) {
+    if (_lastTerritoryEventAt == null || ts > _lastTerritoryEventAt!) {
+      _lastTerritoryEventAt = ts;
+    }
   }
 
   bool get isConnected => _socket != null && _socket!.connected;

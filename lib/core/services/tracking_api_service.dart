@@ -27,6 +27,7 @@ class TrackingApiService {
     required DateTime endTime,
     String? routeMapSnapshot,
     List<String>? capturedHexIds,
+    String? clientId,
   }) async {
     try {
       final token = await _authService.getToken();
@@ -42,6 +43,7 @@ class TrackingApiService {
               'Authorization': 'Bearer $token',
             },
             body: jsonEncode({
+              if (clientId != null) 'clientId': clientId,
               'routePoints': routePoints,
               'distanceMeters': distanceMeters,
               'duration': duration,

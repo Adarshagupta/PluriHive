@@ -9,6 +9,7 @@ import {
   Max,
   Min,
   ValidateNested,
+  MaxLength,
 } from 'class-validator';
 
 export class LatLngDto {
@@ -45,4 +46,9 @@ export class CaptureTerritoryDto {
   @ValidateNested({ each: true })
   @Type(() => LatLngDto)
   routePoints?: LatLngDto[][];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  captureSessionId?: string;
 }

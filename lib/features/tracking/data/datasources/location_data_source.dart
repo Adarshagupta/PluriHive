@@ -23,14 +23,45 @@ class LocationDataSourceImpl implements LocationDataSource {
   @override
   Stream<app.Position> getLocationStream({bool batterySaver = false}) {
     _log('🌐 LocationDataSource: Creating location stream...');
+
+    final isHighPrecision = !batterySaver;
+    _gpsFilter.setMaxAccuracyMeters(isHighPrecision ? 15.0 : 35.0);
+    _gpsFilter.reset();
     
     // ULTRA AGGRESSIVE: Get every update, no filtering
-    final locationSettings = geo.LocationSettings(
-      accuracy: batterySaver
-          ? geo.LocationAccuracy.low
-          : geo.LocationAccuracy.bestForNavigation,
-      distanceFilter: batterySaver ? 10 : 0,
-    );
+    final geo.LocationSettings locationSettings;
+    final accuracy = batterySaver
+        ? geo.LocationAccuracy.low
+        : geo.LocationAccuracy.bestForNavigation;
+    final distanceFilter = batterySaver ? 10 : 0;
+
+    if (kIsWeb) {
+      locationSettings = geo.LocationSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilter,
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      locationSettings = geo.AndroidSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilter,
+        intervalDuration:
+            batterySaver ? const Duration(seconds: 2) : const Duration(milliseconds: 500),
+        forceLocationManager: false,
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS) {
+      locationSettings = geo.AppleSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilter,
+        activityType: geo.ActivityType.fitness,
+        pauseLocationUpdatesAutomatically: false,
+      );
+    } else {
+      locationSettings = geo.LocationSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilter,
+      );
+    }
     
     _log('🌐 LocationDataSource: Location settings configured');
     _log('   - Accuracy: ${batterySaver ? "low" : "bestForNavigation"}');
@@ -63,7 +94,7 @@ class LocationDataSourceImpl implements LocationDataSource {
   @override
   Future<app.Position> getCurrentPosition() async {
     final position = await geo.Geolocator.getCurrentPosition(
-      desiredAccuracy: geo.LocationAccuracy.high,
+      desiredAccuracy: geo.LocationAccuracy.bestForNavigation,
     );
     
     return app.Position(
