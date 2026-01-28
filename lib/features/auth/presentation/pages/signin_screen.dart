@@ -90,6 +90,9 @@ class _SignInScreenState extends State<SignInScreen> {
     return BlocListener<AuthBloc, AuthState>(
       listener: (context, state) {
         if (state is Authenticated) {
+          if (mounted) {
+            setState(() => _isLoading = false);
+          }
           // Reload game data from backend after successful login
           context.read<GameBloc>().add(LoadGameData());
           
@@ -104,10 +107,16 @@ class _SignInScreenState extends State<SignInScreen> {
             );
           }
         } else if (state is AuthError) {
-          setState(() => _isLoading = false);
+          if (mounted) {
+            setState(() => _isLoading = false);
+          }
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(state.message)),
           );
+        } else if (state is Unauthenticated) {
+          if (mounted) {
+            setState(() => _isLoading = false);
+          }
         }
       },
       child: Scaffold(

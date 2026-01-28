@@ -92,6 +92,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
     return BlocListener<AuthBloc, AuthState>(
       listener: (context, state) {
         if (state is Authenticated) {
+          if (mounted) {
+            setState(() => _isLoading = false);
+          }
           // Reload game data from backend after successful signup
           context.read<GameBloc>().add(LoadGameData());
           
@@ -99,10 +102,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
             MaterialPageRoute(builder: (_) => const ProfileSetupScreen()),
           );
         } else if (state is AuthError) {
-          setState(() => _isLoading = false);
+          if (mounted) {
+            setState(() => _isLoading = false);
+          }
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(state.message)),
           );
+        } else if (state is Unauthenticated) {
+          if (mounted) {
+            setState(() => _isLoading = false);
+          }
         }
       },
       child: Scaffold(

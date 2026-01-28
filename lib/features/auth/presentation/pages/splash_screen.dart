@@ -18,6 +18,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
   late Animation<double> _scaleAnimation;
+  int _retryCount = 0;
+  static const int _maxRetries = 10;
 
   @override
   void initState() {
@@ -50,11 +52,11 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   
   void _handleAuthState(AuthState state) {
     if (!mounted) return;
-    
-    print('🎯 SplashScreen: Handling state: ${state.runtimeType}');
-    
+
+    print('???? SplashScreen: Handling state: ${state.runtimeType}');
+
     if (state is Authenticated) {
-      print('🎯 SplashScreen: User authenticated, hasCompletedOnboarding: ${state.user.hasCompletedOnboarding}');
+      print('???? SplashScreen: User authenticated, hasCompletedOnboarding: ${state.user.hasCompletedOnboarding}');
       if (state.user.hasCompletedOnboarding) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const DashboardScreen()),
@@ -65,19 +67,31 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         );
       }
     } else if (state is Unauthenticated) {
-      print('🎯 SplashScreen: User not authenticated');
+      print('???? SplashScreen: User not authenticated');
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const WelcomeScreen()),
       );
-    } else if (state is AuthLoading) {
-      print('🎯 SplashScreen: Still loading, will retry...');
-      // State still loading, wait a bit more
+    } else if (state is AuthLoading || state is AuthInitial) {
+      print('???? SplashScreen: Still loading, will retry...');
+      if (_retryCount >= _maxRetries) {
+        print('???? SplashScreen: Max retries hit, sending user to WelcomeScreen');
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+        );
+        return;
+      }
+      _retryCount += 1;
       Future.delayed(const Duration(milliseconds: 500), () {
         if (mounted) {
           final newState = context.read<AuthBloc>().state;
           _handleAuthState(newState);
         }
       });
+    } else if (state is AuthError) {
+      print('???? SplashScreen: Auth error - redirecting to WelcomeScreen');
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+      );
     }
   }
 

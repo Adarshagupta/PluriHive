@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/auth_backdrop.dart';
+import '../../../../core/widgets/welcome_illustration.dart';
 import 'onboarding_screen.dart';
 import 'signup_screen.dart';
 import 'signin_screen.dart';
@@ -53,15 +54,14 @@ class WelcomeScreen extends StatelessWidget {
                 const SizedBox(height: 20),
                 Expanded(
                   child: Center(
-                    child: Image.asset(
-                      'assets/illustrations/welcome.webp',
-                      width: MediaQuery.of(context).size.width * 0.78,
-                      height: MediaQuery.of(context).size.width * 0.78,
-                      fit: BoxFit.contain,
+                    child: WelcomeIllustration(
+                      accent: AppTheme.primaryColor,
+                      ink: AppTheme.textPrimary,
+                      size: MediaQuery.of(context).size.width * 0.72,
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 20),
                 SizedBox(
                   width: double.infinity,
                   height: 56,

@@ -38,6 +38,14 @@ class UserDataCleanupService {
     'daily_steps',
     'last_reset_date',
     'total_calories',
+
+    // Home widget
+    'widget_distance_km',
+    'widget_steps',
+    'widget_progress',
+    'widget_updated_at',
+    'widget_map_snapshot',
+    'offline_map_snapshot',
   ];
 
   static Future<void> clearAll() async {

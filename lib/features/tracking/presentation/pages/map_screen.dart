@@ -24,6 +24,7 @@ import '../../../../core/services/route_api_service.dart';
 import '../../../../core/services/offline_sync_service.dart';
 import '../../../../core/services/websocket_service.dart';
 import '../../../../core/services/user_profile_api_service.dart';
+import '../../../../core/services/home_widget_service.dart';
 import '../../../../core/services/avatar_preset_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/utils/picture_in_picture.dart';
@@ -157,6 +158,9 @@ class _MapScreenState extends State<MapScreen>
       Duration(milliseconds: 260);
   static const Duration _routeRenderThrottle =
       Duration(milliseconds: 240);
+  static const Duration _widgetUpdateThrottle =
+      Duration(seconds: 12);
+  DateTime? _lastWidgetUpdateAt;
 
   // Loop closure feedback
   bool _hasGivenCloseLoopFeedback = false;
@@ -3223,6 +3227,29 @@ class _MapScreenState extends State<MapScreen>
       _updateBackgroundNotification(state);
       _lastNotificationDistance = distanceKm;
     }
+
+    _maybeUpdateHomeWidget(state);
+  }
+
+  void _maybeUpdateHomeWidget(LocationTracking state) {
+    final now = DateTime.now();
+    if (_lastWidgetUpdateAt != null &&
+        now.difference(_lastWidgetUpdateAt!) < _widgetUpdateThrottle) {
+      return;
+    }
+
+    final distanceKm = state.totalDistance / 1000;
+    final sessionSteps = max(0, _steps - _sessionStartSteps);
+    final goalKm = _goalDistanceKm ?? 5.0;
+    final progressPercent =
+        goalKm > 0 ? ((distanceKm / goalKm) * 100).round() : 0;
+
+    HomeWidgetService.updateStats(
+      distanceKm: distanceKm,
+      steps: sessionSteps,
+      progressPercent: progressPercent.clamp(0, 100).toInt(),
+    );
+    _lastWidgetUpdateAt = now;
   }
 
   void _updateBackgroundNotification(LocationTracking state) {
@@ -7014,6 +7041,7 @@ class _MapScreenState extends State<MapScreen>
       print('📸 Map screenshot captured (${imageBytes.length} bytes)');
       await _prefs.setString(_offlineSnapshotKey, base64Image);
       _offlineSnapshotBase64 = base64Image;
+      HomeWidgetService.updateMapSnapshot(base64Image);
       return base64Image;
     } catch (e) {
       print('❌ Error capturing map screenshot: $e');
@@ -7321,6 +7349,18 @@ class _MapScreenState extends State<MapScreen>
         await _refreshSyncStatus();
       } else {
         print('[info] No territories captured during this activity');
+      }
+
+      final goalKm = _goalDistanceKm ?? 5.0;
+      final progressPercent =
+          goalKm > 0 ? ((distance / goalKm) * 100).round() : 0;
+      HomeWidgetService.updateStats(
+        distanceKm: distance,
+        steps: sessionSteps,
+        progressPercent: progressPercent.clamp(0, 100).toInt(),
+      );
+      if (mapSnapshot != null) {
+        HomeWidgetService.updateMapSnapshot(mapSnapshot);
       }
 
       // Kick off background sync without blocking the UI

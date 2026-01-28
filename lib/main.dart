@@ -7,6 +7,7 @@ import 'core/theme/app_theme.dart';
 import 'core/services/api_config.dart';
 import 'core/services/update_service.dart';
 import 'core/navigation/app_route_observer.dart';
+import 'core/services/home_widget_service.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/auth/presentation/pages/splash_screen.dart';
 import 'features/tracking/presentation/bloc/location_bloc.dart';
@@ -24,6 +25,9 @@ void main() async {
   
   // Initialize dependency injection
   await initializeDependencies();
+
+  // Warm home widget data from cache on launch
+  await HomeWidgetService.syncFromCache();
   
   runApp(const TerritoryFitnessApp());
 }

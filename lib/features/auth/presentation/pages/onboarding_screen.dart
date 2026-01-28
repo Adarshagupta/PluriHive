@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/auth_backdrop.dart';
+import '../../../../core/widgets/territory_illustration.dart';
 import 'permission_screen.dart';
 
 class OnboardingScreen extends StatefulWidget {
@@ -17,28 +18,32 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   final List<OnboardingData> _pages = [
     OnboardingData(
-      imagePath: 'assets/illustrations/capture.webp',
+      icon: Icons.route,
       title: 'Capture Territories',
       description: 'Walk the loop, own the blocks, keep the crown.',
       accent: const Color(0xFF22C55E),
+      variant: TerritoryIllustrationVariant.capture,
     ),
     OnboardingData(
-      imagePath: 'assets/illustrations/earnpoints.webp',
+      icon: Icons.stars,
       title: 'Earn Points',
       description: 'Every step stacks points and unlocks new status.',
       accent: const Color(0xFF38BDF8),
+      variant: TerritoryIllustrationVariant.points,
     ),
     OnboardingData(
-      imagePath: 'assets/illustrations/treackProgress.webp',
+      icon: Icons.insights,
       title: 'Track Progress',
       description: 'See streaks, routes, and personal bests.',
       accent: const Color(0xFFF97316),
+      variant: TerritoryIllustrationVariant.progress,
     ),
     OnboardingData(
-      imagePath: 'assets/illustrations/start.webp',
+      icon: Icons.play_arrow_rounded,
       title: 'Ready to Play?',
       description: 'Set your pace and let the map light up.',
       accent: const Color(0xFF111827),
+      variant: TerritoryIllustrationVariant.launch,
     ),
   ];
 
@@ -188,11 +193,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 ),
               ),
               const SizedBox(height: 18),
-              Image.asset(
-                data.imagePath,
-                width: MediaQuery.of(context).size.width * 0.68,
-                height: MediaQuery.of(context).size.width * 0.68,
-                fit: BoxFit.contain,
+              TerritoryIllustration(
+                accent: data.accent,
+                icon: data.icon,
+                size: MediaQuery.of(context).size.width * 0.62,
+                chip: 'Step ${_pages.indexOf(data) + 1}',
+                label: 'Tap Next',
+                variant: data.variant,
               ),
             ],
           ),
@@ -251,15 +258,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 }
 
 class OnboardingData {
-  final String imagePath;
+  final IconData icon;
   final String title;
   final String description;
   final Color accent;
+  final TerritoryIllustrationVariant variant;
 
   OnboardingData({
-    required this.imagePath,
+    required this.icon,
     required this.title,
     required this.description,
     required this.accent,
+    required this.variant,
   });
 }
