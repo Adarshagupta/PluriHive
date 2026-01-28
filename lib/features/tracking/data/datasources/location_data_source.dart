@@ -86,6 +86,7 @@ class LocationDataSourceImpl implements LocationDataSource {
             latitude: filtered['latitude']!,
             longitude: filtered['longitude']!,
             altitude: position.altitude,
+            accuracy: position.accuracy,
             timestamp: position.timestamp,
           );
         });
@@ -101,6 +102,7 @@ class LocationDataSourceImpl implements LocationDataSource {
       latitude: position.latitude,
       longitude: position.longitude,
       altitude: position.altitude,
+      accuracy: position.accuracy,
       timestamp: position.timestamp,
     );
   }

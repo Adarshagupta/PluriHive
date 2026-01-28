@@ -64,6 +64,7 @@ class GpsSimulator {
       _route.add(Position(
         latitude: lat,
         longitude: lng,
+        accuracy: 3.0,
         timestamp: now.add(Duration(seconds: _route.length)),
       ));
     }
@@ -75,6 +76,7 @@ class GpsSimulator {
       _route.add(Position(
         latitude: lat,
         longitude: lng,
+        accuracy: 3.0,
         timestamp: now.add(Duration(seconds: _route.length)),
       ));
     }
@@ -86,6 +88,7 @@ class GpsSimulator {
       _route.add(Position(
         latitude: lat,
         longitude: lng,
+        accuracy: 3.0,
         timestamp: now.add(Duration(seconds: _route.length)),
       ));
     }
@@ -97,6 +100,7 @@ class GpsSimulator {
       _route.add(Position(
         latitude: lat,
         longitude: lng,
+        accuracy: 3.0,
         timestamp: now.add(Duration(seconds: _route.length)),
       ));
     }

@@ -45,6 +45,7 @@ import '../../../territory/domain/entities/territory.dart' as app;
 import 'workout_summary_screen.dart';
 import 'activity_history_sheet.dart';
 import 'activity_detail_drawer.dart';
+import 'sync_status_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class MapScreen extends StatefulWidget {
@@ -74,6 +75,9 @@ class _MapScreenState extends State<MapScreen>
   late final AuthApiService _authApiService;
   late final http.Client _httpClient;
   final Map<String, Marker> _userMarkersById = {};
+  static const String _offlineSnapshotKey = 'offline_map_snapshot';
+  String? _offlineSnapshotBase64;
+  bool _showOfflineSnapshot = false;
   final Map<String, BitmapDescriptor> _userAvatarIconCache = {};
   final Map<String, String> _userAvatarUrlCache = {};
   final Map<String, Map<String, dynamic>> _userProfileCache = {};
@@ -112,9 +116,18 @@ class _MapScreenState extends State<MapScreen>
   late AnimationController _buttonAnimController;
   GoogleMapController? _mapController;
   MapType _currentMapType = MapType.normal;
-  bool _is3DMode = false;
+  bool _is3DMode = true;
   double _currentSpeed = 0.0; // km/h
   DateTime? _lastSpeedUpdate;
+  double _routeQualityScore = 0.0;
+  String _routeQualityLabel = 'GPS';
+  DateTime? _lastQualityUpdate;
+  final double _splitDistanceMeters = 1000.0;
+  int _splitIndex = 0;
+  double _nextSplitAtMeters = 1000.0;
+  DateTime? _lastSplitTime;
+  String? _lastSplitPace;
+  Duration? _lastSplitDuration;
   final Set<String> _capturedHexIds = {};
   List<LatLng> _territoryRoutePoints =
       []; // Actual route points for territory shape
@@ -136,6 +149,14 @@ class _MapScreenState extends State<MapScreen>
   bool _loopCaptureInFlight = false;
   DateTime? _lastLoopCaptureAt;
   final Set<String> _reportedHexIds = {};
+  LatLng? _smoothedCameraTarget;
+  double? _smoothedCameraBearing;
+  DateTime? _lastCameraUpdate;
+  DateTime? _lastRouteRenderAt;
+  static const Duration _cameraUpdateThrottle =
+      Duration(milliseconds: 260);
+  static const Duration _routeRenderThrottle =
+      Duration(milliseconds: 240);
 
   // Loop closure feedback
   bool _hasGivenCloseLoopFeedback = false;
@@ -143,6 +164,8 @@ class _MapScreenState extends State<MapScreen>
   int _lastLoadedTerritoryCount = 0; // Track last loaded count to prevent spam
   int _currentSessionTerritories =
       0; // Track territories captured in current session
+  int _localStreakDays = 0;
+  int _bestStreakDays = 0;
 
   // Advanced motion detection
   final MotionDetectionService _motionDetection = MotionDetectionService();
@@ -224,6 +247,7 @@ class _MapScreenState extends State<MapScreen>
     _userProfileApiService = di.getIt<UserProfileApiService>();
     _authApiService = di.getIt<AuthApiService>();
     _httpClient = di.getIt<http.Client>();
+    _offlineSnapshotBase64 = _prefs.getString(_offlineSnapshotKey);
     _animController = AnimationController(
       duration: Duration(milliseconds: 400),
       vsync: this,
@@ -1350,6 +1374,7 @@ class _MapScreenState extends State<MapScreen>
 
       _activityHistory =
           activitiesData.map((a) => _normalizeActivityData(a)).toList();
+      _updateLocalStreaks();
       if (_showHeatmap) {
         _buildHeatmapCircles();
       }
@@ -1684,28 +1709,15 @@ class _MapScreenState extends State<MapScreen>
                 _checkRealtimeLoopCapture(state);
                 _updateRoutePolyline(state);
                 _calculateSpeed(state);
+                _updateRouteQuality(state);
                 _updateStartPointMarker(state);
                 _updateStatsRealTime(state);
+                _checkSplitUpdate(state);
                 _refreshRoutePreviewFromLocation(_lastKnownLocation);
                 _updateCurrentUserMarker(_lastKnownLocation!);
 
                 // Camera follows user smoothly when tracking is active
-                if (_mapController != null &&
-                    _trackingState == TrackingState.started &&
-                    _followUser) {
-                  _mapController!.animateCamera(
-                    CameraUpdate.newCameraPosition(
-                      CameraPosition(
-                        target: LatLng(
-                          state.currentPosition.latitude,
-                          state.currentPosition.longitude,
-                        ),
-                        zoom: 18,
-                        tilt: _is3DMode ? 45 : 0,
-                      ),
-                    ),
-                  );
-                }
+                _updateCameraFollow(state);
               } else if (state is LocationIdle && state.lastPosition != null) {
                 _lastKnownLocation = LatLng(
                   state.lastPosition!.latitude,
@@ -1722,9 +1734,10 @@ class _MapScreenState extends State<MapScreen>
           children: [
             BlocBuilder<LocationBloc, LocationState>(
               builder: (context, locationState) {
-                CameraPosition initialPosition = const CameraPosition(
-                  target: LatLng(37.7749, -122.4194), // Default: San Francisco
+                CameraPosition initialPosition = CameraPosition(
+                  target: const LatLng(37.7749, -122.4194), // Default: San Francisco
                   zoom: 15,
+                  tilt: _is3DMode ? 45 : 0,
                 );
 
                 if (locationState is LocationIdle &&
@@ -1735,6 +1748,7 @@ class _MapScreenState extends State<MapScreen>
                       locationState.lastPosition!.longitude,
                     ),
                     zoom: 15,
+                    tilt: _is3DMode ? 45 : 0,
                   );
                 } else if (locationState is LocationTracking) {
                   initialPosition = CameraPosition(
@@ -1822,6 +1836,44 @@ class _MapScreenState extends State<MapScreen>
                 );
               },
             ),
+            if (_showOfflineSnapshot && _offlineSnapshotBase64 != null)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.black.withOpacity(0.15),
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Image.memory(
+                          base64Decode(_offlineSnapshotBase64!),
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      Positioned(
+                        top: 12,
+                        right: 12,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.6),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Text(
+                            'Offline snapshot',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
 
             // Minimal top stats bar + sync status
             Positioned(top: 0, left: 0, right: 0, child: _buildTopStatusArea()),
@@ -2302,7 +2354,13 @@ class _MapScreenState extends State<MapScreen>
         opacity: _animController,
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [_buildMinimalStatsBar(), _buildSyncStatusChip()],
+          children: [
+            _buildMinimalStatsBar(),
+            _buildSyncStatusChip(),
+            _buildQualityChip(),
+            _buildSplitChip(),
+            _buildStreakChip(),
+          ],
         ),
       ),
     );
@@ -2448,8 +2506,16 @@ class _MapScreenState extends State<MapScreen>
       return;
     }
 
-    final points =
+    final now = DateTime.now();
+    if (_lastRouteRenderAt != null &&
+        now.difference(_lastRouteRenderAt!) < _routeRenderThrottle) {
+      return;
+    }
+    _lastRouteRenderAt = now;
+
+    final rawPoints =
         state.routePoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
+    final points = _smoothRouteForDisplay(rawPoints);
 
     setState(() {
       _polylines.removeWhere(
@@ -2457,10 +2523,23 @@ class _MapScreenState extends State<MapScreen>
       );
       _polylines.add(
         Polyline(
+          polylineId: const PolylineId('route_outline'),
+          points: points,
+          color: Colors.black.withOpacity(0.25),
+          width: 10,
+          geodesic: true,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+          jointType: JointType.round,
+        ),
+      );
+      _polylines.add(
+        Polyline(
           polylineId: const PolylineId('route'),
           points: points,
-          color: Color(0xFF2196F3), // Bright blue for visibility
-          width: 5,
+          color: Color(0xFF00B0FF), // Smooth cyan-blue
+          width: 6,
+          geodesic: true,
           startCap: Cap.roundCap,
           endCap: Cap.roundCap,
           jointType: JointType.round,
@@ -2472,6 +2551,251 @@ class _MapScreenState extends State<MapScreen>
       '✅ Route updated: ${points.length} points, ${(state.totalDistance / 1000).toStringAsFixed(2)} km',
     );
   }
+
+  Widget _buildQualityChip() {
+    if (_routeQualityScore <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    final color = _routeQualityScore >= 85
+        ? const Color(0xFF059669)
+        : _routeQualityScore >= 70
+            ? const Color(0xFF2563EB)
+            : _routeQualityScore >= 55
+                ? const Color(0xFFF59E0B)
+                : const Color(0xFFDC2626);
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.gps_fixed, size: 14, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(
+            'GPS ${_routeQualityLabel.toUpperCase()} ${_routeQualityScore.toStringAsFixed(0)}',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSplitChip() {
+    if (_lastSplitPace == null || _splitIndex == 0) {
+      return const SizedBox.shrink();
+    }
+
+    final splitLabel = _lastSplitDuration != null
+        ? _formatDurationShort(_lastSplitDuration!)
+        : '--:--';
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111827).withOpacity(0.9),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.timer, size: 14, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(
+            'Split ${_splitIndex} • ${_lastSplitPace!}/km (${splitLabel})',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStreakChip() {
+    if (_localStreakDays == 0 && _bestStreakDays == 0) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withOpacity(0.85),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.local_fire_department, size: 14, color: Colors.orange),
+          const SizedBox(width: 6),
+          Text(
+            'Streak ${_localStreakDays}d • Best ${_bestStreakDays}d',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatDurationShort(Duration duration) {
+    final minutes = duration.inMinutes;
+    final seconds = duration.inSeconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  List<LatLng> _smoothRouteForDisplay(List<LatLng> points) {
+    if (points.length < 3) return points;
+    final simplified = _simplifyRoute(points, 1.5);
+    final smoothed = _chaikinSmooth(simplified, iterations: 2);
+    return _limitLatLngPoints(smoothed, maxPoints: 1800);
+  }
+
+  List<LatLng> _chaikinSmooth(
+    List<LatLng> points, {
+    int iterations = 1,
+  }) {
+    var current = List<LatLng>.from(points);
+    for (var i = 0; i < iterations; i++) {
+      if (current.length < 3) break;
+      final next = <LatLng>[];
+      next.add(current.first);
+      for (var j = 0; j < current.length - 1; j++) {
+        final p0 = current[j];
+        final p1 = current[j + 1];
+        final q = LatLng(
+          0.75 * p0.latitude + 0.25 * p1.latitude,
+          0.75 * p0.longitude + 0.25 * p1.longitude,
+        );
+        final r = LatLng(
+          0.25 * p0.latitude + 0.75 * p1.latitude,
+          0.25 * p0.longitude + 0.75 * p1.longitude,
+        );
+        next.add(q);
+        next.add(r);
+      }
+      next.add(current.last);
+      current = next;
+    }
+    return current;
+  }
+
+  void _updateCameraFollow(LocationTracking state) {
+    if (_mapController == null ||
+        _trackingState != TrackingState.started ||
+        !_followUser) {
+      return;
+    }
+
+    final now = DateTime.now();
+    if (_lastCameraUpdate != null &&
+        now.difference(_lastCameraUpdate!) < _cameraUpdateThrottle) {
+      return;
+    }
+    _lastCameraUpdate = now;
+
+    final rawTarget = LatLng(
+      state.currentPosition.latitude,
+      state.currentPosition.longitude,
+    );
+
+    _smoothedCameraTarget ??= rawTarget;
+    final speedFactor = (_currentSpeed / 20).clamp(0.0, 1.0);
+    final baseAlpha = _is3DMode ? 0.3 : 0.2;
+    final alpha = (baseAlpha + (0.2 * speedFactor)).clamp(0.18, 0.5);
+
+    _smoothedCameraTarget = LatLng(
+      _smoothedCameraTarget!.latitude +
+          (rawTarget.latitude - _smoothedCameraTarget!.latitude) * alpha,
+      _smoothedCameraTarget!.longitude +
+          (rawTarget.longitude - _smoothedCameraTarget!.longitude) * alpha,
+    );
+
+    final bearing = _calculateBearingFromRoute(state);
+    if (bearing != null) {
+      _smoothedCameraBearing = _smoothedCameraBearing == null
+          ? bearing
+          : _lerpAngle(_smoothedCameraBearing!, bearing, 0.25);
+    }
+
+    final tilt = _is3DMode ? 55.0 : 25.0;
+    final zoom = _is3DMode ? 18.5 : 17.5;
+
+    _mapController!.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target: _smoothedCameraTarget!,
+          zoom: zoom,
+          tilt: tilt,
+          bearing: _smoothedCameraBearing ?? 0.0,
+        ),
+      ),
+    );
+  }
+
+  double? _calculateBearingFromRoute(LocationTracking state) {
+    if (state.routePoints.length < 2) return null;
+    final prev = state.routePoints[state.routePoints.length - 2];
+    final last = state.routePoints.last;
+    final from = LatLng(prev.latitude, prev.longitude);
+    final to = LatLng(last.latitude, last.longitude);
+    return _calculateBearing(from, to);
+  }
+
+  double _calculateBearing(LatLng from, LatLng to) {
+    final lat1 = _toRadians(from.latitude);
+    final lat2 = _toRadians(to.latitude);
+    final dLng = _toRadians(to.longitude - from.longitude);
+    final y = sin(dLng) * cos(lat2);
+    final x = cos(lat1) * sin(lat2) -
+        sin(lat1) * cos(lat2) * cos(dLng);
+    final bearing = atan2(y, x) * 180.0 / pi;
+    return (bearing + 360.0) % 360.0;
+  }
+
+  double _lerpAngle(double from, double to, double t) {
+    final delta = ((to - from + 540) % 360) - 180;
+    return (from + delta * t + 360) % 360;
+  }
+
+  double _toRadians(double deg) => deg * pi / 180.0;
 
   void _updateStartPointMarker(LocationTracking state) {
     // Disabled: no start point circle.
@@ -3342,94 +3666,185 @@ class _MapScreenState extends State<MapScreen>
   // Map control buttons
   Widget _buildMapControls() {
     final isTracking = _trackingState != TrackingState.stopped;
-    return Column(
+    return Row(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (widget.onNavigateHome != null && isTracking) ...[
-          _buildControlButton(
-            icon: Icons.home,
-            label: 'Home',
-            isActive: false,
-            onTap: widget.onNavigateHome!,
+        if (_showAdvancedControls) ...[
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            transitionBuilder: (child, animation) {
+              return FadeTransition(
+                opacity: animation,
+                child: ScaleTransition(scale: animation, child: child),
+              );
+            },
+            child: _buildAdvancedControlsPanel(key: const ValueKey('panel')),
           ),
-          SizedBox(height: 8),
+          const SizedBox(width: 10),
         ],
-        _buildControlButton(
-          icon: Icons.my_location,
-          label: 'Me',
-          isActive: false,
-          onTap: _centerOnUser,
-        ),
-        SizedBox(height: 8),
-        _buildControlButton(
-          icon: _showAdvancedControls ? Icons.expand_less : Icons.tune,
-          label: _showAdvancedControls ? 'Less' : 'More',
-          isActive: _showAdvancedControls,
-          onTap: () {
-            setState(() {
-              _showAdvancedControls = !_showAdvancedControls;
-            });
-          },
-        ),
-        AnimatedSize(
-          duration: Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-          child: _showAdvancedControls
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(height: 8),
-                    _buildControlButton(
-                      icon: Icons.threed_rotation,
-                      label: '3D',
-                      isActive: _is3DMode,
-                      onTap: _toggle3DMode,
-                    ),
-                    SizedBox(height: 8),
-                    _buildControlButton(
-                      icon: Icons.alt_route,
-                      label: 'Routes',
-                      isActive: _selectedRoute != null,
-                      onTap: _openRoutesSheet,
-                    ),
-                    SizedBox(height: 8),
-                    _buildControlButton(
-                      icon: Icons.layers,
-                      label: 'View',
-                      isActive: _currentMapType != MapType.normal,
-                      onTap: _toggleMapType,
-                    ),
-                    SizedBox(height: 8),
-                    _buildControlButton(
-                      icon: Icons.whatshot,
-                      label: 'Heat',
-                      isActive: _showHeatmap,
-                      onTap: _toggleHeatmap,
-                    ),
-                    SizedBox(height: 8),
-                    _buildControlButton(
-                      icon: Icons.flag,
-                      label: 'Goal',
-                      isActive:
-                          _goalDistanceKm != null || _goalAreaSqMeters != null,
-                      onTap: () => _showGoalSetter(context),
-                    ),
-                    SizedBox(height: 8),
-                    _buildControlButton(
-                      icon: Icons.eco,
-                      label: 'Eco',
-                      isActive: _batterySaverEnabled,
-                      onTap: () {
-                        setState(() {
-                          _batterySaverEnabled = !_batterySaverEnabled;
-                        });
-                      },
-                    ),
-                  ],
-                )
-              : SizedBox.shrink(),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.onNavigateHome != null && isTracking) ...[
+              _buildControlButton(
+                icon: Icons.home,
+                label: 'Home',
+                isActive: false,
+                onTap: widget.onNavigateHome!,
+              ),
+              SizedBox(height: 8),
+            ],
+            _buildControlButton(
+              icon: Icons.my_location,
+              label: 'Me',
+              isActive: false,
+              onTap: _centerOnUser,
+            ),
+            SizedBox(height: 8),
+            _buildControlButton(
+              icon: _showAdvancedControls ? Icons.expand_less : Icons.tune,
+              label: _showAdvancedControls ? 'Less' : 'More',
+              isActive: _showAdvancedControls,
+              onTap: () {
+                setState(() {
+                  _showAdvancedControls = !_showAdvancedControls;
+                });
+              },
+            ),
+          ],
         ),
       ],
+    );
+  }
+
+  Widget _buildAdvancedControlsPanel({Key? key}) {
+    final screenHeight = MediaQuery.of(context).size.height;
+    final maxPanelHeight = max(200.0, min(340.0, screenHeight * 0.45));
+    return ConstrainedBox(
+      key: key,
+      constraints: BoxConstraints(maxHeight: maxPanelHeight, maxWidth: 190),
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.92),
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.12),
+              blurRadius: 14,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _buildCompactControlButton(
+              icon: Icons.threed_rotation,
+              label: '3D',
+              isActive: _is3DMode,
+              onTap: _toggle3DMode,
+            ),
+            _buildCompactControlButton(
+              icon: Icons.alt_route,
+              label: 'Routes',
+              isActive: _selectedRoute != null,
+              onTap: _openRoutesSheet,
+            ),
+            _buildCompactControlButton(
+              icon: Icons.layers,
+              label: 'View',
+              isActive: _currentMapType != MapType.normal,
+              onTap: _toggleMapType,
+            ),
+            _buildCompactControlButton(
+              icon: Icons.whatshot,
+              label: 'Heat',
+              isActive: _showHeatmap,
+              onTap: _toggleHeatmap,
+            ),
+            _buildCompactControlButton(
+              icon: Icons.flag,
+              label: 'Goal',
+              isActive: _goalDistanceKm != null || _goalAreaSqMeters != null,
+              onTap: () => _showGoalSetter(context),
+            ),
+            _buildCompactControlButton(
+              icon: Icons.eco,
+              label: 'Eco',
+              isActive: _batterySaverEnabled,
+              onTap: () {
+                setState(() {
+                  _batterySaverEnabled = !_batterySaverEnabled;
+                });
+              },
+            ),
+            _buildCompactControlButton(
+              icon: Icons.cloud_sync,
+              label: 'Sync',
+              isActive: _pendingSyncCount > 0 || _isSyncing,
+              onTap: _openSyncStatus,
+            ),
+            _buildCompactControlButton(
+              icon: Icons.image,
+              label: 'Offline',
+              isActive: _showOfflineSnapshot,
+              onTap: () {
+                setState(() {
+                  _showOfflineSnapshot = !_showOfflineSnapshot;
+                });
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompactControlButton({
+    required IconData icon,
+    required String label,
+    required bool isActive,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 78,
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: isActive ? Colors.black87 : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              color: isActive ? Colors.white : Colors.black87,
+              size: 20,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+                color: isActive ? Colors.white : Colors.black87,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -5087,10 +5502,18 @@ class _MapScreenState extends State<MapScreen>
     const double gridSize = 0.0005; // ~55m
     const int maxCircles = 200;
     final Map<String, _HeatCell> cells = {};
+    final now = DateTime.now();
 
     for (final activity in _activityHistory) {
       final routePoints = activity['routePoints'] as List<dynamic>?;
       if (routePoints == null || routePoints.isEmpty) continue;
+      final activityTime = _parseDateTimeSafe(
+        activity['startTime'] ?? activity['endTime'] ?? activity['createdAt'],
+      );
+      final daysAgo = activityTime != null
+          ? now.difference(activityTime).inDays.clamp(0, 365)
+          : 30;
+      final recencyWeight = (1 / (1 + daysAgo / 10)).clamp(0.2, 1.0);
 
       for (int i = 0; i < routePoints.length; i += 5) {
         final parsed = _parseRoutePoint(routePoints[i]);
@@ -5099,9 +5522,9 @@ class _MapScreenState extends State<MapScreen>
         final lng = parsed.longitude;
         final key = '${(lat / gridSize).round()}:${(lng / gridSize).round()}';
         final cell = cells.putIfAbsent(key, () => _HeatCell());
-        cell.count += 1;
-        cell.sumLat += lat;
-        cell.sumLng += lng;
+        cell.count += recencyWeight;
+        cell.sumLat += lat * recencyWeight;
+        cell.sumLng += lng * recencyWeight;
       }
     }
 
@@ -5112,8 +5535,8 @@ class _MapScreenState extends State<MapScreen>
     for (final cell in entries.take(maxCircles)) {
       final lat = cell.sumLat / cell.count;
       final lng = cell.sumLng / cell.count;
-      final intensity = (cell.count / 10).clamp(0.1, 0.6);
-      final radius = 20 + (cell.count * 4).clamp(0, 60);
+      final intensity = (cell.count / 8).clamp(0.15, 0.75);
+      final radius = 24 + (cell.count * 6).clamp(0, 80);
       _heatmapCircles.add(
         Circle(
           circleId: CircleId(
@@ -5127,6 +5550,58 @@ class _MapScreenState extends State<MapScreen>
         ),
       );
     }
+  }
+
+  void _updateLocalStreaks() {
+    if (_activityHistory.isEmpty) {
+      _localStreakDays = 0;
+      _bestStreakDays = 0;
+      return;
+    }
+
+    final dates = <DateTime>{};
+    for (final activity in _activityHistory) {
+      final time = _parseDateTimeSafe(
+        activity['startTime'] ?? activity['endTime'] ?? activity['createdAt'],
+      );
+      if (time == null) continue;
+      dates.add(DateTime(time.year, time.month, time.day));
+    }
+
+    if (dates.isEmpty) {
+      _localStreakDays = 0;
+      _bestStreakDays = 0;
+      return;
+    }
+
+    final today = DateTime.now();
+    var cursor = DateTime(today.year, today.month, today.day);
+    if (!dates.contains(cursor)) {
+      cursor = cursor.subtract(const Duration(days: 1));
+    }
+
+    int currentStreak = 0;
+    while (dates.contains(cursor)) {
+      currentStreak += 1;
+      cursor = cursor.subtract(const Duration(days: 1));
+    }
+
+    final sorted = dates.toList()..sort();
+    int bestStreak = 1;
+    int streak = 1;
+    for (int i = 1; i < sorted.length; i++) {
+      final diff = sorted[i].difference(sorted[i - 1]).inDays;
+      if (diff == 1) {
+        streak += 1;
+      } else if (diff > 1) {
+        if (streak > bestStreak) bestStreak = streak;
+        streak = 1;
+      }
+    }
+    if (streak > bestStreak) bestStreak = streak;
+
+    _localStreakDays = currentStreak;
+    _bestStreakDays = bestStreak;
   }
 
   Set<Circle> _getMapCircles() {
@@ -6184,6 +6659,13 @@ class _MapScreenState extends State<MapScreen>
       _lastLoopCaptureAt = null;
       _reportedHexIds.clear();
       _capturedHexIds.clear();
+      _smoothedCameraTarget = null;
+      _smoothedCameraBearing = null;
+      _splitIndex = 0;
+      _nextSplitAtMeters = _splitDistanceMeters;
+      _lastSplitTime = null;
+      _lastSplitPace = null;
+      _lastSplitDuration = null;
     });
     _buttonAnimController.forward();
     _startCountdown(context);
@@ -6409,6 +6891,13 @@ class _MapScreenState extends State<MapScreen>
         _loopCaptureInFlight = false;
         _lastLoopCaptureAt = null;
         _reportedHexIds.clear();
+        _smoothedCameraTarget = null;
+        _smoothedCameraBearing = null;
+        _splitIndex = 0;
+        _nextSplitAtMeters = _splitDistanceMeters;
+        _lastSplitTime = null;
+        _lastSplitPace = null;
+        _lastSplitDuration = null;
       });
 
       _buttonAnimController.reverse();
@@ -6489,7 +6978,13 @@ class _MapScreenState extends State<MapScreen>
         _loopCaptureInFlight = false;
         _lastLoopCaptureAt = null;
         _reportedHexIds.clear();
-        _trackingStartTime = DateTime.now();
+        _splitIndex = 0;
+        _nextSplitAtMeters = _splitDistanceMeters;
+        final now = DateTime.now();
+        _lastSplitTime = now;
+        _lastSplitPace = null;
+        _lastSplitDuration = null;
+        _trackingStartTime = now;
         _sessionStartSteps = _steps;
 
         BackgroundTrackingService.startTracking(
@@ -6517,6 +7012,8 @@ class _MapScreenState extends State<MapScreen>
 
       final base64Image = base64Encode(imageBytes);
       print('📸 Map screenshot captured (${imageBytes.length} bytes)');
+      await _prefs.setString(_offlineSnapshotKey, base64Image);
+      _offlineSnapshotBase64 = base64Image;
       return base64Image;
     } catch (e) {
       print('❌ Error capturing map screenshot: $e');
@@ -6547,6 +7044,129 @@ class _MapScreenState extends State<MapScreen>
     }
 
     return reduced;
+  }
+
+  void _openSyncStatus() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const SyncStatusScreen()),
+    );
+  }
+
+  void _updateRouteQuality(LocationTracking state) {
+    final now = DateTime.now();
+    if (_lastQualityUpdate != null &&
+        now.difference(_lastQualityUpdate!) < const Duration(seconds: 2)) {
+      return;
+    }
+
+    if (state.routePoints.length < 3) {
+      if (mounted) {
+        setState(() {
+          _routeQualityScore = 0.0;
+          _routeQualityLabel = 'GPS';
+          _lastQualityUpdate = now;
+        });
+      }
+      return;
+    }
+
+    final recent = state.routePoints
+        .sublist(max(0, state.routePoints.length - 30));
+
+    double? avgAccuracy;
+    final accuracyValues =
+        recent.map((p) => p.accuracy).whereType<double>().toList();
+    if (accuracyValues.isNotEmpty) {
+      avgAccuracy = accuracyValues.reduce((a, b) => a + b) /
+          accuracyValues.length;
+    }
+
+    final accuracyScore = avgAccuracy == null
+        ? 55.0
+        : (1.0 -
+                ((avgAccuracy.clamp(5.0, 35.0) - 5.0) /
+                    30.0))
+            .clamp(0.0, 1.0) *
+            100.0;
+
+    double headingChangeSum = 0.0;
+    int headingSamples = 0;
+    for (int i = 2; i < recent.length; i++) {
+      final p0 = recent[i - 2];
+      final p1 = recent[i - 1];
+      final p2 = recent[i];
+      final h1 =
+          _calculateBearing(LatLng(p0.latitude, p0.longitude), LatLng(p1.latitude, p1.longitude));
+      final h2 =
+          _calculateBearing(LatLng(p1.latitude, p1.longitude), LatLng(p2.latitude, p2.longitude));
+      final delta = ((h2 - h1 + 540) % 360) - 180;
+      headingChangeSum += delta.abs();
+      headingSamples += 1;
+    }
+    final avgHeadingChange =
+        headingSamples > 0 ? headingChangeSum / headingSamples : 0.0;
+    final smoothScore = (1.0 - (avgHeadingChange / 90.0))
+        .clamp(0.0, 1.0) *
+        100.0;
+
+    final totalDistance = state.totalDistance;
+    final pointsPerKm =
+        totalDistance > 0 ? (state.routePoints.length / (totalDistance / 1000)) : 0.0;
+    final densityScore = (pointsPerKm / 80.0).clamp(0.0, 1.0) * 100.0;
+
+    final score =
+        (accuracyScore * 0.5) + (smoothScore * 0.3) + (densityScore * 0.2);
+    final label = score >= 85
+        ? 'Elite'
+        : score >= 70
+            ? 'Great'
+            : score >= 55
+                ? 'OK'
+                : 'Weak';
+
+    if (!mounted) return;
+    setState(() {
+      _routeQualityScore = score;
+      _routeQualityLabel = label;
+      _lastQualityUpdate = now;
+    });
+  }
+
+  void _checkSplitUpdate(LocationTracking state) {
+    if (_trackingState != TrackingState.started) return;
+    if (_trackingStartTime == null) return;
+
+    while (state.totalDistance >= _nextSplitAtMeters) {
+      final now = DateTime.now();
+      final lastTime = _lastSplitTime ?? _trackingStartTime ?? now;
+      final splitDuration = now.difference(lastTime);
+      final pace = _formatPace(splitDuration, _splitDistanceMeters);
+
+      _splitIndex += 1;
+      _lastSplitTime = now;
+      _lastSplitDuration = splitDuration;
+      _lastSplitPace = pace;
+      _nextSplitAtMeters = (_splitIndex + 1) * _splitDistanceMeters;
+
+      if (mounted) {
+        SystemSound.play(SystemSoundType.click);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Split ${_splitIndex} • ${pace}/km'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  String _formatPace(Duration duration, double distanceMeters) {
+    if (distanceMeters <= 0) return '--:--';
+    final paceSeconds = duration.inSeconds / (distanceMeters / 1000.0);
+    final minutes = (paceSeconds / 60).floor();
+    final seconds = (paceSeconds % 60).round();
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
   List<LatLng> _limitLatLngPoints(List<LatLng> points,
@@ -6844,7 +7464,7 @@ class _SegmentProjection {
 }
 
 class _HeatCell {
-  int count = 0;
+  double count = 0.0;
   double sumLat = 0.0;
   double sumLng = 0.0;
 }
