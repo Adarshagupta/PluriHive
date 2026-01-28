@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { createHash } from 'crypto';
 import { RouteEntity } from './route.entity';
 import { CreateRouteDto } from './dto/create-route.dto';
+import { RedisService } from '../redis/redis.service';
 
 type RoutePoint = { lat: number; lng: number };
 
@@ -15,6 +16,7 @@ export class RoutesService {
   constructor(
     @InjectRepository(RouteEntity)
     private routesRepository: Repository<RouteEntity>,
+    private redisService: RedisService,
   ) {}
 
   async createRoute(userId: string, dto: CreateRouteDto): Promise<RouteEntity> {
@@ -54,10 +56,33 @@ export class RoutesService {
       h3Path,
     });
 
-    return this.routesRepository.save(route);
+    const saved = await this.routesRepository.save(route);
+    await this.redisService.bumpVersion(this.getUserRoutesVersionKey(userId));
+    if (saved.isPublic) {
+      await this.redisService.bumpVersion(this.getRoutesGlobalVersionKey());
+    }
+    return saved;
   }
 
   async getUserRoutes(userId: string): Promise<RouteEntity[]> {
+    if (this.redisService.isEnabled()) {
+      const version = await this.redisService.getVersion(this.getUserRoutesVersionKey(userId));
+      const cacheKey = `routes:user:${userId}:v${version}`;
+      const cached = await this.redisService.getJson<RouteEntity[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const routes = await this.routesRepository.find({
+        where: { userId },
+        order: { updatedAt: 'DESC' },
+      });
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, routes, ttlSeconds);
+      }
+      return routes;
+    }
+
     return this.routesRepository.find({
       where: { userId },
       order: { updatedAt: 'DESC' },
@@ -65,6 +90,27 @@ export class RoutesService {
   }
 
   async getRouteById(userId: string, id: string): Promise<RouteEntity> {
+    if (this.redisService.isEnabled()) {
+      const version = await this.redisService.getVersion(this.getRoutesGlobalVersionKey());
+      const cacheKey = `routes:${id}:user:${userId}:v${version}`;
+      const cached = await this.redisService.getJson<RouteEntity>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const route = await this.routesRepository.findOne({ where: { id } });
+      if (!route) {
+        throw new NotFoundException('Route not found');
+      }
+      if (!route.isPublic && route.userId !== userId) {
+        throw new NotFoundException('Route not found');
+      }
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, route, ttlSeconds);
+      }
+      return route;
+    }
+
     const route = await this.routesRepository.findOne({ where: { id } });
     if (!route) {
       throw new NotFoundException('Route not found');
@@ -92,6 +138,38 @@ export class RoutesService {
     const minLng = lng - radiusLng;
     const maxLng = lng + radiusLng;
 
+    if (this.redisService.isEnabled()) {
+      const version = await this.redisService.getVersion(this.getRoutesGlobalVersionKey());
+      const latKey = Number(lat).toFixed(4);
+      const lngKey = Number(lng).toFixed(4);
+      const radiusKey = Number(radiusKm).toFixed(2);
+      const cacheKey = `routes:popular:v${version}:lat:${latKey}:lng:${lngKey}:r:${radiusKey}:limit:${limit}`;
+      const cached = await this.redisService.getJson<RouteEntity[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const routes = await this.routesRepository
+        .createQueryBuilder('route')
+        .where('route.isPublic = :isPublic', { isPublic: true })
+        .andWhere('route.minLat <= :maxLat AND route.maxLat >= :minLat', {
+          minLat,
+          maxLat,
+        })
+        .andWhere('route.minLng <= :maxLng AND route.maxLng >= :minLng', {
+          minLng,
+          maxLng,
+        })
+        .orderBy('route.usageCount', 'DESC')
+        .addOrderBy('route.lastUsedAt', 'DESC', 'NULLS LAST')
+        .take(limit)
+        .getMany();
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, routes, ttlSeconds);
+      }
+      return routes;
+    }
+
     return this.routesRepository
       .createQueryBuilder('route')
       .where('route.isPublic = :isPublic', { isPublic: true })
@@ -116,7 +194,18 @@ export class RoutesService {
     }
     route.usageCount = (route.usageCount || 0) + 1;
     route.lastUsedAt = new Date();
-    return this.routesRepository.save(route);
+    const saved = await this.routesRepository.save(route);
+    await this.redisService.bumpVersion(this.getRoutesGlobalVersionKey());
+    await this.redisService.bumpVersion(this.getUserRoutesVersionKey(route.userId));
+    return saved;
+  }
+
+  private getRoutesGlobalVersionKey() {
+    return 'cache:routes:version';
+  }
+
+  private getUserRoutesVersionKey(userId: string) {
+    return `cache:routes:user:${userId}:version`;
   }
 
   private calculateBounds(points: RoutePoint[]) {

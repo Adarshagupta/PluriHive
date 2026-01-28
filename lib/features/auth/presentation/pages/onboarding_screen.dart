@@ -16,22 +16,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   final List<OnboardingData> _pages = [
     OnboardingData(
-      imagePath: 'assets/illustrations/capture.png',
+      imagePath: 'assets/illustrations/capture.webp',
       title: 'Capture Territories',
       description: 'Claim hexagonal zones as you move',
     ),
     OnboardingData(
-      imagePath: 'assets/illustrations/earnpoints.png',
+      imagePath: 'assets/illustrations/earnpoints.webp',
       title: 'Earn Points',
       description: 'Level up with every step',
     ),
     OnboardingData(
-      imagePath: 'assets/illustrations/treackProgress.png',
+      imagePath: 'assets/illustrations/treackProgress.webp',
       title: 'Track Progress',
       description: 'Watch your fitness journey grow',
     ),
     OnboardingData(
-      imagePath: 'assets/illustrations/start.png',
+      imagePath: 'assets/illustrations/start.webp',
       title: 'Ready?',
       description: "Let's get moving!",
     ),

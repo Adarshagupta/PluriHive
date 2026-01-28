@@ -24,6 +24,8 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
   final ActivityLocalDataSource _localDataSource = ActivityLocalDataSourceImpl();
   List<Activity> _activities = [];
   bool _isLoading = true;
+  bool _hasLocalActivities = false;
+  bool _isRefreshingActivities = false;
   final Map<String, GoogleMapController> _mapControllers = {};
   
   @override
@@ -34,34 +36,60 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
   }
   
   Future<void> _loadActivities() async {
-    setState(() => _isLoading = true);
+    await _loadActivitiesFromLocal();
+    _refreshActivitiesFromBackend();
+  }
+
+  Future<void> _loadActivitiesFromLocal() async {
     try {
-      // Try to load from backend first
-      try {
-        final activitiesData = await _apiService.getUserActivities();
-        final backendActivities = activitiesData.map((data) => Activity.fromJson(data)).toList();
-        
-        if (backendActivities.isNotEmpty) {
-          setState(() {
-            _activities = backendActivities;
-            _isLoading = false;
-          });
-          return;
-        }
-      } catch (e) {
-        print('⚠️ Could not load from backend: $e');
-      }
-      
-      // Fallback to local storage
       final localActivities = await _localDataSource.getAllActivities();
+      localActivities.sort((a, b) => b.startTime.compareTo(a.startTime));
+      if (!mounted) return;
       setState(() {
         _activities = localActivities;
-        _isLoading = false;
+        _isLoading = localActivities.isEmpty;
       });
-      print('📱 Loaded ${localActivities.length} activities from local storage');
+      _hasLocalActivities = localActivities.isNotEmpty;
+      print('Loaded ${localActivities.length} activities from local storage');
     } catch (e) {
-      print('❌ Error loading activities: $e');
-      setState(() => _isLoading = false);
+      print('Error loading local activities: $e');
+      if (mounted) {
+        setState(() => _isLoading = true);
+      }
+    }
+  }
+
+  Future<void> _refreshActivitiesFromBackend() async {
+    if (_isRefreshingActivities) return;
+    _isRefreshingActivities = true;
+    try {
+      final activitiesData = await _apiService.getUserActivities();
+      final backendActivities =
+          activitiesData.map((data) => Activity.fromJson(data)).toList();
+      backendActivities.sort((a, b) => b.startTime.compareTo(a.startTime));
+
+      if (backendActivities.isNotEmpty) {
+        for (final activity in backendActivities) {
+          await _localDataSource.saveActivity(activity);
+        }
+      }
+
+      if (!mounted) return;
+      if (backendActivities.isNotEmpty || !_hasLocalActivities) {
+        setState(() {
+          _activities = backendActivities;
+          _isLoading = false;
+        });
+      } else {
+        setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      print('Could not load activities from backend: $e');
+      if (mounted && !_hasLocalActivities) {
+        setState(() => _isLoading = false);
+      }
+    } finally {
+      _isRefreshingActivities = false;
     }
   }
 
@@ -757,3 +785,6 @@ class _CompactStat extends StatelessWidget {
     );
   }
 }
+
+
+

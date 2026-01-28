@@ -11,6 +11,8 @@ import '../../features/auth/presentation/bloc/auth_bloc.dart';
 
 import '../../features/tracking/data/repositories/location_repository_impl.dart';
 import '../../features/tracking/data/datasources/location_data_source.dart';
+import '../../features/tracking/data/datasources/activity_local_data_source.dart';
+import '../../features/tracking/data/datasources/pending_sync_data_source.dart';
 import '../../features/tracking/domain/repositories/location_repository.dart';
 import '../../features/tracking/domain/usecases/start_tracking.dart';
 import '../../features/tracking/domain/usecases/stop_tracking.dart';
@@ -40,6 +42,8 @@ import '../services/route_api_service.dart';
 import '../services/websocket_service.dart';
 import '../services/settings_api_service.dart';
 import '../services/user_stats_api_service.dart';
+import '../services/offline_sync_service.dart';
+import '../services/user_profile_api_service.dart';
 
 final getIt = GetIt.instance;
 
@@ -98,6 +102,13 @@ Future<void> initializeDependencies() async {
     ),
   );
 
+  getIt.registerLazySingleton<UserProfileApiService>(
+    () => UserProfileApiService(
+      authService: getIt(),
+      client: getIt(),
+    ),
+  );
+
   getIt.registerSingleton<WebSocketService>(WebSocketService());
 
   // Google Fit Service
@@ -113,6 +124,14 @@ Future<void> initializeDependencies() async {
 
   getIt.registerLazySingleton<LocationDataSource>(
     () => LocationDataSourceImpl(),
+  );
+
+  getIt.registerLazySingleton<ActivityLocalDataSource>(
+    () => ActivityLocalDataSourceImpl(),
+  );
+
+  getIt.registerLazySingleton<PendingSyncDataSource>(
+    () => PendingSyncDataSourceImpl(),
   );
 
   getIt.registerLazySingleton<TerritoryLocalDataSource>(
@@ -140,6 +159,15 @@ Future<void> initializeDependencies() async {
     () => GameRepositoryImpl(getIt()),
   );
 
+  getIt.registerLazySingleton<OfflineSyncService>(
+    () => OfflineSyncService(
+      trackingApiService: getIt(),
+      territoryApiService: getIt(),
+      pendingSyncDataSource: getIt(),
+      authApiService: getIt(),
+    ),
+  );
+
   // Use Cases
   getIt.registerLazySingleton(() => StartTracking(getIt()));
   getIt.registerLazySingleton(() => StopTracking(getIt()));
@@ -156,6 +184,7 @@ Future<void> initializeDependencies() async {
         repository: getIt(),
         authApiService: getIt(),
         webSocketService: getIt(),
+        offlineSyncService: getIt(),
       ));
 
   getIt.registerFactory(() => LocationBloc(
@@ -175,5 +204,6 @@ Future<void> initializeDependencies() async {
         getUserStats: getIt(),
         repository: getIt(),
         authApiService: getIt(),
+        webSocketService: getIt(),
       ));
 }

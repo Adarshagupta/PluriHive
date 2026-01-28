@@ -70,6 +70,38 @@ class TrackingApiService {
     }
   }
 
+  Future<Map<String, dynamic>> saveActivityPayload(
+    Map<String, dynamic> payload,
+  ) async {
+    try {
+      final token = await _authService.getToken();
+      if (token == null) {
+        throw Exception('Not authenticated');
+      }
+
+      final response = await _client
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}${ApiConfig.activitiesEndpoint}'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode(payload),
+          )
+          .timeout(ApiConfig.uploadTimeout);
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return data;
+      } else {
+        throw Exception(data['message'] ?? 'Failed to save activity');
+      }
+    } catch (e) {
+      throw Exception('Save activity error: $e');
+    }
+  }
+
   // Get User Activities
   Future<List<Map<String, dynamic>>> getUserActivities({int limit = 50}) async {
     try {

@@ -9,6 +9,8 @@ class User extends Equatable {
   final int? age;
   final String? gender;
   final bool hasCompletedOnboarding;
+  final String? avatarModelUrl;
+  final String? avatarImageUrl;
   
   // Stats
   final int totalPoints;
@@ -27,6 +29,8 @@ class User extends Equatable {
     this.age,
     this.gender,
     this.hasCompletedOnboarding = false,
+    this.avatarModelUrl,
+    this.avatarImageUrl,
     this.totalPoints = 0,
     this.level = 1,
     this.totalDistanceKm = 0.0,
@@ -45,6 +49,8 @@ class User extends Equatable {
     age,
     gender,
     hasCompletedOnboarding,
+    avatarModelUrl,
+    avatarImageUrl,
     totalPoints,
     level,
     totalDistanceKm,
@@ -62,6 +68,8 @@ class User extends Equatable {
     int? age,
     String? gender,
     bool? hasCompletedOnboarding,
+    String? avatarModelUrl,
+    String? avatarImageUrl,
     int? totalPoints,
     int? level,
     double? totalDistanceKm,
@@ -78,6 +86,8 @@ class User extends Equatable {
       age: age ?? this.age,
       gender: gender ?? this.gender,
       hasCompletedOnboarding: hasCompletedOnboarding ?? this.hasCompletedOnboarding,
+      avatarModelUrl: avatarModelUrl ?? this.avatarModelUrl,
+      avatarImageUrl: avatarImageUrl ?? this.avatarImageUrl,
       totalPoints: totalPoints ?? this.totalPoints,
       level: level ?? this.level,
       totalDistanceKm: totalDistanceKm ?? this.totalDistanceKm,
@@ -96,6 +106,8 @@ class User extends Equatable {
     'age': age,
     'gender': gender,
     'hasCompletedOnboarding': hasCompletedOnboarding,
+    'avatarModelUrl': avatarModelUrl,
+    'avatarImageUrl': avatarImageUrl,
     'totalPoints': totalPoints,
     'level': level,
     'totalDistanceKm': totalDistanceKm,
@@ -113,6 +125,8 @@ class User extends Equatable {
     age: json['age'],
     gender: json['gender'],
     hasCompletedOnboarding: json['hasCompletedOnboarding'] ?? false,
+    avatarModelUrl: json['avatarModelUrl'],
+    avatarImageUrl: json['avatarImageUrl'],
     totalPoints: json['totalPoints'] ?? 0,
     level: json['level'] ?? 1,
     totalDistanceKm: (json['totalDistanceKm'] ?? 0.0).toDouble(),

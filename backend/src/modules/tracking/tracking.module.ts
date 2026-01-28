@@ -4,11 +4,13 @@ import { Activity } from './activity.entity';
 import { TrackingService } from './tracking.service';
 import { TrackingController } from './tracking.controller';
 import { UserModule } from '../user/user.module';
+import { RedisModule } from '../redis/redis.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Activity]),
     UserModule,
+    RedisModule,
   ],
   providers: [TrackingService],
   controllers: [TrackingController],

@@ -4,7 +4,12 @@ import '../../../../core/services/google_fit_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 
 class GoogleFitCard extends StatefulWidget {
-  const GoogleFitCard({super.key});
+  final EdgeInsetsGeometry margin;
+
+  const GoogleFitCard({
+    super.key,
+    this.margin = const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+  });
 
   @override
   State<GoogleFitCard> createState() => _GoogleFitCardState();
@@ -22,9 +27,12 @@ class _GoogleFitCardState extends State<GoogleFitCard> {
   }
 
   Future<void> _checkConnection() async {
-    setState(() {
-      _isConnected = _googleFitService.isAuthorized;
-    });
+    final connected = await _googleFitService.checkReadAuthorization();
+    if (mounted) {
+      setState(() {
+        _isConnected = connected;
+      });
+    }
   }
 
   Future<void> _connectGoogleFit() async {
@@ -68,8 +76,9 @@ class _GoogleFitCardState extends State<GoogleFitCard> {
       final success = await _googleFitService.initialize();
 
       if (success && mounted) {
+        final connected = await _googleFitService.checkReadAuthorization();
         setState(() {
-          _isConnected = true;
+          _isConnected = connected;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -97,7 +106,7 @@ class _GoogleFitCardState extends State<GoogleFitCard> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      margin: widget.margin,
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),

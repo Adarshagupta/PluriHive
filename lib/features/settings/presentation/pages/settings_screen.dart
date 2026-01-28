@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 import '../../../../core/theme/app_theme.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/pages/signin_screen.dart';
@@ -18,8 +20,12 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  static const String _settingsCacheKey = 'settings_cache_v1';
   String _selectedBackend = ApiConfig.localUrl;
   late final SettingsApiService _settingsService;
+  late final SharedPreferences _prefs;
+  bool _hasCachedSettings = false;
+  bool _isRefreshing = false;
 
   // Settings state
   String _units = 'metric';
@@ -36,32 +42,87 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _settingsService = di.getIt<SettingsApiService>();
+    _prefs = di.getIt<SharedPreferences>();
     _loadBackendPreference();
     _loadSettings();
   }
 
   Future<void> _loadSettings() async {
+    await _loadSettingsFromCache();
+    _refreshSettingsFromBackend();
+  }
+
+  Future<void> _loadSettingsFromCache() async {
     try {
-      final settings = await _settingsService.getSettings();
+      final cached = _prefs.getString(_settingsCacheKey);
+      if (cached == null) {
+        if (mounted) {
+          setState(() => _isLoading = true);
+        }
+        return;
+      }
+      final settings = jsonDecode(cached) as Map<String, dynamic>;
+      if (!mounted) return;
       setState(() {
-        _units = settings['units'] ?? 'metric';
-        _gpsAccuracy = settings['gpsAccuracy'] ?? 'high';
-        _hapticFeedback = settings['hapticFeedback'] ?? true;
-        _pushNotifications = settings['pushNotifications'] ?? true;
-        _emailNotifications = settings['emailNotifications'] ?? false;
-        _streakReminders = settings['streakReminders'] ?? true;
-        _darkMode = settings['darkMode'] ?? false;
-        _language = settings['language'] ?? 'English';
+        _applySettings(settings);
         _isLoading = false;
       });
+      _hasCachedSettings = true;
+    } catch (e) {
+      print('Error reading settings cache: $e');
+    }
+  }
+
+  Future<void> _refreshSettingsFromBackend() async {
+    if (_isRefreshing) return;
+    _isRefreshing = true;
+    try {
+      final settings = await _settingsService.getSettings();
+      if (!mounted) return;
+      setState(() {
+        _applySettings(settings);
+        _isLoading = false;
+      });
+      await _persistSettingsCache();
     } catch (e) {
       print('Error loading settings: $e');
-      setState(() => _isLoading = false);
+      if (mounted && !_hasCachedSettings) {
+        setState(() => _isLoading = false);
+      }
+    } finally {
+      _isRefreshing = false;
     }
+  }
+
+  void _applySettings(Map<String, dynamic> settings) {
+    _units = settings['units'] ?? _units;
+    _gpsAccuracy = settings['gpsAccuracy'] ?? _gpsAccuracy;
+    _hapticFeedback = settings['hapticFeedback'] ?? _hapticFeedback;
+    _pushNotifications = settings['pushNotifications'] ?? _pushNotifications;
+    _emailNotifications = settings['emailNotifications'] ?? _emailNotifications;
+    _streakReminders = settings['streakReminders'] ?? _streakReminders;
+    _darkMode = settings['darkMode'] ?? _darkMode;
+    _language = settings['language'] ?? _language;
+  }
+
+  Future<void> _persistSettingsCache() async {
+    final settings = {
+      'units': _units,
+      'gpsAccuracy': _gpsAccuracy,
+      'hapticFeedback': _hapticFeedback,
+      'pushNotifications': _pushNotifications,
+      'emailNotifications': _emailNotifications,
+      'streakReminders': _streakReminders,
+      'darkMode': _darkMode,
+      'language': _language,
+    };
+    await _prefs.setString(_settingsCacheKey, jsonEncode(settings));
+    _hasCachedSettings = true;
   }
 
   Future<void> _updateSetting(String key, dynamic value) async {
     try {
+      await _persistSettingsCache();
       await _settingsService.updateSettings({key: value});
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

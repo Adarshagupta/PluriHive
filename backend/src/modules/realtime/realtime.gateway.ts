@@ -6,16 +6,18 @@ import {
   OnGatewayDisconnect,
   MessageBody,
   ConnectedSocket,
-} from '@nestjs/websockets';
-import { Server, Socket } from 'socket.io';
-import { JwtService } from '@nestjs/jwt';
+} from "@nestjs/websockets";
+import { Server, Socket } from "socket.io";
+import { JwtService } from "@nestjs/jwt";
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: "*",
   },
 })
-export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class RealtimeGateway
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   @WebSocketServer()
   server: Server;
 
@@ -25,7 +27,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   handleConnection(client: Socket) {
     const token =
       client.handshake.auth?.token ||
-      client.handshake.headers?.authorization?.toString().replace('Bearer ', '');
+      client.handshake.headers?.authorization
+        ?.toString()
+        .replace("Bearer ", "");
 
     if (!token) {
       console.log(`Client missing auth token: ${client.id}`);
@@ -37,7 +41,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       const payload = this.jwtService.verify(token);
       const userId = payload?.sub;
       if (!userId) {
-        throw new Error('Invalid token payload');
+        throw new Error("Invalid token payload");
       }
       client.data.userId = userId;
       this.connectedUsers.set(client.id, userId);
@@ -53,7 +57,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.connectedUsers.delete(client.id);
   }
 
-  @SubscribeMessage('user:connect')
+  @SubscribeMessage("user:connect")
   handleUserConnect(
     @MessageBody() data: { userId: string },
     @ConnectedSocket() client: Socket,
@@ -66,29 +70,31 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     console.log(`User ${userId} connected with socket ${client.id}`);
   }
 
-  @SubscribeMessage('territory:captured')
+  @SubscribeMessage("territory:captured")
   handleTerritoryCaptured(
-    @MessageBody() data: { userId: string; hexId: string; lat: number; lng: number },
+    @MessageBody()
+    data: { userId: string; hexId: string; lat: number; lng: number },
     @ConnectedSocket() client: Socket,
   ) {
     const userId = client.data.userId;
     if (!userId) return;
     // Broadcast to all other clients
-    client.broadcast.emit('territory:contested', {
+    client.broadcast.emit("territory:contested", {
       ...data,
       userId,
     });
   }
 
-  @SubscribeMessage('location:update')
+  @SubscribeMessage("location:update")
   handleLocationUpdate(
-    @MessageBody() data: { userId: string; lat: number; lng: number; speed: number },
+    @MessageBody()
+    data: { userId: string; lat: number; lng: number; speed: number },
     @ConnectedSocket() client: Socket,
   ) {
     const userId = client.data.userId;
     if (!userId) return;
     // Broadcast location to other clients (for multiplayer features)
-    client.broadcast.emit('user:location', {
+    client.broadcast.emit("user:location", {
       ...data,
       userId,
     });
@@ -96,15 +102,24 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   // Server methods to emit events
   emitLeaderboardUpdate(leaderboard: any[]) {
-    this.server.emit('leaderboard:update', leaderboard);
+    this.server.emit("leaderboard:update", leaderboard);
   }
 
   emitAchievementUnlocked(userId: string, achievement: any) {
     // Find user's socket and emit to them
     for (const [socketId, uid] of this.connectedUsers.entries()) {
       if (uid === userId) {
-        this.server.to(socketId).emit('achievement:unlocked', achievement);
-        break;
+        this.server.to(socketId).emit("achievement:unlocked", achievement);
+      }
+    }
+  }
+
+  emitUserStatsUpdated(userId: string, payload?: any) {
+    for (const [socketId, uid] of this.connectedUsers.entries()) {
+      if (uid === userId) {
+        this.server
+          .to(socketId)
+          .emit("user:stats:update", payload ?? { userId });
       }
     }
   }

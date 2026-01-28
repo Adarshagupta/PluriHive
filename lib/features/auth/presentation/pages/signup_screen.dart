@@ -76,7 +76,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                   // Illustration
                   Center(
                     child: Image.asset(
-                      'assets/illustrations/splashscreen.png',
+                      'assets/illustrations/splashscreen.webp',
                       width: MediaQuery.of(context).size.width * 0.5,
                       height: MediaQuery.of(context).size.width * 0.5,
                       fit: BoxFit.contain,

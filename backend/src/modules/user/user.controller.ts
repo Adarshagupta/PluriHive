@@ -15,8 +15,7 @@ export class UserController {
 
   @Get('profile')
   async getProfile(@Request() req) {
-    const user = await this.userService.findById(req.user.id);
-    return this.userService.sanitizeUser(user);
+    return this.userService.getProfile(req.user.id);
   }
 
   @Put('profile')
@@ -43,8 +42,7 @@ export class UserController {
   // Specific routes MUST come before parameterized routes
   @Get('settings')
   async getSettings(@Request() req) {
-    const user = await this.userService.findById(req.user.id);
-    return user.settings || {};
+    return this.userService.getSettings(req.user.id);
   }
 
   @Put('settings')
@@ -61,8 +59,7 @@ export class UserController {
   @Get(':id')
   async getUserById(@Request() req, @Param('id') id: string) {
     if (id === req.user.id) {
-      const user = await this.userService.findById(id);
-      return this.userService.sanitizeUser(user);
+      return this.userService.getProfile(id);
     }
     return this.userService.getPublicProfile(id);
   }

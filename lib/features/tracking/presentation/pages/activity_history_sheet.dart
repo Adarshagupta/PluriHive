@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/widgets/skeleton.dart';
+import '../../data/datasources/activity_local_data_source.dart';
+import '../../domain/entities/activity.dart';
 
 class ActivityHistorySheet extends StatefulWidget {
   const ActivityHistorySheet({super.key});
@@ -13,6 +15,7 @@ class ActivityHistorySheet extends StatefulWidget {
 
 class _ActivityHistorySheetState extends State<ActivityHistorySheet> {
   final _trackingService = di.getIt<TrackingApiService>();
+  final ActivityLocalDataSource _localDataSource = ActivityLocalDataSourceImpl();
   List<Map<String, dynamic>> _activities = [];
   bool _isLoading = true;
   String? _error;
@@ -26,11 +29,31 @@ class _ActivityHistorySheetState extends State<ActivityHistorySheet> {
   Future<void> _loadActivities() async {
     try {
       final activities = await _trackingService.getUserActivities(limit: 100);
+      for (final data in activities) {
+        try {
+          final activity = Activity.fromJson(data);
+          await _localDataSource.saveActivity(activity);
+        } catch (e) {
+          print('[warn] Failed to cache activity locally: $e');
+        }
+      }
       setState(() {
         _activities = activities;
         _isLoading = false;
       });
     } catch (e) {
+      try {
+        final localActivities = await _localDataSource.getAllActivities();
+        setState(() {
+          _activities =
+              localActivities.map((activity) => activity.toJson()).toList();
+          _isLoading = false;
+          _error = null;
+        });
+        return;
+      } catch (localError) {
+        print('[warn] Failed to load local activities: $localError');
+      }
       setState(() {
         _error = e.toString();
         _isLoading = false;

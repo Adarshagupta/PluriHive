@@ -1,27 +1,34 @@
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { User } from './user.entity';
-import { UpdateProfileDto } from './dto/update-profile.dto';
-import { UpdateSettingsDto } from './dto/update-settings.dto';
+import { Injectable } from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import { User } from "./user.entity";
+import { UpdateProfileDto } from "./dto/update-profile.dto";
+import { UpdateSettingsDto } from "./dto/update-settings.dto";
+import { RedisService } from "../redis/redis.service";
+import { RealtimeGateway } from "../realtime/realtime.gateway";
 
 @Injectable()
 export class UserService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
-  ) { }
+    private redisService: RedisService,
+    private realtimeGateway: RealtimeGateway,
+  ) {}
 
   async findById(id: string): Promise<User> {
     return this.userRepository.findOne({
       where: { id },
-      relations: ['territories', 'activities'],
+      relations: ["territories", "activities"],
     });
   }
 
-  async updateProfile(userId: string, updates: UpdateProfileDto): Promise<User> {
-    console.log('📝 updateProfile called for user:', userId);
-    console.log('📝 Updates received:', JSON.stringify(updates, null, 2));
+  async updateProfile(
+    userId: string,
+    updates: UpdateProfileDto,
+  ): Promise<User> {
+    console.log("📝 updateProfile called for user:", userId);
+    console.log("📝 Updates received:", JSON.stringify(updates, null, 2));
 
     const allowedUpdates: Partial<User> = {};
     if (updates.name !== undefined) allowedUpdates.name = updates.name;
@@ -32,40 +39,54 @@ export class UserService {
     if (updates.profilePicture !== undefined) {
       allowedUpdates.profilePicture = updates.profilePicture;
     }
+    if (updates.avatarModelUrl !== undefined) {
+      allowedUpdates.avatarModelUrl = updates.avatarModelUrl;
+    }
+    if (updates.avatarImageUrl !== undefined) {
+      allowedUpdates.avatarImageUrl = updates.avatarImageUrl;
+    }
 
     await this.userRepository.update(userId, allowedUpdates);
 
     const updatedUser = await this.findById(userId);
-    console.log('✅ Profile updated. New values:', {
+    console.log("✅ Profile updated. New values:", {
       weight: updatedUser.weight,
       height: updatedUser.height,
       age: updatedUser.age,
       gender: updatedUser.gender,
     });
 
+    await this.bumpUserCacheVersion(userId);
     return updatedUser;
   }
 
   async completeOnboarding(userId: string): Promise<User> {
     await this.userRepository.update(userId, { hasCompletedOnboarding: true });
-    return this.findById(userId);
+    const user = await this.findById(userId);
+    await this.bumpUserCacheVersion(userId);
+    return user;
   }
 
   async fixOnboardingForAllUsers(): Promise<{ updated: number }> {
     const result = await this.userRepository.update(
       { hasCompletedOnboarding: false },
-      { hasCompletedOnboarding: true }
+      { hasCompletedOnboarding: true },
     );
+    await this.redisService.bumpVersion(this.getUserGlobalVersionKey());
     return { updated: result.affected || 0 };
   }
 
-  async updateStats(userId: string, stats: {
-    distanceKm?: number;
-    steps?: number;
-    territories?: number;
-    points?: number;
-    workouts?: number;
-  }): Promise<User> {
+  async updateStats(
+    userId: string,
+    stats: {
+      distanceKm?: number;
+      steps?: number;
+      territories?: number;
+      points?: number;
+      workouts?: number;
+    },
+    options?: { notify?: boolean },
+  ): Promise<User> {
     const user = await this.findById(userId);
 
     // Convert decimal fields from string to number (PostgreSQL returns decimals as strings)
@@ -81,16 +102,31 @@ export class UserService {
     }
     if (stats.workouts) user.totalWorkouts += stats.workouts;
 
-    return this.userRepository.save(user);
+    const saved = await this.userRepository.save(user);
+    await this.bumpUserCacheVersion(userId);
+    if (options?.notify ?? true) {
+      this.notifyStatsUpdated(userId);
+    }
+    return saved;
   }
 
-  async updateSettings(userId: string, settings: UpdateSettingsDto): Promise<User> {
+  async updateSettings(
+    userId: string,
+    settings: UpdateSettingsDto,
+  ): Promise<User> {
     const user = await this.findById(userId);
     user.settings = { ...user.settings, ...settings };
-    return this.userRepository.save(user);
+    const saved = await this.userRepository.save(user);
+    await this.bumpUserCacheVersion(userId);
+    await this.redisService.bumpVersion("cache:leaderboard:version");
+    return saved;
   }
 
-  async updateStreak(userId: string, activityDate: Date): Promise<void> {
+  async updateStreak(
+    userId: string,
+    activityDate: Date,
+    options?: { notify?: boolean },
+  ): Promise<void> {
     const user = await this.findById(userId);
 
     const today = this.toDateOnly(activityDate);
@@ -98,9 +134,16 @@ export class UserService {
 
     if (!user.lastActiveDate) {
       user.currentStreak = 1;
-      user.longestStreak = Math.max(user.longestStreak || 0, user.currentStreak);
+      user.longestStreak = Math.max(
+        user.longestStreak || 0,
+        user.currentStreak,
+      );
       user.lastActiveDate = today;
       await this.userRepository.save(user);
+      await this.bumpUserCacheVersion(userId);
+      if (options?.notify ?? true) {
+        this.notifyStatsUpdated(userId);
+      }
       return;
     }
 
@@ -125,10 +168,23 @@ export class UserService {
     user.lastActiveDate = today;
 
     await this.userRepository.save(user);
+    await this.bumpUserCacheVersion(userId);
+    if (options?.notify ?? true) {
+      this.notifyStatsUpdated(userId);
+    }
+  }
+
+  notifyStatsUpdated(userId: string) {
+    this.realtimeGateway.emitUserStatsUpdated(userId, {
+      userId,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   private toDateOnly(date: Date): Date {
-    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    return new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+    );
   }
 
   private daysBetween(start: Date, end: Date): number {
@@ -163,17 +219,49 @@ export class UserService {
   }
 
   async getPublicProfile(userId: string): Promise<Partial<User> | null> {
+    if (this.redisService.isEnabled()) {
+      const version = await this.getUserCacheVersion(userId);
+      const cacheKey = `user:public:${userId}:v${version}`;
+      const cached = await this.redisService.getJson<Partial<User>>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const user = await this.userRepository.findOne({
+        where: { id: userId },
+        select: [
+          "id",
+          "name",
+          "profilePicture",
+          "avatarModelUrl",
+          "avatarImageUrl",
+          "level",
+          "totalPoints",
+          "totalDistanceKm",
+          "totalTerritoriesCaptured",
+          "totalWorkouts",
+        ],
+      });
+      const result = user || null;
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, result, ttlSeconds);
+      }
+      return result;
+    }
+
     const user = await this.userRepository.findOne({
       where: { id: userId },
       select: [
-        'id',
-        'name',
-        'profilePicture',
-        'level',
-        'totalPoints',
-        'totalDistanceKm',
-        'totalTerritoriesCaptured',
-        'totalWorkouts',
+        "id",
+        "name",
+        "profilePicture",
+        "avatarModelUrl",
+        "avatarImageUrl",
+        "level",
+        "totalPoints",
+        "totalDistanceKm",
+        "totalTerritoriesCaptured",
+        "totalWorkouts",
       ],
     });
     return user || null;
@@ -192,8 +280,81 @@ export class UserService {
     longestStreak: number;
     streakFreezes: number;
   }> {
-    const user = await this.findById(userId);
+    if (this.redisService.isEnabled()) {
+      const version = await this.getUserCacheVersion(userId);
+      const cacheKey = `user:stats:${userId}:v${version}`;
+      const cached = await this.redisService.getJson<{
+        totalDistanceKm: number;
+        totalSteps: number;
+        totalTerritoriesCaptured: number;
+        totalWorkouts: number;
+        totalPoints: number;
+        level: number;
+        totalCaloriesBurned: number;
+        totalDurationSeconds: number;
+        currentStreak: number;
+        longestStreak: number;
+        streakFreezes: number;
+      }>(cacheKey);
+      if (cached) {
+        return cached;
+      }
 
+      const user = await this.findById(userId);
+      const stats = await this.computeUserStats(user);
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, stats, ttlSeconds);
+      }
+      return stats;
+    }
+
+    const user = await this.findById(userId);
+    return this.computeUserStats(user);
+  }
+
+  async getProfile(userId: string) {
+    if (!this.redisService.isEnabled()) {
+      const user = await this.findById(userId);
+      return this.sanitizeUser(user);
+    }
+    const version = await this.getUserCacheVersion(userId);
+    const cacheKey = `user:profile:${userId}:v${version}`;
+    const cached = await this.redisService.getJson<Partial<User>>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const user = await this.findById(userId);
+    const safe = this.sanitizeUser(user);
+    const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+    if (ttlSeconds > 0) {
+      await this.redisService.setJson(cacheKey, safe, ttlSeconds);
+    }
+    return safe;
+  }
+
+  async getSettings(userId: string) {
+    if (!this.redisService.isEnabled()) {
+      const user = await this.findById(userId);
+      return user.settings || {};
+    }
+    const version = await this.getUserCacheVersion(userId);
+    const cacheKey = `user:settings:${userId}:v${version}`;
+    const cached =
+      await this.redisService.getJson<Record<string, any>>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const user = await this.findById(userId);
+    const settings = user.settings || {};
+    const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+    if (ttlSeconds > 0) {
+      await this.redisService.setJson(cacheKey, settings, ttlSeconds);
+    }
+    return settings;
+  }
+
+  private async computeUserStats(user: User) {
     // Calculate calories and duration from activities
     let totalCaloriesBurned = 0;
     let totalDurationSeconds = 0;
@@ -226,5 +387,25 @@ export class UserService {
       longestStreak: user.longestStreak || 0,
       streakFreezes: user.streakFreezes || 0,
     };
+  }
+
+  private getUserGlobalVersionKey() {
+    return "cache:user:global:version";
+  }
+
+  private getUserVersionKey(userId: string) {
+    return `cache:user:${userId}:version`;
+  }
+
+  private async getUserCacheVersion(userId: string): Promise<string> {
+    const [globalVersion, userVersion] = await Promise.all([
+      this.redisService.getVersion(this.getUserGlobalVersionKey()),
+      this.redisService.getVersion(this.getUserVersionKey(userId)),
+    ]);
+    return `g${globalVersion}:u${userVersion}`;
+  }
+
+  private async bumpUserCacheVersion(userId: string) {
+    await this.redisService.bumpVersion(this.getUserVersionKey(userId));
   }
 }

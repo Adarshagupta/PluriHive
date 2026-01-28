@@ -4,6 +4,8 @@ import '../../domain/entities/user.dart';
 import '../../domain/repositories/auth_repository.dart';
 import '../../../../core/services/auth_api_service.dart';
 import '../../../../core/services/websocket_service.dart';
+import '../../../../core/services/offline_sync_service.dart';
+import '../../../../core/services/user_data_cleanup_service.dart';
 
 // Events
 abstract class AuthEvent extends Equatable {
@@ -69,6 +71,19 @@ class UpdateUserProfile extends AuthEvent {
   List<Object?> get props => [weightKg, heightCm, age, gender];
 }
 
+class UpdateUserAvatar extends AuthEvent {
+  final String avatarModelUrl;
+  final String avatarImageUrl;
+
+  UpdateUserAvatar({
+    required this.avatarModelUrl,
+    required this.avatarImageUrl,
+  });
+
+  @override
+  List<Object?> get props => [avatarModelUrl, avatarImageUrl];
+}
+
 class CompleteOnboarding extends AuthEvent {}
 
 class SignOut extends AuthEvent {}
@@ -115,17 +130,20 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   final AuthRepository repository;
   final AuthApiService authApiService;
   final WebSocketService webSocketService;
+  final OfflineSyncService offlineSyncService;
   
   AuthBloc({
     required this.repository,
     required this.authApiService,
     required this.webSocketService,
+    required this.offlineSyncService,
   }) : super(AuthInitial()) {
     on<CheckAuthStatus>(_onCheckAuthStatus);
     on<SignUpUser>(_onSignUpUser);
     on<SignInUser>(_onSignInUser);
     on<SignInWithGoogle>(_onSignInWithGoogle);
     on<UpdateUserProfile>(_onUpdateUserProfile);
+    on<UpdateUserAvatar>(_onUpdateUserAvatar);
     on<CompleteOnboarding>(_onCompleteOnboarding);
     on<SignOut>(_onSignOut);
   }
@@ -137,6 +155,13 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     } else {
       print('⚠️ WebSocket token unavailable - not connecting');
     }
+
+  }
+
+  void _kickoffOfflineSync() {
+    offlineSyncService.syncPending().catchError((e) {
+      print('[warn] Offline sync failed: $e');
+    });
   }
   
   Future<void> _onCheckAuthStatus(
@@ -161,6 +186,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
           print('✅ CheckAuthStatus: Using local user data');
           await _connectWebSocket(localUser);
           emit(Authenticated(localUser));
+          _kickoffOfflineSync();
           
           // Try to sync with backend in background (don't block or fail)
           try {
@@ -186,6 +212,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
               heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
               age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
               gender: userData['gender']?.toString(),
+              avatarModelUrl: userData['avatarModelUrl']?.toString(),
+              avatarImageUrl: userData['avatarImageUrl']?.toString(),
             );
             
             // Update local storage with fresh data
@@ -196,6 +224,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
             if (updatedUser.hasCompletedOnboarding != localUser.hasCompletedOnboarding) {
               print('🔄 CheckAuthStatus: Onboarding status changed, updating state');
               emit(Authenticated(updatedUser));
+              _kickoffOfflineSync();
             }
           } catch (e) {
             print('⚠️ CheckAuthStatus: Background sync failed (using local data): $e');
@@ -226,6 +255,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
               heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
               age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
               gender: userData['gender']?.toString(),
+              avatarModelUrl: userData['avatarModelUrl']?.toString(),
+              avatarImageUrl: userData['avatarImageUrl']?.toString(),
             );
             
             // Save locally
@@ -236,6 +267,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
             await _connectWebSocket(user);
             
             emit(Authenticated(user));
+            _kickoffOfflineSync();
           } catch (e) {
             print('❌ CheckAuthStatus: Error fetching user from backend: $e');
             // Clear auth only if we can't get user at all in
@@ -276,6 +308,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         name: userData['name']?.toString() ?? event.name,
         email: userData['email'].toString(),
         hasCompletedOnboarding: false,
+        avatarModelUrl: userData['avatarModelUrl']?.toString(),
+        avatarImageUrl: userData['avatarImageUrl']?.toString(),
       );
       
       // Save locally - don't mark onboarding complete yet
@@ -286,6 +320,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       await _connectWebSocket(user);
       
       emit(Authenticated(user));
+      _kickoffOfflineSync();
     } catch (e) {
       emit(AuthError('Sign up failed: ${e.toString()}'));
     }
@@ -327,6 +362,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
         age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
         gender: userData['gender']?.toString(),
+        avatarModelUrl: userData['avatarModelUrl']?.toString(),
+        avatarImageUrl: userData['avatarImageUrl']?.toString(),
       );
       
       print('✅ SignIn: User object created: ${user.email}, onboarding: ${user.hasCompletedOnboarding}');
@@ -340,6 +377,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       print('✅ SignIn: WebSocket connected');
       
       emit(Authenticated(user));
+      _kickoffOfflineSync();
       print('✅ SignIn: Emitted Authenticated state');
     } catch (e, stackTrace) {
       print('❌ SignIn: Error occurred: $e');
@@ -383,6 +421,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
         age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
         gender: userData['gender']?.toString(),
+        avatarModelUrl: userData['avatarModelUrl']?.toString(),
+        avatarImageUrl: userData['avatarImageUrl']?.toString(),
       );
       
       print('✅ Google SignIn: User object created: ${user.email}, onboarding: ${user.hasCompletedOnboarding}');
@@ -396,6 +436,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       print('✅ Google SignIn: WebSocket connected');
       
       emit(Authenticated(user));
+      _kickoffOfflineSync();
       print('✅ Google SignIn: Emitted Authenticated state');
     } catch (e, stackTrace) {
       print('❌ Google SignIn: Error occurred: $e');
@@ -438,6 +479,34 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         
         await repository.saveUser(updatedUser);
         emit(Authenticated(updatedUser));
+        _kickoffOfflineSync();
+      }
+    } catch (e) {
+      emit(AuthError(e.toString()));
+    }
+  }
+
+  Future<void> _onUpdateUserAvatar(
+    UpdateUserAvatar event,
+    Emitter<AuthState> emit,
+  ) async {
+    try {
+      if (state is Authenticated) {
+        final currentUser = (state as Authenticated).user;
+
+        await authApiService.updateProfile({
+          'avatarModelUrl': event.avatarModelUrl,
+          'avatarImageUrl': event.avatarImageUrl,
+        });
+
+        final updatedUser = currentUser.copyWith(
+          avatarModelUrl: event.avatarModelUrl,
+          avatarImageUrl: event.avatarImageUrl,
+        );
+
+        await repository.saveUser(updatedUser);
+        emit(Authenticated(updatedUser));
+        _kickoffOfflineSync();
       }
     } catch (e) {
       emit(AuthError(e.toString()));
@@ -461,6 +530,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         await repository.markOnboardingComplete();
         
         emit(Authenticated(updatedUser));
+        _kickoffOfflineSync();
       }
     } catch (e) {
       emit(AuthError(e.toString()));
@@ -480,6 +550,9 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       
       // Clear local storage
       await repository.clearUser();
+
+      // Clear all cached user data
+      await UserDataCleanupService.clearAll();
       
       emit(Unauthenticated(isFirstTime: false));
     } catch (e) {

@@ -2,67 +2,40 @@ import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { User } from "../user/user.entity";
+import { RedisService } from "../redis/redis.service";
 
 @Injectable()
 export class LeaderboardService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    private redisService: RedisService,
   ) {}
 
   async getLeaderboard(limit: number = 50): Promise<User[]> {
-    // Get all users ordered by points
-    let users = await this.userRepository.find({
-      order: { totalPoints: "DESC" },
-      take: limit,
-      select: [
-        "id",
-        "name",
-        "totalPoints",
-        "level",
-        "totalDistanceKm",
-        "totalSteps",
-        "totalTerritoriesCaptured",
-        "totalWorkouts",
-      ],
-    });
-
-    // If no users found, create test data
-    const shouldSeed =
-      process.env.SEED_LEADERBOARD === "true" &&
-      process.env.NODE_ENV !== "production";
-    if (users.length === 0 && shouldSeed) {
-      await this.createTestUsers();
-      users = await this.userRepository.find({
-        order: { totalPoints: "DESC" },
-        take: limit,
-        select: [
-          "id",
-          "name",
-          "totalPoints",
-          "level",
-          "totalDistanceKm",
-          "totalSteps",
-          "totalTerritoriesCaptured",
-          "totalWorkouts",
-        ],
-      });
-    }
-
-    return users;
+    return this.getLeaderboardWithCache("global", limit);
   }
 
   async getWeeklyLeaderboard(limit: number = 50): Promise<User[]> {
-    return this.getLeaderboard(limit);
+    return this.getLeaderboardWithCache("weekly", limit);
   }
 
   async getMonthlyLeaderboard(limit: number = 75): Promise<User[]> {
-    return this.getLeaderboard(limit);
+    return this.getLeaderboardWithCache("monthly", limit);
   }
 
   async getUserRank(
     userId: string,
   ): Promise<{ rank: number; user: User | null }> {
+    const cacheKey = await this.getVersionedCacheKey("rank", userId);
+    const cached = await this.redisService.getJson<{
+      rank: number;
+      user: User | null;
+    }>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const users = await this.userRepository.find({
       order: { totalPoints: "DESC" },
       select: ["id", "name", "totalPoints"],
@@ -74,16 +47,34 @@ export class LeaderboardService {
       return { rank: 0, user: null };
     }
 
-    return {
+    const result = {
       rank: userIndex + 1,
       user: users[userIndex],
     };
+
+    const ttlSeconds = this.getCacheTtlSeconds();
+    if (ttlSeconds > 0) {
+      await this.redisService.setJson(cacheKey, result, ttlSeconds);
+    }
+
+    return result;
   }
 
   async searchUsers(query: string, limit: number = 20): Promise<User[]> {
+    const sanitizedQuery = query.trim();
+    const normalized = sanitizedQuery.toLowerCase();
+    const cacheKey = await this.getVersionedCacheKey(
+      "search",
+      `${normalized}:${limit}`,
+    );
+    const cached = await this.redisService.getJson<User[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const users = await this.userRepository
       .createQueryBuilder("user")
-      .where("LOWER(user.name) LIKE LOWER(:query)", { query: `%${query}%` })
+      .where("LOWER(user.name) LIKE LOWER(:query)", { query: `%${sanitizedQuery}%` })
       .orderBy("user.totalPoints", "DESC")
       .limit(limit)
       .select([
@@ -98,6 +89,11 @@ export class LeaderboardService {
       ])
       .getMany();
 
+    const ttlSeconds = this.getCacheTtlSeconds();
+    if (ttlSeconds > 0) {
+      await this.redisService.setJson(cacheKey, users, ttlSeconds);
+    }
+
     return users;
   }
 
@@ -108,6 +104,18 @@ export class LeaderboardService {
     totalSteps: number;
     totalTerritories: number;
   }> {
+    const cacheKey = await this.getVersionedCacheKey("stats");
+    const cached = await this.redisService.getJson<{
+      totalUsers: number;
+      totalPoints: number;
+      totalDistance: number;
+      totalSteps: number;
+      totalTerritories: number;
+    }>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const result = await this.userRepository
       .createQueryBuilder("user")
       .select([
@@ -119,13 +127,103 @@ export class LeaderboardService {
       ])
       .getRawOne();
 
-    return {
+    const stats = {
       totalUsers: parseInt(result?.totalUsers) || 0,
       totalPoints: parseInt(result?.totalPoints) || 0,
       totalDistance: parseFloat(result?.totalDistance) || 0,
       totalSteps: parseInt(result?.totalSteps) || 0,
       totalTerritories: parseInt(result?.totalTerritories) || 0,
     };
+
+    const ttlSeconds = this.getCacheTtlSeconds();
+    if (ttlSeconds > 0) {
+      await this.redisService.setJson(cacheKey, stats, ttlSeconds);
+    }
+
+    return stats;
+  }
+
+  private getCacheKey(scope: string, suffix?: string | number): string {
+    if (suffix !== undefined) {
+      return `leaderboard:${scope}:${suffix}`;
+    }
+    return `leaderboard:${scope}`;
+  }
+
+  private getLeaderboardVersionKey() {
+    return "cache:leaderboard:version";
+  }
+
+  private async getVersionedCacheKey(
+    scope: string,
+    suffix?: string | number,
+  ): Promise<string> {
+    const version = await this.redisService.getVersion(
+      this.getLeaderboardVersionKey(),
+    );
+    const versionTag = `v${version}`;
+    if (suffix !== undefined) {
+      return this.getCacheKey(scope, `${versionTag}:${suffix}`);
+    }
+    return this.getCacheKey(scope, versionTag);
+  }
+
+  private getCacheTtlSeconds(): number {
+    return this.redisService.getDefaultTtlSeconds();
+  }
+
+  private shouldSeedLeaderboard(): boolean {
+    return (
+      process.env.SEED_LEADERBOARD === "true" &&
+      process.env.NODE_ENV !== "production"
+    );
+  }
+
+  private async queryLeaderboard(limit: number): Promise<User[]> {
+    return this.userRepository.find({
+      order: { totalPoints: "DESC" },
+      take: limit,
+      select: [
+        "id",
+        "name",
+        "totalPoints",
+        "level",
+        "totalDistanceKm",
+        "totalSteps",
+        "totalTerritoriesCaptured",
+        "totalWorkouts",
+      ],
+    });
+  }
+
+  private async fetchLeaderboard(limit: number): Promise<User[]> {
+    let users = await this.queryLeaderboard(limit);
+
+    if (users.length === 0 && this.shouldSeedLeaderboard()) {
+      await this.createTestUsers();
+      users = await this.queryLeaderboard(limit);
+    }
+
+    return users;
+  }
+
+  private async getLeaderboardWithCache(
+    scope: string,
+    limit: number,
+  ): Promise<User[]> {
+    const cacheKey = await this.getVersionedCacheKey(scope, limit);
+    const shouldSeed = this.shouldSeedLeaderboard();
+    const cached = await this.redisService.getJson<User[]>(cacheKey);
+    if (cached && (cached.length > 0 || !shouldSeed)) {
+      return cached;
+    }
+
+    const users = await this.fetchLeaderboard(limit);
+    const ttlSeconds = this.getCacheTtlSeconds();
+    if (ttlSeconds > 0) {
+      await this.redisService.setJson(cacheKey, users, ttlSeconds);
+    }
+    return users;
   }
 
   private async createTestUsers(): Promise<void> {

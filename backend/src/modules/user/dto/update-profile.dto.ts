@@ -37,4 +37,14 @@ export class UpdateProfileDto {
   @IsString()
   @MaxLength(500)
   profilePicture?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  avatarModelUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  avatarImageUrl?: string;
 }

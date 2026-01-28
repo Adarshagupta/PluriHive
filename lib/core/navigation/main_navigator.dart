@@ -16,23 +16,23 @@ class MainNavigator extends StatefulWidget {
 
 class _MainNavigatorState extends State<MainNavigator> {
   int _currentIndex = 0;
-
-  List<Widget> get _screens => [
-        DashboardScreen(),
-        MapScreen(onNavigateHome: () {
-          setState(() {
-            _currentIndex = 0;
-          });
-        }),
-        LeaderboardScreen(),
-        AchievementsScreen(),
-        ProfileScreen(),
-      ];
+  late final List<Widget> _screens;
 
   @override
   void initState() {
     super.initState();
     context.read<AuthBloc>().add(CheckAuthStatus());
+    _screens = [
+      DashboardScreen(),
+      MapScreen(onNavigateHome: () {
+        setState(() {
+          _currentIndex = 0;
+        });
+      }),
+      LeaderboardScreen(),
+      AchievementsScreen(),
+      ProfileScreen(),
+    ];
   }
 
   @override
@@ -42,7 +42,10 @@ class _MainNavigatorState extends State<MainNavigator> {
         // Handle auth state changes if needed
       },
       child: Scaffold(
-        body: _screens[_currentIndex],
+        body: IndexedStack(
+          index: _currentIndex,
+          children: _screens,
+        ),
         bottomNavigationBar: _currentIndex == 1
             ? null
             : Container(
@@ -61,12 +64,12 @@ class _MainNavigatorState extends State<MainNavigator> {
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     _buildNavItem(
-                      icon: Icons.home_rounded,
+                      icon: Icons.cottage_rounded,
                       index: 0,
                       color: Color(0xFF7FE87A),
                     ),
                     _buildNavItem(
-                      icon: Icons.map_rounded,
+                      icon: Icons.explore_rounded,
                       index: 1,
                       color: Color(0xFF64B5F6),
                     ),
@@ -76,12 +79,12 @@ class _MainNavigatorState extends State<MainNavigator> {
                       color: Color(0xFFFFA726),
                     ),
                     _buildNavItem(
-                      icon: Icons.workspace_premium_rounded,
+                      icon: Icons.star_rounded,
                       index: 3,
                       color: Color(0xFFAB47BC),
                     ),
                     _buildNavItem(
-                      icon: Icons.account_circle_rounded,
+                      icon: Icons.sentiment_satisfied_rounded,
                       index: 4,
                       color: Color(0xFF66BB6A),
                     ),

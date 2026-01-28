@@ -58,6 +58,39 @@ class TerritoryApiService {
     }
   }
 
+  Future<Map<String, dynamic>> captureTerritoriesPayload(
+    Map<String, dynamic> payload,
+  ) async {
+    try {
+      final token = await _authService.getToken();
+      if (token == null) {
+        throw Exception('Not authenticated');
+      }
+
+      final response = await _client
+          .post(
+            Uri.parse(
+                '${ApiConfig.baseUrl}${ApiConfig.captureTerritoriesEndpoint}'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode(payload),
+          )
+          .timeout(ApiConfig.defaultTimeout);
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return data;
+      } else {
+        throw Exception(data['message'] ?? 'Failed to capture territories');
+      }
+    } catch (e) {
+      throw Exception('Capture territories error: $e');
+    }
+  }
+
   // Get User Territories
   Future<List<Map<String, dynamic>>> getUserTerritories(String userId) async {
     try {
@@ -89,7 +122,7 @@ class TerritoryApiService {
   }
 
   // Get All Territories (for universal map display)
-  Future<List<Map<String, dynamic>>> getAllTerritories({int limit = 500}) async {
+  Future<List<Map<String, dynamic>>> getAllTerritories({int limit = 5000}) async {
     try {
       final response = await _client
           .get(

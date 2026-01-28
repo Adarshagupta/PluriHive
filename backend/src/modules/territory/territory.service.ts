@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { Territory } from './territory.entity';
 import { UserService } from '../user/user.service';
+import { RedisService } from '../redis/redis.service';
 
 @Injectable()
 export class TerritoryService {
@@ -10,6 +11,7 @@ export class TerritoryService {
     @InjectRepository(Territory)
     private territoryRepository: Repository<Territory>,
     private userService: UserService,
+    private redisService: RedisService,
   ) {}
 
   async captureTerritories(
@@ -98,6 +100,8 @@ export class TerritoryService {
       points: 0, // Points come from distance only
     });
 
+    await this.redisService.bumpVersion(this.getTerritoriesVersionKey());
+
     return {
       newTerritories,
       recapturedTerritories,
@@ -106,7 +110,26 @@ export class TerritoryService {
     };
   }
 
-  async getAllTerritories(limit: number = 500): Promise<Territory[]> {
+  async getAllTerritories(limit: number = 5000): Promise<Territory[]> {
+    if (this.redisService.isEnabled()) {
+      const version = await this.redisService.getVersion(this.getTerritoriesVersionKey());
+      const cacheKey = `territories:all:v${version}:limit:${limit}`;
+      const cached = await this.redisService.getJson<Territory[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const territories = await this.territoryRepository.find({
+        relations: ['owner'],
+        order: { capturedAt: 'DESC' },
+        take: limit,
+      });
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, territories, ttlSeconds);
+      }
+      return territories;
+    }
+
     return this.territoryRepository.find({
       relations: ['owner'],
       order: { capturedAt: 'DESC' },
@@ -115,6 +138,24 @@ export class TerritoryService {
   }
 
   async getUserTerritories(userId: string): Promise<Territory[]> {
+    if (this.redisService.isEnabled()) {
+      const version = await this.redisService.getVersion(this.getTerritoriesVersionKey());
+      const cacheKey = `territories:user:${userId}:v${version}`;
+      const cached = await this.redisService.getJson<Territory[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const territories = await this.territoryRepository.find({
+        where: { ownerId: userId },
+        order: { capturedAt: 'DESC' },
+      });
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, territories, ttlSeconds);
+      }
+      return territories;
+    }
+
     return this.territoryRepository.find({
       where: { ownerId: userId },
       order: { capturedAt: 'DESC' },
@@ -125,6 +166,37 @@ export class TerritoryService {
     // Simple bounding box query (can be optimized with PostGIS)
     const latDelta = radiusKm / 111.0; // 1 degree = ~111 km
     const lngDelta = radiusKm / (111.0 * Math.cos(lat * Math.PI / 180));
+
+    if (this.redisService.isEnabled()) {
+      const version = await this.redisService.getVersion(this.getTerritoriesVersionKey());
+      const latKey = Number(lat).toFixed(4);
+      const lngKey = Number(lng).toFixed(4);
+      const radiusKey = Number(radiusKm).toFixed(2);
+      const cacheKey = `territories:nearby:v${version}:lat:${latKey}:lng:${lngKey}:r:${radiusKey}`;
+      const cached = await this.redisService.getJson<Territory[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
+      const territories = await this.territoryRepository
+        .createQueryBuilder('territory')
+        .leftJoinAndSelect('territory.owner', 'owner')
+        .where('territory.latitude BETWEEN :minLat AND :maxLat', {
+          minLat: lat - latDelta,
+          maxLat: lat + latDelta,
+        })
+        .andWhere('territory.longitude BETWEEN :minLng AND :maxLng', {
+          minLng: lng - lngDelta,
+          maxLng: lng + lngDelta,
+        })
+        .getMany();
+
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, territories, ttlSeconds);
+      }
+      return territories;
+    }
 
     return this.territoryRepository
       .createQueryBuilder('territory')
@@ -141,6 +213,25 @@ export class TerritoryService {
   }
 
   async getBossTerritories(limit: number = 3) {
+    if (this.redisService.isEnabled()) {
+      const version = await this.redisService.getVersion(this.getTerritoriesVersionKey());
+      const cacheKey = `territories:boss:v${version}:limit:${limit}`;
+      const cached = await this.redisService.getJson<any[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const bosses = await this.computeBossTerritories(limit);
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, bosses, ttlSeconds);
+      }
+      return bosses;
+    }
+
+    return this.computeBossTerritories(limit);
+  }
+
+  private async computeBossTerritories(limit: number) {
     const candidates = await this.territoryRepository.find({
       relations: ['owner'],
       order: { captureCount: 'DESC', capturedAt: 'DESC' },
@@ -162,6 +253,10 @@ export class TerritoryService {
       isBoss: true,
       bossRewardPoints: 200 + index * 50,
     }));
+  }
+
+  private getTerritoriesVersionKey() {
+    return 'cache:territories:version';
   }
 
   private getWeekIndex(date: Date) {

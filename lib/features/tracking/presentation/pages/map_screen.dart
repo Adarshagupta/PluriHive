@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:pedometer/pedometer.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:http/http.dart' as http;
+import 'package:google_fonts/google_fonts.dart';
 import 'dart:async';
 import 'dart:math';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import '../../../../core/services/background_tracking_service.dart';
 import '../../../../core/services/motion_detection_service.dart';
@@ -16,15 +20,22 @@ import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/services/territory_api_service.dart';
 import '../../../../core/services/auth_api_service.dart';
 import '../../../../core/services/route_api_service.dart';
+import '../../../../core/services/offline_sync_service.dart';
+import '../../../../core/services/websocket_service.dart';
+import '../../../../core/services/user_profile_api_service.dart';
+import '../../../../core/services/avatar_preset_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/utils/picture_in_picture.dart';
 import '../../../../core/algorithms/geospatial_algorithms.dart';
 import '../../../../core/widgets/skeleton.dart';
 import '../../../../core/services/pip_service.dart';
 import '../../../../core/navigation/app_route_observer.dart';
+import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../tracking/domain/entities/activity.dart';
 import '../../../tracking/domain/entities/position.dart';
 import '../../../tracking/data/datasources/activity_local_data_source.dart';
+import '../../../tracking/data/datasources/pending_sync_data_source.dart';
+import '../../../territory/data/datasources/territory_cache_data_source.dart';
 import '../bloc/location_bloc.dart';
 import '../../../territory/presentation/bloc/territory_bloc.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
@@ -33,6 +44,7 @@ import '../../../territory/domain/entities/territory.dart' as app;
 import 'workout_summary_screen.dart';
 import 'activity_history_sheet.dart';
 import 'activity_detail_drawer.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class MapScreen extends StatefulWidget {
   final VoidCallback? onNavigateHome;
@@ -45,9 +57,31 @@ class MapScreen extends StatefulWidget {
 
 enum TrackingState { stopped, started, paused }
 
+enum RouteTravelMode { walk, run, bike }
+
 class _MapScreenState extends State<MapScreen>
-    with TickerProviderStateMixin, RouteAware {
+    with TickerProviderStateMixin, RouteAware, AutomaticKeepAliveClientMixin {
   final PipService _pipService = PipService();
+  final ActivityLocalDataSource _activityLocalDataSource =
+      ActivityLocalDataSourceImpl();
+  late final OfflineSyncService _offlineSyncService;
+  late final PendingSyncDataSource _pendingSyncDataSource;
+  late final SharedPreferences _prefs;
+  late final TerritoryCacheDataSource _territoryCacheDataSource;
+  late final WebSocketService _webSocketService;
+  late final UserProfileApiService _userProfileApiService;
+  late final AuthApiService _authApiService;
+  late final http.Client _httpClient;
+  final Map<String, Marker> _userMarkersById = {};
+  final Map<String, BitmapDescriptor> _userAvatarIconCache = {};
+  final Map<String, String> _userAvatarUrlCache = {};
+  final Map<String, Map<String, dynamic>> _userProfileCache = {};
+  final Map<String, DateTime> _userLastSeen = {};
+  final Set<String> _profileFetchInFlight = {};
+  Marker? _currentUserMarker;
+  Timer? _locationBroadcastTimer;
+  Timer? _liveUserCleanupTimer;
+  String? _currentUserId;
   final Set<Polygon> _polygons = {};
   final Set<Polyline> _polylines = {};
   final Set<Marker> _territoryMarkers = {};
@@ -107,6 +141,13 @@ class _MapScreenState extends State<MapScreen>
   bool _showEndAnimation = false;
   int _endCountdown = 3;
   final AudioPlayer _audioPlayer = AudioPlayer();
+  bool _isEndingSession = false;
+  Timer? _endTimer;
+  Timer? _syncStatusTimer;
+  int _pendingSyncCount = 0;
+  bool _isSyncing = false;
+  bool _followUser = true;
+  final Set<int> _activePointers = <int>{};
 
   // Long press to end
   bool _isHoldingEnd = false;
@@ -117,11 +158,30 @@ class _MapScreenState extends State<MapScreen>
   bool _showAdvancedControls = false;
   bool _isPlanningRoute = false;
   List<LatLng> _plannedRoutePoints = [];
+  List<LatLng> _plannedRoutePreviewPoints = [];
   List<SavedRoute> _savedRoutes = [];
   List<SavedRoute> _popularRoutes = [];
   bool _isLoadingSavedRoutes = false;
   bool _isLoadingPopularRoutes = false;
+  bool _hasCachedSavedRoutes = false;
+  bool _hasCachedPopularRoutes = false;
+  bool _isRefreshingSavedRoutes = false;
+  bool _isRefreshingPopularRoutes = false;
+  static const String _savedRoutesCacheKey = 'routes_saved_cache_v1';
+  static const String _popularRoutesCacheKeyPrefix = 'routes_popular_cache_v1';
+  static const String _popularRoutesCacheKeyLast =
+      'routes_popular_cache_last_v1';
   SavedRoute? _selectedRoute;
+  bool _isRealtimeRouteEnabled = true;
+  RouteTravelMode _routeTravelMode = RouteTravelMode.walk;
+  double _routeTotalMeters = 0.0;
+  double _routeRemainingMeters = 0.0;
+  double _routeDeviationMeters = 0.0;
+  Duration? _routeEta;
+  DateTime? _lastRoutePreviewUpdate;
+  static const Duration _routePreviewThrottle = Duration(milliseconds: 700);
+  static const double _offRouteThresholdMeters = 30.0;
+  LatLng? _lastKnownLocation;
   double? _goalDistanceKm;
   double? _goalAreaSqMeters;
   double _holdProgress = 0.0;
@@ -131,6 +191,14 @@ class _MapScreenState extends State<MapScreen>
   @override
   void initState() {
     super.initState();
+    _offlineSyncService = di.getIt<OfflineSyncService>();
+    _pendingSyncDataSource = di.getIt<PendingSyncDataSource>();
+    _prefs = di.getIt<SharedPreferences>();
+    _territoryCacheDataSource = TerritoryCacheDataSource(_prefs);
+    _webSocketService = di.getIt<WebSocketService>();
+    _userProfileApiService = di.getIt<UserProfileApiService>();
+    _authApiService = di.getIt<AuthApiService>();
+    _httpClient = di.getIt<http.Client>();
     _animController = AnimationController(
       duration: Duration(milliseconds: 400),
       vsync: this,
@@ -153,6 +221,25 @@ class _MapScreenState extends State<MapScreen>
 
     // Load captured areas from activity history to show on map
     _loadSavedCapturedAreas();
+
+    // Kick off any pending offline sync in background
+    _refreshSyncStatus();
+    _triggerBackgroundSync();
+    _syncStatusTimer = Timer.periodic(
+      const Duration(seconds: 12),
+      (_) => _refreshSyncStatus(),
+    );
+
+    _authApiService.getUserId().then((id) => _currentUserId = id);
+    _webSocketService.onUserLocation(_handleUserLocation);
+    _locationBroadcastTimer = Timer.periodic(
+      const Duration(seconds: 6),
+      (_) => _emitMyLocationUpdate(),
+    );
+    _liveUserCleanupTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _pruneStaleUsers(),
+    );
 
     // DISABLED: Don't load individual hex territories - they're just for backend tracking
     // Load all territories to show on map (visible to all users)
@@ -189,136 +276,147 @@ class _MapScreenState extends State<MapScreen>
   Future<void> _loadTerritoriesFromBackend() async {
     try {
       final territoryApiService = di.getIt<TerritoryApiService>();
-      final territories = await territoryApiService.getAllTerritories();
-
-      // Get current user ID to differentiate ownership
       final authService = di.getIt<AuthApiService>();
-      final currentUserId = await authService.getUserId();
-      print('🗺️ Current user: $currentUserId');
+      final currentUserId = await authService.getUserId() ?? '';
 
-      // Filter to only unique hexIds - prevent duplicate circles
-      final Map<String, Map<String, dynamic>> uniqueTerritories = {};
-      for (final territory in territories) {
-        final hexId = territory['hexId'];
-        // Keep the most recent one for each hexId
-        if (!uniqueTerritories.containsKey(hexId)) {
-          uniqueTerritories[hexId] = territory;
-        }
+      final cached = await _territoryCacheDataSource.getAllTerritories();
+      if (cached.isNotEmpty && mounted) {
+        print('Using cached territories (${cached.length})');
+        _renderTerritories(cached, currentUserId);
       }
 
-      final displayTerritories = uniqueTerritories.values.toList();
-      print(
-          '🗺️ Filtered ${territories.length} territories down to ${displayTerritories.length} unique hexes');
-
-      setState(() {
-        // Remove only territory polygons, keep activity polygons
-        _polygons.removeWhere(
-            (polygon) => polygon.polygonId.value.startsWith('territory_'));
-        _territoryMarkers.clear(); // Remove all markers
-        _territoryData.clear(); // Clear old territory data (not activity data)
-
-        // Display all territories on map with owner information
-        for (final territory in displayTerritories) {
-          final lat = territory['latitude'] is String
-              ? double.parse(territory['latitude'])
-              : (territory['latitude'] as num).toDouble();
-          final lng = territory['longitude'] is String
-              ? double.parse(territory['longitude'])
-              : (territory['longitude'] as num).toDouble();
-
-          final ownerId = territory['ownerId'];
-
-          // Different colors for own vs other territories
-          final bool isOwnTerritory = ownerId == currentUserId;
-          final territoryColor = isOwnTerritory
-              ? Color(0xFF4CAF50) // Green for own territories
-              : Color(0xFFFF5722); // Red/Orange for others' territories
-
-          // Check if territory has actual route points
-          final routePoints = territory['routePoints'] as List?;
-
-          if (routePoints != null && routePoints.isNotEmpty) {
-            // Display the actual route shape as a polygon
-            final polygonPoints = routePoints.map((p) {
-              final pointLat = p['lat'] is String
-                  ? double.parse(p['lat'])
-                  : (p['lat'] as num).toDouble();
-              final pointLng = p['lng'] is String
-                  ? double.parse(p['lng'])
-                  : (p['lng'] as num).toDouble();
-              return LatLng(pointLat, pointLng);
-            }).toList();
-
-            _polygons.add(
-              Polygon(
-                polygonId: PolygonId('territory_${territory['hexId']}'),
-                points: polygonPoints,
-                fillColor: territoryColor.withOpacity(0.25),
-                strokeColor: territoryColor,
-                strokeWidth: 3,
-              ),
-            );
-
-            // Store territory data for tap handling
-            _territoryData[territory['hexId']] = {
-              'polygonPoints': polygonPoints,
-              'ownerId': ownerId,
-              'ownerName': territory['owner']?['name'] ?? 'Unknown',
-              'captureCount': territory['captureCount'] ?? 1,
-              'isOwn': isOwnTerritory,
-              'points': territory['points'],
-              'capturedAt': territory['capturedAt'] != null
-                  ? DateTime.parse(territory['capturedAt'])
-                  : null,
-              'lastBattleAt': territory['lastBattleAt'] != null
-                  ? DateTime.parse(territory['lastBattleAt'])
-                  : null,
-              'areaSqMeters': _calculatePolygonArea(polygonPoints),
-            };
-          } else {
-            // Fallback: show small circle if no route points
-            final center = LatLng(lat, lng);
-            final circlePoints = _generateCirclePoints(center, 50);
-
-            _polygons.add(
-              Polygon(
-                polygonId: PolygonId('territory_${territory['hexId']}'),
-                points: circlePoints,
-                fillColor: territoryColor.withOpacity(0.25),
-                strokeColor: territoryColor,
-                strokeWidth: 2,
-              ),
-            );
-
-            // Store territory data for tap handling
-            _territoryData[territory['hexId']] = {
-              'polygonPoints': circlePoints,
-              'ownerId': ownerId,
-              'ownerName': territory['owner']?['name'] ?? 'Unknown',
-              'captureCount': territory['captureCount'] ?? 1,
-              'isOwn': isOwnTerritory,
-              'points': territory['points'],
-              'capturedAt': territory['capturedAt'] != null
-                  ? DateTime.parse(territory['capturedAt'])
-                  : null,
-              'lastBattleAt': territory['lastBattleAt'] != null
-                  ? DateTime.parse(territory['lastBattleAt'])
-                  : null,
-              'areaSqMeters': _calculatePolygonArea(circlePoints),
-            };
-          }
-
-          // Don't add markers - only show colored shapes
+      try {
+        final territories = await territoryApiService.getAllTerritories();
+        await _territoryCacheDataSource.saveAllTerritories(territories);
+        if (mounted) {
+          _renderTerritories(territories, currentUserId);
         }
-      });
-
-      if (displayTerritories.isNotEmpty) {
-        print('✅ Displayed ${displayTerritories.length} unique territories');
-        print('🗺️ Total polygons on map: ${_polygons.length}');
-        print('🗺️ Total markers on map: ${_territoryMarkers.length}');
+      } catch (e) {
+        print('Failed to load territories from backend: $e');
+        if (cached.isEmpty) {
+          print('No cached territories available');
+        }
       }
     } catch (e) {
-      print('❌ Failed to load territories: $e');
+      print('Failed to load territories: $e');
+    }
+  }
+
+  void _renderTerritories(
+    List<Map<String, dynamic>> territories,
+    String currentUserId,
+  ) {
+    if (!mounted) return;
+    print('Current user: $currentUserId');
+
+    final Map<String, Map<String, dynamic>> uniqueTerritories = {};
+    for (final territory in territories) {
+      final hexId = territory['hexId'];
+      if (!uniqueTerritories.containsKey(hexId)) {
+        uniqueTerritories[hexId] = territory;
+      }
+    }
+
+    final displayTerritories = uniqueTerritories.values.toList();
+    print(
+      'Filtered ${territories.length} territories down to ${displayTerritories.length} unique hexes',
+    );
+
+    setState(() {
+      _polygons.removeWhere(
+        (polygon) => polygon.polygonId.value.startsWith('territory_'),
+      );
+      _territoryMarkers.clear();
+      _territoryData.clear();
+
+      for (final territory in displayTerritories) {
+        final lat = territory['latitude'] is String
+            ? double.parse(territory['latitude'])
+            : (territory['latitude'] as num).toDouble();
+        final lng = territory['longitude'] is String
+            ? double.parse(territory['longitude'])
+            : (territory['longitude'] as num).toDouble();
+
+        final ownerId = territory['ownerId'];
+        final bool isOwnTerritory = ownerId == currentUserId;
+        final territoryColor =
+            isOwnTerritory ? const Color(0xFF4CAF50) : const Color(0xFFFF5722);
+
+        final routePoints = territory['routePoints'] as List?;
+
+        if (routePoints != null && routePoints.isNotEmpty) {
+          final polygonPoints = routePoints.map((p) {
+            final pointLat = p['lat'] is String
+                ? double.parse(p['lat'])
+                : (p['lat'] as num).toDouble();
+            final pointLng = p['lng'] is String
+                ? double.parse(p['lng'])
+                : (p['lng'] as num).toDouble();
+            return LatLng(pointLat, pointLng);
+          }).toList();
+
+          _polygons.add(
+            Polygon(
+              polygonId: PolygonId('territory_${territory['hexId']}'),
+              points: polygonPoints,
+              fillColor: territoryColor.withOpacity(0.25),
+              strokeColor: territoryColor,
+              strokeWidth: 3,
+            ),
+          );
+
+          _territoryData[territory['hexId']] = {
+            'polygonPoints': polygonPoints,
+            'ownerId': ownerId,
+            'ownerName': territory['owner']?['name'] ?? 'Unknown',
+            'captureCount': territory['captureCount'] ?? 1,
+            'isOwn': isOwnTerritory,
+            'points': territory['points'],
+            'capturedAt': territory['capturedAt'] != null
+                ? DateTime.parse(territory['capturedAt'])
+                : null,
+            'lastBattleAt': territory['lastBattleAt'] != null
+                ? DateTime.parse(territory['lastBattleAt'])
+                : null,
+            'areaSqMeters': _calculatePolygonArea(polygonPoints),
+          };
+        } else {
+          final center = LatLng(lat, lng);
+          final circlePoints = _generateCirclePoints(center, 50);
+
+          _polygons.add(
+            Polygon(
+              polygonId: PolygonId('territory_${territory['hexId']}'),
+              points: circlePoints,
+              fillColor: territoryColor.withOpacity(0.25),
+              strokeColor: territoryColor,
+              strokeWidth: 2,
+            ),
+          );
+
+          _territoryData[territory['hexId']] = {
+            'polygonPoints': circlePoints,
+            'ownerId': ownerId,
+            'ownerName': territory['owner']?['name'] ?? 'Unknown',
+            'captureCount': territory['captureCount'] ?? 1,
+            'isOwn': isOwnTerritory,
+            'points': territory['points'],
+            'capturedAt': territory['capturedAt'] != null
+                ? DateTime.parse(territory['capturedAt'])
+                : null,
+            'lastBattleAt': territory['lastBattleAt'] != null
+                ? DateTime.parse(territory['lastBattleAt'])
+                : null,
+            'areaSqMeters': _calculatePolygonArea(circlePoints),
+          };
+        }
+      }
+    });
+
+    if (displayTerritories.isNotEmpty) {
+      print('Displayed ${displayTerritories.length} unique territories');
+      print('Total polygons on map: ${_polygons.length}');
+      print('Total markers on map: ${_territoryMarkers.length}');
     }
   }
 
@@ -331,6 +429,16 @@ class _MapScreenState extends State<MapScreen>
 
       // Check if tap is inside this polygon
       if (_isPointInPolygon(tapPosition, polygonPoints)) {
+        final ownerId = data['ownerId']?.toString();
+        String? avatarSource;
+        if (data['isOwn'] == true) {
+          avatarSource = _currentUserAvatarSource();
+        }
+        if ((avatarSource == null || avatarSource.isEmpty) &&
+            ownerId != null &&
+            ownerId.isNotEmpty) {
+          avatarSource = _extractAvatarFromMap(_userProfileCache[ownerId]);
+        }
         _showTerritoryInfo(
           ownerName: data['ownerName'],
           captureCount: data['captureCount'],
@@ -341,6 +449,7 @@ class _MapScreenState extends State<MapScreen>
           areaSqMeters: data['areaSqMeters'],
           isBoss: data['isBoss'] == true,
           bossRewardPoints: data['bossRewardPoints'],
+          avatarSource: avatarSource,
         );
         break;
       }
@@ -389,155 +498,509 @@ class _MapScreenState extends State<MapScreen>
     double? areaSqMeters,
     bool isBoss = false,
     int? bossRewardPoints,
+    String? avatarSource,
   }) {
-    showDialog(
+    final accent = isBoss
+        ? const Color(0xFFF5B700)
+        : (isOwn ? const Color(0xFF2ECC71) : const Color(0xFFF39C12));
+    final headline = isOwn ? 'Your Territory' : 'Territory';
+    final subtitle = isOwn ? 'Owned by you' : 'Owned by $ownerName';
+
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(
-              isOwn ? Icons.check_circle : Icons.person,
-              color: isOwn ? Colors.green : Colors.orange,
-              size: 24,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      barrierColor: Colors.black54,
+      builder: (context) {
+        final media = MediaQuery.of(context);
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              16,
+              12,
+              16,
+              16 + media.viewInsets.bottom,
             ),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                isOwn ? 'Your Territory' : 'Territory',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(28),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.18),
+                    blurRadius: 24,
+                    offset: Offset(0, 12),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(28),
+                child: Stack(
+                  children: [
+                    Positioned(
+                      right: -70,
+                      top: -90,
+                      child: Container(
+                        width: 200,
+                        height: 200,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: [
+                              accent.withOpacity(0.18),
+                              accent.withOpacity(0.02),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 4,
+                          margin: const EdgeInsets.only(top: 12, bottom: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE5E7EB),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildTerritoryHeader(
+                                title: headline,
+                                subtitle: subtitle,
+                                accent: accent,
+                                isBoss: isBoss,
+                                avatarSource: avatarSource,
+                              ),
+                              const SizedBox(height: 16),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  _buildStatusChip(
+                                    label: isOwn ? 'Owned' : 'Rival',
+                                    icon: isOwn ? Icons.check : Icons.flag,
+                                    color: accent,
+                                  ),
+                                  if (isBoss)
+                                    _buildStatusChip(
+                                      label: 'Boss Zone',
+                                      icon: Icons.emoji_events,
+                                      color: const Color(0xFF8B5CF6),
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 16),
+                              Wrap(
+                                spacing: 12,
+                                runSpacing: 12,
+                                children: [
+                                  _buildTerritoryStatChip(
+                                    icon: Icons.flag_outlined,
+                                    label: 'Captures',
+                                    value: '$captureCount',
+                                    color: const Color(0xFF2563EB),
+                                  ),
+                                  if (points != null)
+                                    _buildTerritoryStatChip(
+                                      icon: Icons.stars,
+                                      label: 'Points',
+                                      value: '$points',
+                                      color: const Color(0xFFF59E0B),
+                                    ),
+                                  if (areaSqMeters != null)
+                                    _buildTerritoryStatChip(
+                                      icon: Icons.area_chart,
+                                      label: 'Area',
+                                      value: _formatAreaForCard(areaSqMeters),
+                                      color: const Color(0xFF7C3AED),
+                                    ),
+                                ],
+                              ),
+                              if (isBoss) ...[
+                                const SizedBox(height: 16),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 12,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      colors: [
+                                        const Color(0xFFFFF4CC),
+                                        const Color(0xFFFFE08A),
+                                      ],
+                                    ),
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.emoji_events,
+                                        color: Color(0xFFB45309),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          bossRewardPoints != null
+                                              ? '$bossRewardPoints pts reward'
+                                              : 'Weekly boss territory bonus',
+                                          style: GoogleFonts.spaceGrotesk(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: const Color(0xFF92400E),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                              if (capturedAt != null || lastBattleAt != null)
+                                const SizedBox(height: 16),
+                              if (capturedAt != null)
+                                _buildTerritoryInfoRow(
+                                  icon: Icons.calendar_today,
+                                  label: 'Captured',
+                                  value: _formatDate(capturedAt),
+                                ),
+                              if (capturedAt != null && lastBattleAt != null)
+                                const SizedBox(height: 10),
+                              if (lastBattleAt != null)
+                                _buildTerritoryInfoRow(
+                                  icon: Icons.shield,
+                                  label: 'Last battle',
+                                  value: _formatDate(lastBattleAt),
+                                ),
+                              const SizedBox(height: 20),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      onPressed: () => Navigator.pop(context),
+                                      style: OutlinedButton.styleFrom(
+                                        side: BorderSide(
+                                          color: const Color(0xFFE5E7EB),
+                                        ),
+                                        foregroundColor:
+                                            const Color(0xFF111827),
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 14,
+                                        ),
+                                        textStyle: GoogleFonts.spaceGrotesk(
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      child: const Text('Close'),
+                                    ),
+                                  ),
+                                  if (!isOwn) ...[
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: ElevatedButton.icon(
+                                        onPressed: () {
+                                          Navigator.pop(context);
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            const SnackBar(
+                                              content: Text(
+                                                'Start tracking to challenge this territory!',
+                                              ),
+                                              backgroundColor: Colors.orange,
+                                            ),
+                                          );
+                                        },
+                                        icon: const Icon(
+                                          Icons.sports_martial_arts,
+                                        ),
+                                        label: const Text('Challenge'),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: accent,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 14,
+                                          ),
+                                          textStyle: GoogleFonts.spaceGrotesk(
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          elevation: 0,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
-          ],
-        ),
-        content: SingleChildScrollView(
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildTerritoryHeader({
+    required String title,
+    required String subtitle,
+    required Color accent,
+    required bool isBoss,
+    String? avatarSource,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        _buildOwnerAvatar(avatarSource, accent),
+        const SizedBox(width: 16),
+        Expanded(
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (isBoss) ...[
-                _buildDetailRow(
-                  icon: Icons.emoji_events,
-                  label: 'Boss',
-                  value: bossRewardPoints != null
-                      ? '$bossRewardPoints pts reward'
-                      : 'Weekly boss territory',
-                  color: Colors.amber,
+              Text(
+                title,
+                style: GoogleFonts.spaceGrotesk(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                  color: const Color(0xFF0F172A),
                 ),
-                SizedBox(height: 12),
-              ],
-              // Owner
-              _buildDetailRow(
-                icon: Icons.person_outline,
-                label: 'Owner',
-                value: ownerName,
-                color: isOwn ? Colors.green : Colors.orange,
               ),
-              SizedBox(height: 12),
-
-              // Captures
-              _buildDetailRow(
-                icon: Icons.flag_outlined,
-                label: 'Captures',
-                value: '$captureCount ${captureCount == 1 ? 'time' : 'times'}',
-                color: Colors.blue,
+              const SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: GoogleFonts.dmSans(
+                  fontSize: 14,
+                  color: const Color(0xFF64748B),
+                ),
               ),
-              SizedBox(height: 12),
-
-              // Points
-              if (points != null) ...[
-                _buildDetailRow(
-                  icon: Icons.stars,
-                  label: 'Points',
-                  value: '$points pts',
-                  color: Colors.amber,
+              if (isBoss)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.emoji_events,
+                        size: 14,
+                        color: Color(0xFFF59E0B),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Boss territory',
+                        style: GoogleFonts.dmSans(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFFB45309),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                SizedBox(height: 12),
-              ],
-
-              // Area
-              if (areaSqMeters != null) ...[
-                _buildDetailRow(
-                  icon: Icons.area_chart,
-                  label: 'Area',
-                  value: areaSqMeters >= 1000000
-                      ? '${(areaSqMeters / 1000000).toStringAsFixed(2)} km²'
-                      : '${areaSqMeters.toStringAsFixed(0)} m²',
-                  color: Colors.purple,
-                ),
-                SizedBox(height: 12),
-              ],
-
-              // Captured Date
-              if (capturedAt != null) ...[
-                _buildDetailRow(
-                  icon: Icons.calendar_today,
-                  label: 'Captured',
-                  value: _formatDate(capturedAt),
-                  color: Colors.teal,
-                ),
-                SizedBox(height: 12),
-              ],
-
-              // Last Battle
-              if (lastBattleAt != null) ...[
-                _buildDetailRow(
-                  icon: Icons.shield,
-                  label: 'Last Battle',
-                  value: _formatDate(lastBattleAt),
-                  color: Colors.red,
-                ),
-              ],
             ],
           ),
         ),
-        actions: [
-          if (!isOwn)
-            TextButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content:
-                        Text('Start tracking to challenge this territory!'),
-                    backgroundColor: Colors.orange,
-                  ),
-                );
-              },
-              icon: Icon(Icons.sports_martial_arts),
-              label: Text('Challenge'),
-              style: TextButton.styleFrom(foregroundColor: Colors.orange),
+      ],
+    );
+  }
+
+  Widget _buildOwnerAvatar(String? avatarSource, Color accent) {
+    final resolvedUrl = AvatarPresetService.resolveAvatarImageUrl(avatarSource);
+    final hasAvatar = resolvedUrl.isNotEmpty;
+    final isAssetPath = resolvedUrl.startsWith('assets/');
+
+    return Container(
+      width: 64,
+      height: 64,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          colors: [
+            accent.withOpacity(0.95),
+            accent.withOpacity(0.35),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: accent.withOpacity(0.35),
+            blurRadius: 12,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: ClipOval(
+        child: hasAvatar
+            ? (isAssetPath
+                ? Image.asset(resolvedUrl, fit: BoxFit.cover)
+                : CachedNetworkImage(
+                    imageUrl: resolvedUrl,
+                    fit: BoxFit.cover,
+                    placeholder: (context, url) => Container(
+                      color: const Color(0xFFF3F4F6),
+                    ),
+                    errorWidget: (context, url, error) => Container(
+                      color: const Color(0xFFF3F4F6),
+                      child: Icon(
+                        Icons.person,
+                        color: accent,
+                        size: 28,
+                      ),
+                    ),
+                  ))
+            : Container(
+                color: const Color(0xFFF3F4F6),
+                child: Icon(
+                  Icons.person,
+                  color: accent,
+                  size: 28,
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildStatusChip({
+    required String label,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: GoogleFonts.dmSans(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: color,
             ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildDetailRow({
+  Widget _buildTerritoryStatChip({
     required IconData icon,
     required String label,
     required String value,
     required Color color,
   }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 18, color: color),
+          ),
+          const SizedBox(width: 10),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                value,
+                style: GoogleFonts.spaceGrotesk(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: const Color(0xFF0F172A),
+                ),
+              ),
+              Text(
+                label,
+                style: GoogleFonts.dmSans(
+                  fontSize: 12,
+                  color: const Color(0xFF64748B),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTerritoryInfoRow({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
     return Row(
       children: [
-        Icon(icon, size: 20, color: color),
-        SizedBox(width: 8),
-        Text(
-          '$label: ',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: const Color(0xFFF1F5F9),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, size: 16, color: const Color(0xFF475569)),
         ),
+        const SizedBox(width: 10),
+        Text(
+          '$label:',
+          style: GoogleFonts.dmSans(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: const Color(0xFF475569),
+          ),
+        ),
+        const SizedBox(width: 6),
         Expanded(
           child: Text(
             value,
-            style: TextStyle(fontSize: 14),
+            style: GoogleFonts.dmSans(
+              fontSize: 13,
+              color: const Color(0xFF0F172A),
+            ),
           ),
         ),
       ],
     );
+  }
+
+  String _formatAreaForCard(double value) {
+    if (value >= 1000000) {
+      return '${(value / 1000000).toStringAsFixed(2)} km?';
+    }
+    if (value >= 10000) {
+      return '${(value / 1000).toStringAsFixed(1)}k m?';
+    }
+    return '${value.toStringAsFixed(0)} m?';
   }
 
   String _formatDate(DateTime date) {
@@ -559,8 +1022,11 @@ class _MapScreenState extends State<MapScreen>
   }
 
   // Helper to generate circle points for territory display
-  List<LatLng> _generateCirclePoints(LatLng center, double radiusMeters,
-      {int points = 32}) {
+  List<LatLng> _generateCirclePoints(
+    LatLng center,
+    double radiusMeters, {
+    int points = 32,
+  }) {
     final circlePoints = <LatLng>[];
     const earthRadius = 6371000.0; // Earth's radius in meters
 
@@ -573,13 +1039,144 @@ class _MapScreenState extends State<MapScreen>
       final deltaLng =
           dx / (earthRadius * cos(center.latitude * 3.14159265359 / 180));
 
-      circlePoints.add(LatLng(
-        center.latitude + (deltaLat * 180 / 3.14159265359),
-        center.longitude + (deltaLng * 180 / 3.14159265359),
-      ));
+      circlePoints.add(
+        LatLng(
+          center.latitude + (deltaLat * 180 / 3.14159265359),
+          center.longitude + (deltaLng * 180 / 3.14159265359),
+        ),
+      );
     }
 
     return circlePoints;
+  }
+
+  Map<String, dynamic> _normalizeActivityData(Map<String, dynamic> activity) {
+    if (activity['routePoints'] == null && activity['route'] != null) {
+      return {...activity, 'routePoints': activity['route']};
+    }
+    return activity;
+  }
+
+  String? _extractAvatarSource(Map<String, dynamic> activityData) {
+    final userData = activityData['user'];
+    return _extractAvatarFromMap(userData) ?? _extractAvatarFromMap(activityData);
+  }
+
+  String? _extractAvatarFromMap(dynamic data) {
+    if (data is! Map) return null;
+    final avatarImage = data['avatarImageUrl']?.toString();
+    if (avatarImage != null && avatarImage.isNotEmpty) return avatarImage;
+    final avatarModel = data['avatarModelUrl']?.toString();
+    if (avatarModel != null && avatarModel.isNotEmpty) return avatarModel;
+    final avatarUrl = data['avatarUrl']?.toString();
+    if (avatarUrl != null && avatarUrl.isNotEmpty) return avatarUrl;
+    final profilePicture = data['profilePicture']?.toString();
+    if (profilePicture != null && profilePicture.isNotEmpty) {
+      return profilePicture;
+    }
+    return null;
+  }
+
+  String? _currentUserAvatarSource() {
+    final authState = context.read<AuthBloc>().state;
+    if (authState is! Authenticated) return null;
+    return authState.user.avatarImageUrl ?? authState.user.avatarModelUrl;
+  }
+
+  String? _currentUserIdFromAuth() {
+    final authState = context.read<AuthBloc>().state;
+    if (authState is! Authenticated) return null;
+    return authState.user.id;
+  }
+
+  void _scheduleCapturedAreaAvatarUpdate({
+    required String markerId,
+    required LatLng position,
+    required String avatarCacheKey,
+    required String avatarSource,
+    VoidCallback? onTap,
+  }) {
+    if (avatarSource.isEmpty) return;
+    _updateCapturedAreaMarkerAvatar(
+      markerId: markerId,
+      position: position,
+      avatarCacheKey: avatarCacheKey,
+      avatarSource: avatarSource,
+      onTap: onTap,
+    );
+  }
+
+  Future<void> _updateCapturedAreaMarkerAvatar({
+    required String markerId,
+    required LatLng position,
+    required String avatarCacheKey,
+    required String avatarSource,
+    VoidCallback? onTap,
+  }) async {
+    final icon = await _getAvatarMarkerIcon(avatarCacheKey, avatarSource);
+    if (icon == null || !mounted) return;
+    setState(() {
+      _territoryMarkers.removeWhere(
+        (marker) => marker.markerId.value == markerId,
+      );
+      _territoryMarkers.add(
+        Marker(
+          markerId: MarkerId(markerId),
+          position: position,
+          icon: icon,
+          anchor: const Offset(0.5, 0.5),
+          onTap: onTap,
+        ),
+      );
+    });
+  }
+
+  LatLng? _parseRoutePoint(dynamic point) {
+    if (point is Map) {
+      final latRaw =
+          point['latitude'] ?? point['lat'] ?? point['Latitude'] ?? point['Lat'];
+      final lngRaw = point['longitude'] ??
+          point['lng'] ??
+          point['lon'] ??
+          point['Longitude'] ??
+          point['Lng'];
+      final lat = _toDoubleSafe(latRaw);
+      final lng = _toDoubleSafe(lngRaw);
+      if (lat == null || lng == null) return null;
+      return LatLng(lat, lng);
+    }
+    if (point is List && point.length >= 2) {
+      final lat = _toDoubleSafe(point[0]);
+      final lng = _toDoubleSafe(point[1]);
+      if (lat == null || lng == null) return null;
+      return LatLng(lat, lng);
+    }
+    return null;
+  }
+
+  double? _toDoubleSafe(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
+  }
+
+  int _toIntSafe(dynamic value, {int fallback = 0}) {
+    if (value == null) return fallback;
+    if (value is int) return value;
+    if (value is num) return value.round();
+    return int.tryParse(value.toString()) ?? fallback;
+  }
+
+  DateTime? _parseDateTimeSafe(dynamic value) {
+    if (value == null) return null;
+    if (value is DateTime) return value;
+    if (value is int) {
+      return DateTime.fromMillisecondsSinceEpoch(value);
+    }
+    if (value is String) {
+      return DateTime.tryParse(value);
+    }
+    return null;
   }
 
   // Load all previously captured areas from activity history (backend-first)
@@ -587,56 +1184,98 @@ class _MapScreenState extends State<MapScreen>
     try {
       print('📂 Loading saved captured areas from backend...');
       final trackingApiService = di.getIt<TrackingApiService>();
-      final activitiesData =
-          await trackingApiService.getUserActivities(limit: 50);
+      List<Map<String, dynamic>> activitiesData = [];
+      try {
+        activitiesData = await trackingApiService.getUserActivities(limit: 50);
+        for (final data in activitiesData) {
+          try {
+            final activity = Activity.fromJson(data);
+            await _activityLocalDataSource.saveActivity(activity);
+          } catch (e) {
+            print('[warn] Failed to cache activity locally: $e');
+          }
+        }
+      } catch (e) {
+        print('[warn] Could not load from backend: $e');
+        final localActivities =
+            await _activityLocalDataSource.getAllActivities();
+        activitiesData =
+            localActivities.map((activity) => activity.toJson()).toList();
+        if (activitiesData.isNotEmpty) {
+          print('[cache] Using cached activities (${activitiesData.length})');
+        }
+      }
 
-      print('📦 Received ${activitiesData.length} activities from backend');
+      print('[info] Loaded ${activitiesData.length} activities');
 
-      _activityHistory = activitiesData;
+      _activityHistory =
+          activitiesData.map((a) => _normalizeActivityData(a)).toList();
       if (_showHeatmap) {
         _buildHeatmapCircles();
       }
 
       int loadedCount = 0;
+      final pendingAvatarMarkers = <Map<String, dynamic>>[];
       setState(() {
         // Remove only activity polygons and polylines, keep territory polygons
         _polygons.removeWhere(
-            (polygon) => polygon.polygonId.value.startsWith('saved_area_'));
+          (polygon) => polygon.polygonId.value.startsWith('saved_area_'),
+        );
         _polylines.clear();
 
         // Clear only activity-related markers (not territory markers)
         _territoryMarkers.removeWhere(
-            (marker) => marker.markerId.value.startsWith('label_'));
+          (marker) => marker.markerId.value.startsWith('label_'),
+        );
 
         // Clear only activity data, keep territory data
-        _activityData.removeWhere((key, value) =>
-            key.startsWith('saved_area_') || key.startsWith('saved_route_'));
+        _activityData.removeWhere(
+          (key, value) =>
+              key.startsWith('saved_area_') || key.startsWith('saved_route_'),
+        );
 
         // Load each activity's captured area (only those with territories captured)
-        for (int i = 0; i < activitiesData.length; i++) {
-          final activityData = activitiesData[i];
+        for (int i = 0; i < _activityHistory.length; i++) {
+          final activityData = _activityHistory[i];
           print('📦 Activity ${i + 1}: ${activityData.keys.toList()}');
           if (activityData.containsKey('user')) {
             final userData = activityData['user'];
             print('👤 User data found: $userData');
             print(
-                '   - Name: ${userData is Map ? userData['name'] : 'not a map'}');
+              '   - Name: ${userData is Map ? userData['name'] : 'not a map'}',
+            );
             print(
-                '   - Email: ${userData is Map ? userData['email'] : 'not a map'}');
+              '   - Email: ${userData is Map ? userData['email'] : 'not a map'}',
+            );
           } else {
             print('❌ No user data in activity');
           }
-          final territoriesCaptured = activityData['territoriesCaptured'] ?? 0;
+          final territoriesCapturedRaw = activityData['territoriesCaptured'];
+          final territoriesCaptured = territoriesCapturedRaw is num
+              ? territoriesCapturedRaw
+              : double.tryParse(territoriesCapturedRaw?.toString() ?? '0') ?? 0;
+          final capturedAreaSqMetersRaw = activityData['capturedAreaSqMeters'];
+          final capturedAreaSqMeters = capturedAreaSqMetersRaw is num
+              ? capturedAreaSqMetersRaw
+              : double.tryParse(capturedAreaSqMetersRaw?.toString() ?? '');
+          final capturedHexIds = activityData['capturedHexIds'];
+          final hasCapturedArea = territoriesCaptured > 0 ||
+              (capturedAreaSqMeters != null && capturedAreaSqMeters > 0) ||
+              (capturedHexIds is List && capturedHexIds.isNotEmpty);
 
-          // Only render activities that captured territories
-          if (territoriesCaptured > 0) {
+          // Only render activities that captured territories/area
+          if (hasCapturedArea) {
             final routeData = activityData['routePoints'] as List<dynamic>?;
-            if (routeData != null && routeData.length >= 3) {
-              // Convert route points to LatLng
+            if (routeData != null && routeData.isNotEmpty) {
+              // Convert route points to LatLng safely
               final routePoints = routeData
-                  .map((p) =>
-                      LatLng(p['latitude'] as double, p['longitude'] as double))
+                  .map(_parseRoutePoint)
+                  .whereType<LatLng>()
                   .toList();
+              if (routePoints.length < 3) {
+                print('[warn] Skipping activity ${activityData['id']} - not enough valid points');
+                continue;
+              }
 
               // Add filled area polygon matching the walked path
               final polygonId = 'saved_area_${activityData['id']}';
@@ -645,8 +1284,9 @@ class _MapScreenState extends State<MapScreen>
                 Polygon(
                   polygonId: PolygonId(polygonId),
                   points: routePoints,
-                  fillColor: Color(0xFF4CAF50)
-                      .withOpacity(0.3), // Green for captured territory
+                  fillColor: Color(
+                    0xFF4CAF50,
+                  ).withOpacity(0.3), // Green for captured territory
                   strokeColor: Color(0xFF2E7D32),
                   strokeWidth: 2,
                   consumeTapEvents: true,
@@ -677,22 +1317,104 @@ class _MapScreenState extends State<MapScreen>
                   sumLat += point.latitude;
                   sumLng += point.longitude;
                 }
+                final center = LatLng(
+                  sumLat / routePoints.length,
+                  sumLng / routePoints.length,
+                );
+                final markerId = 'label_${activityData['id']}';
+                final userData = activityData['user'];
+                final ownerName = userData is Map
+                    ? (userData['name']?.toString() ?? 'You')
+                    : 'You';
+                final ownerId = userData is Map
+                    ? (userData['id']?.toString() ??
+                        userData['userId']?.toString())
+                    : null;
+                final isOwn =
+                    ownerId == null || ownerId == _currentUserIdFromAuth();
+                final captureCountRaw = _toIntSafe(
+                  activityData['territoriesCaptured'],
+                );
+                final captureCount =
+                    captureCountRaw > 0 ? captureCountRaw : 1;
+                final points = activityData['pointsEarned'] != null
+                    ? _toIntSafe(activityData['pointsEarned'])
+                    : null;
+                final areaSqMeters =
+                    _toDoubleSafe(activityData['capturedAreaSqMeters']);
+                final capturedAt = _parseDateTimeSafe(
+                  activityData['startTime'] ??
+                      activityData['capturedAt'] ??
+                      activityData['createdAt'],
+                );
 
                 _territoryMarkers.add(
                   Marker(
-                    markerId: MarkerId('label_${activityData['id']}'),
-                    position: LatLng(sumLat / routePoints.length,
-                        sumLng / routePoints.length),
+                    markerId: MarkerId(markerId),
+                    position: center,
                     icon: BitmapDescriptor.defaultMarkerWithHue(
-                        BitmapDescriptor.hueBlue),
+                      BitmapDescriptor.hueBlue,
+                    ),
+                    onTap: () {
+                      _showTerritoryInfo(
+                        ownerName: ownerName,
+                        captureCount: captureCount,
+                        isOwn: isOwn,
+                        points: points,
+                        capturedAt: capturedAt,
+                        areaSqMeters: areaSqMeters,
+                        avatarSource:
+                            _extractAvatarSource(activityData) ??
+                            _currentUserAvatarSource(),
+                      );
+                    },
                   ),
                 );
+
+                final avatarSource =
+                    _extractAvatarSource(activityData) ??
+                    _currentUserAvatarSource();
+                final avatarCacheKey = userData is Map
+                    ? (userData['id']?.toString() ??
+                        userData['userId']?.toString())
+                    : null;
+                final cacheKey =
+                    avatarCacheKey ?? _currentUserIdFromAuth() ?? markerId;
+                if (avatarSource != null && avatarSource.isNotEmpty) {
+                  pendingAvatarMarkers.add({
+                    'markerId': markerId,
+                    'position': center,
+                    'avatarSource': avatarSource,
+                    'cacheKey': cacheKey,
+                    'onTap': () {
+                      _showTerritoryInfo(
+                        ownerName: ownerName,
+                        captureCount: captureCount,
+                        isOwn: isOwn,
+                        points: points,
+                        capturedAt: capturedAt,
+                        areaSqMeters: areaSqMeters,
+                        avatarSource: avatarSource,
+                      );
+                    },
+                  });
+                }
               }
               loadedCount++;
             }
           }
         }
       });
+
+      for (final pending in pendingAvatarMarkers) {
+        _scheduleCapturedAreaAvatarUpdate(
+          markerId: pending['markerId'] as String,
+          position: pending['position'] as LatLng,
+          avatarCacheKey: pending['cacheKey'] as String,
+          avatarSource: pending['avatarSource'] as String,
+          onTap: pending['onTap'] as VoidCallback?,
+        );
+      }
 
       print('✅ Loaded $loadedCount captured territory areas from backend');
     } catch (e) {
@@ -778,17 +1500,26 @@ class _MapScreenState extends State<MapScreen>
     _mapController?.dispose();
     _audioPlayer.dispose();
     _holdTimer?.cancel();
+    _endTimer?.cancel();
+    _syncStatusTimer?.cancel();
+    _locationBroadcastTimer?.cancel();
+    _liveUserCleanupTimer?.cancel();
+    _webSocketService.offUserLocation(_handleUserLocation);
     BackgroundTrackingService.stopTracking();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     return PipAwareWidget(
       child: _buildFullScreen(context),
       pipChild: _buildPipMode(context),
     );
   }
+
+  @override
+  bool get wantKeepAlive => true;
 
   Widget _buildFullScreen(BuildContext context) {
     return Scaffold(
@@ -797,15 +1528,22 @@ class _MapScreenState extends State<MapScreen>
           BlocListener<LocationBloc, LocationState>(
             listener: (context, state) {
               if (state is LocationTracking) {
+                _lastKnownLocation = LatLng(
+                  state.currentPosition.latitude,
+                  state.currentPosition.longitude,
+                );
                 // Update all UI elements in real-time
                 _updateRoutePolyline(state);
                 _calculateSpeed(state);
                 _updateStartPointMarker(state);
                 _updateStatsRealTime(state);
+                _refreshRoutePreviewFromLocation(_lastKnownLocation);
+                _updateCurrentUserMarker(_lastKnownLocation!);
 
                 // Camera follows user smoothly when tracking is active
                 if (_mapController != null &&
-                    _trackingState == TrackingState.started) {
+                    _trackingState == TrackingState.started &&
+                    _followUser) {
                   _mapController!.animateCamera(
                     CameraUpdate.newCameraPosition(
                       CameraPosition(
@@ -819,6 +1557,13 @@ class _MapScreenState extends State<MapScreen>
                     ),
                   );
                 }
+              } else if (state is LocationIdle && state.lastPosition != null) {
+                _lastKnownLocation = LatLng(
+                  state.lastPosition!.latitude,
+                  state.lastPosition!.longitude,
+                );
+                _refreshRoutePreviewFromLocation(_lastKnownLocation);
+                _updateCurrentUserMarker(_lastKnownLocation!);
               }
             },
           ),
@@ -865,66 +1610,71 @@ class _MapScreenState extends State<MapScreen>
                     //   });
                     // }
 
-                    return GoogleMap(
-                      initialCameraPosition: initialPosition,
-                      myLocationEnabled: true,
-                      myLocationButtonEnabled: false,
-                      mapType: _currentMapType,
-                      zoomControlsEnabled: false,
-                      tiltGesturesEnabled: true,
-                      rotateGesturesEnabled: true,
-                      polygons: _polygons,
-                      polylines: _polylines,
-                      markers: _territoryMarkers,
-                      circles: _getMapCircles(),
-                      onMapCreated: (controller) {
-                        _mapController = controller;
-                        if (locationState is LocationIdle &&
-                            locationState.lastPosition != null) {
-                          controller.animateCamera(
-                            CameraUpdate.newLatLng(
-                              LatLng(
-                                locationState.lastPosition!.latitude,
-                                locationState.lastPosition!.longitude,
+                    return Listener(
+                      behavior: HitTestBehavior.translucent,
+                      onPointerDown: _handlePointerDown,
+                      onPointerUp: _handlePointerUp,
+                      onPointerCancel: _handlePointerCancel,
+                      child: GoogleMap(
+                        initialCameraPosition: initialPosition,
+                        myLocationEnabled: false,
+                        myLocationButtonEnabled: false,
+                        mapType: _currentMapType,
+                        zoomControlsEnabled: false,
+                        tiltGesturesEnabled: true,
+                        rotateGesturesEnabled: true,
+                        polygons: _polygons,
+                        polylines: _polylines,
+                        markers: {
+                          ..._territoryMarkers,
+                          ..._userMarkersById.values,
+                          if (_currentUserMarker != null) _currentUserMarker!,
+                        },
+                        circles: _getMapCircles(),
+                        onCameraMoveStarted: () {
+                          if (_activePointers.length >= 2) {
+                            _disableFollowOnGesture();
+                          }
+                        },
+                        onMapCreated: (controller) {
+                          _mapController = controller;
+                          if (locationState is LocationIdle &&
+                              locationState.lastPosition != null) {
+                            controller.animateCamera(
+                              CameraUpdate.newLatLng(
+                                LatLng(
+                                  locationState.lastPosition!.latitude,
+                                  locationState.lastPosition!.longitude,
+                                ),
                               ),
-                            ),
-                          );
-                        }
+                            );
+                          }
 
-                        // Load territories when map is ready
-                        print('🗺️ Map created, loading territories...');
-                        _loadTerritoriesFromBackend();
-                        _loadBossTerritoriesFromBackend();
-                      },
-                      onTap: (LatLng position) {
-                        if (_isPlanningRoute) {
-                          _addPlannedRoutePoint(position);
-                          return;
-                        }
-                        // Check if tap is inside any activity polygon to show drawer
-                        _handleMapTapForActivities(position);
-                      },
-                      onCameraMove: (position) {
-                        // Could generate visible territories here
-                      },
+                          // Load territories when map is ready
+                          print('[map] Map created, loading territories...');
+                          _loadTerritoriesFromBackend();
+                          _loadBossTerritoriesFromBackend();
+                        },
+                        onTap: (LatLng position) {
+                          if (_isPlanningRoute) {
+                            _addPlannedRoutePoint(position);
+                            return;
+                          }
+                          // Check if tap is inside any activity polygon to show drawer
+                          _handleMapTapForActivities(position);
+                        },
+                        onCameraMove: (position) {
+                          // Could generate visible territories here
+                        },
+                      ),
                     );
                   },
                 );
               },
             ),
 
-            // Minimal top stats bar
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                child: FadeTransition(
-                  opacity: _animController,
-                  child: _buildMinimalStatsBar(),
-                ),
-              ),
-            ),
+            // Minimal top stats bar + sync status
+            Positioned(top: 0, left: 0, right: 0, child: _buildTopStatusArea()),
 
             // Map control buttons (right side)
             Positioned(
@@ -972,8 +1722,11 @@ class _MapScreenState extends State<MapScreen>
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.directions_walk,
-                            color: Color(0xFF2196F3), size: 22),
+                        Icon(
+                          Icons.directions_walk,
+                          color: Color(0xFF2196F3),
+                          size: 22,
+                        ),
                         SizedBox(height: 2),
                         Text(
                           '$_advancedSteps',
@@ -994,7 +1747,9 @@ class _MapScreenState extends State<MapScreen>
                           SizedBox(height: 3),
                           Container(
                             padding: EdgeInsets.symmetric(
-                                horizontal: 5, vertical: 2),
+                              horizontal: 5,
+                              vertical: 2,
+                            ),
                             decoration: BoxDecoration(
                               color: _displayedMotionType == MotionType.running
                                   ? Colors.red.shade100
@@ -1028,6 +1783,17 @@ class _MapScreenState extends State<MapScreen>
                 },
               ),
             ),
+
+            if (_shouldShowRouteGuidanceCard())
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: 110,
+                child: FadeTransition(
+                  opacity: _animController,
+                  child: _buildRouteGuidanceCard(),
+                ),
+              ),
 
             // Simplified tracking button
             Positioned(
@@ -1179,9 +1945,11 @@ class _MapScreenState extends State<MapScreen>
               ListTile(
                 leading: Icon(Icons.directions_run, color: Colors.blue),
                 title: Text('Distance goal (km)'),
-                subtitle: Text(_goalDistanceKm != null
-                    ? 'Current: ${_goalDistanceKm!.toStringAsFixed(1)} km'
-                    : 'Not set'),
+                subtitle: Text(
+                  _goalDistanceKm != null
+                      ? 'Current: ${_goalDistanceKm!.toStringAsFixed(1)} km'
+                      : 'Not set',
+                ),
                 onTap: () async {
                   Navigator.pop(context);
                   final value = await _showGoalInput(context, 'Distance (km)');
@@ -1196,9 +1964,11 @@ class _MapScreenState extends State<MapScreen>
               ListTile(
                 leading: Icon(Icons.crop_square, color: Colors.purple),
                 title: Text('Area goal (m²)'),
-                subtitle: Text(_goalAreaSqMeters != null
-                    ? 'Current: ${_goalAreaSqMeters!.toStringAsFixed(0)} m²'
-                    : 'Not set'),
+                subtitle: Text(
+                  _goalAreaSqMeters != null
+                      ? 'Current: ${_goalAreaSqMeters!.toStringAsFixed(0)} m²'
+                      : 'Not set',
+                ),
                 onTap: () async {
                   Navigator.pop(context);
                   final value = await _showGoalInput(context, 'Area (m²)');
@@ -1238,9 +2008,7 @@ class _MapScreenState extends State<MapScreen>
           content: TextField(
             controller: controller,
             keyboardType: TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(
-              hintText: label,
-            ),
+            decoration: InputDecoration(hintText: label),
           ),
           actions: [
             TextButton(
@@ -1262,118 +2030,188 @@ class _MapScreenState extends State<MapScreen>
   }
 
   Widget _buildMinimalStatsBar() {
-    return BlocBuilder<GameBloc, GameState>(builder: (context, gameState) {
-      return BlocBuilder<LocationBloc, LocationState>(
+    return BlocBuilder<GameBloc, GameState>(
+      builder: (context, gameState) {
+        return BlocBuilder<LocationBloc, LocationState>(
           builder: (context, locationState) {
-        if (gameState is! GameLoaded) return SizedBox.shrink();
+            if (gameState is! GameLoaded) return SizedBox.shrink();
 
-        final isTracking = locationState is LocationTracking;
-        final distance = isTracking
-            ? locationState.totalDistance / 1000
-            : gameState.stats.totalDistanceKm;
+            final isTracking = locationState is LocationTracking;
+            final distance = isTracking
+                ? locationState.totalDistance / 1000
+                : gameState.stats.totalDistanceKm;
 
-        return Container(
-          margin: EdgeInsets.all(16),
-          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          decoration: BoxDecoration(
-            color: isTracking ? Color(0xFF2196F3) : Colors.white,
-            borderRadius: BorderRadius.circular(30),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 10,
-                offset: Offset(0, 2),
+            return Container(
+              margin: EdgeInsets.all(16),
+              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              decoration: BoxDecoration(
+                color: isTracking ? Color(0xFF2196F3) : Colors.white,
+                borderRadius: BorderRadius.circular(30),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 10,
+                    offset: Offset(0, 2),
+                  ),
+                ],
               ),
-            ],
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              if (isTracking)
-                Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: Colors.red,
-                        shape: BoxShape.circle,
-                      ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  if (isTracking)
+                    Row(
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          '${distance.toStringAsFixed(2)} km',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
                     ),
-                    SizedBox(width: 8),
-                    Text(
-                      '${distance.toStringAsFixed(2)} km',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.white,
-                      ),
+                  if (!isTracking)
+                    _buildStatItem(
+                      '${distance.toStringAsFixed(1)} km',
+                      'Distance',
+                      isTracking,
+                    ),
+                  if (isTracking && _advancedSteps > 0) ...[
+                    Container(width: 1, height: 30, color: Colors.white30),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.directions_walk_rounded,
+                          color: Colors.white,
+                          size: 16,
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          '$_advancedSteps',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
-                ),
-              if (!isTracking)
-                _buildStatItem(
-                  '${distance.toStringAsFixed(1)} km',
-                  'Distance',
-                  isTracking,
-                ),
-              if (isTracking && _advancedSteps > 0) ...[
-                Container(
-                  width: 1,
-                  height: 30,
-                  color: Colors.white30,
-                ),
-                Row(
-                  children: [
-                    Icon(Icons.directions_walk_rounded,
-                        color: Colors.white, size: 16),
-                    SizedBox(width: 4),
-                    Text(
-                      '$_advancedSteps',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-              Container(
-                width: 1,
-                height: 30,
-                color: isTracking ? Colors.white30 : Colors.grey.shade300,
+                  Container(
+                    width: 1,
+                    height: 30,
+                    color: isTracking ? Colors.white30 : Colors.grey.shade300,
+                  ),
+                  _buildStatItem(
+                    '${gameState.stats.territoriesCaptured}',
+                    'Territories',
+                    isTracking,
+                  ),
+                  Container(
+                    width: 1,
+                    height: 30,
+                    color: isTracking ? Colors.white30 : Colors.grey.shade300,
+                  ),
+                  _buildStatItem(
+                    '${gameState.stats.totalPoints}',
+                    'Points',
+                    isTracking,
+                  ),
+                  Container(
+                    width: 1,
+                    height: 30,
+                    color: isTracking ? Colors.white30 : Colors.grey.shade300,
+                  ),
+                  _buildStatItem(
+                    '${gameState.stats.currentStreak}d',
+                    'Streak',
+                    isTracking,
+                  ),
+                ],
               ),
-              _buildStatItem(
-                '${gameState.stats.territoriesCaptured}',
-                'Territories',
-                isTracking,
-              ),
-              Container(
-                width: 1,
-                height: 30,
-                color: isTracking ? Colors.white30 : Colors.grey.shade300,
-              ),
-              _buildStatItem(
-                '${gameState.stats.totalPoints}',
-                'Points',
-                isTracking,
-              ),
-              Container(
-                width: 1,
-                height: 30,
-                color: isTracking ? Colors.white30 : Colors.grey.shade300,
-              ),
-              _buildStatItem(
-                '${gameState.stats.currentStreak}d',
-                'Streak',
-                isTracking,
-              ),
-            ],
-          ),
+            );
+          },
         );
-      });
-    });
+      },
+    );
+  }
+
+  Widget _buildTopStatusArea() {
+    return SafeArea(
+      child: FadeTransition(
+        opacity: _animController,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [_buildMinimalStatsBar(), _buildSyncStatusChip()],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSyncStatusChip() {
+    if (_pendingSyncCount == 0 && !_isSyncing) {
+      return const SizedBox.shrink();
+    }
+
+    final bool hasPending = _pendingSyncCount > 0;
+    final String label = hasPending
+        ? (_isSyncing
+            ? 'Syncing $_pendingSyncCount'
+            : 'Saved offline $_pendingSyncCount')
+        : 'Syncing...';
+    final Color bgColor =
+        _isSyncing ? const Color(0xFF1E3A8A) : const Color(0xFF9A3412);
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: bgColor.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_isSyncing)
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+              ),
+            )
+          else
+            const Icon(Icons.cloud_off, size: 16, color: Colors.white),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildStatItem(String value, String label, bool isTracking) {
@@ -1455,7 +2293,8 @@ class _MapScreenState extends State<MapScreen>
   void _updateRoutePolyline(LocationTracking state) {
     if (state.routePoints.length < 2) {
       print(
-          '⚠️ Route update skipped: need at least 2 points, have ${state.routePoints.length}');
+        '⚠️ Route update skipped: need at least 2 points, have ${state.routePoints.length}',
+      );
       return;
     }
 
@@ -1463,7 +2302,9 @@ class _MapScreenState extends State<MapScreen>
         state.routePoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
     setState(() {
-      _polylines.clear();
+      _polylines.removeWhere(
+        (polyline) => !polyline.polylineId.value.startsWith('route_plan'),
+      );
       _polylines.add(
         Polyline(
           polylineId: const PolylineId('route'),
@@ -1478,7 +2319,8 @@ class _MapScreenState extends State<MapScreen>
     });
 
     print(
-        '✅ Route updated: ${points.length} points, ${(state.totalDistance / 1000).toStringAsFixed(2)} km');
+      '✅ Route updated: ${points.length} points, ${(state.totalDistance / 1000).toStringAsFixed(2)} km',
+    );
   }
 
   void _updateStartPointMarker(LocationTracking state) {
@@ -1488,8 +2330,10 @@ class _MapScreenState extends State<MapScreen>
     final currentPoint = state.currentPosition;
 
     // Calculate distance to start
-    _distanceToStart =
-        _calculateDistanceBetweenPoints(startPoint, currentPoint);
+    _distanceToStart = _calculateDistanceBetweenPoints(
+      startPoint,
+      currentPoint,
+    );
 
     // Create start point circle marker
     setState(() {
@@ -1581,9 +2425,9 @@ class _MapScreenState extends State<MapScreen>
     }
 
     // Load and display all captured territories as filled areas
-    // TODO: Get current user ID from auth
-    const currentUserId = 'current_user';
+    final currentUserId = _currentUserIdFromAuth() ?? 'current_user';
 
+    final pendingOwnerMarkers = <Map<String, dynamic>>[];
     setState(() {
       _polygons.clear();
       _territoryMarkers.clear();
@@ -1617,8 +2461,9 @@ class _MapScreenState extends State<MapScreen>
         Color fillColor;
         Color strokeColor;
         String ownerName = ownerTerritories.first.ownerName ?? 'Unknown';
+        final isOwnTerritory = ownerId == currentUserId;
 
-        if (ownerId == currentUserId) {
+        if (isOwnTerritory) {
           // Your territory - green
           fillColor = Color(0xFF4CAF50).withOpacity(0.25);
           strokeColor = Color(0xFF4CAF50);
@@ -1649,16 +2494,123 @@ class _MapScreenState extends State<MapScreen>
         );
 
         // Add owner marker
+        final markerId = 'label_$ownerId';
+        final center = LatLng(centerLat, centerLng);
+        final captureCount = ownerTerritories.length;
+        final pointsTotal = ownerTerritories.fold<int>(
+          0,
+          (sum, territory) => sum + territory.points,
+        );
+        final latestCapturedAt = ownerTerritories
+            .map((territory) => territory.capturedAt)
+            .reduce(
+              (current, next) => current.isAfter(next) ? current : next,
+            );
+        DateTime? latestBattleAt;
+        for (final territory in ownerTerritories) {
+          final battleAt = territory.lastBattleAt;
+          if (battleAt == null) continue;
+          if (latestBattleAt == null || battleAt.isAfter(latestBattleAt!)) {
+            latestBattleAt = battleAt;
+          }
+        }
+        final areaSqMeters = _calculatePolygonAreaSqMeters(allPoints);
+        final cachedAvatarSource = _extractAvatarFromMap(
+          _userProfileCache[ownerId],
+        );
+        final ownerAvatarSource =
+            cachedAvatarSource ??
+            (isOwnTerritory ? _currentUserAvatarSource() : null);
+        final ownerOnTap = () {
+          _showTerritoryInfo(
+            ownerName: ownerName,
+            captureCount: captureCount,
+            isOwn: isOwnTerritory,
+            points: pointsTotal,
+            capturedAt: latestCapturedAt,
+            lastBattleAt: latestBattleAt,
+            areaSqMeters: areaSqMeters,
+            avatarSource: ownerAvatarSource,
+          );
+        };
         _territoryMarkers.add(
           Marker(
-            markerId: MarkerId('label_$ownerId'),
-            position: LatLng(centerLat, centerLng),
+            markerId: MarkerId(markerId),
+            position: center,
             icon: BitmapDescriptor.defaultMarkerWithHue(
-                BitmapDescriptor.hueGreen),
+              BitmapDescriptor.hueGreen,
+            ),
+            onTap: ownerOnTap,
           ),
         );
+        pendingOwnerMarkers.add({
+          'markerId': markerId,
+          'position': center,
+          'ownerId': ownerId,
+          'ownerName': ownerName,
+          'captureCount': captureCount,
+          'pointsTotal': pointsTotal,
+          'capturedAt': latestCapturedAt,
+          'lastBattleAt': latestBattleAt,
+          'areaSqMeters': areaSqMeters,
+          'isOwn': isOwnTerritory,
+          'avatarSource': ownerAvatarSource,
+        });
       }
     });
+
+    for (final pending in pendingOwnerMarkers) {
+      final ownerId = pending['ownerId']?.toString();
+      if (ownerId == null || ownerId.isEmpty) continue;
+      final ownerName = pending['ownerName']?.toString() ?? 'Unknown';
+      final captureCount = _toIntSafe(pending['captureCount'], fallback: 1);
+      final pointsTotalRaw = pending['pointsTotal'];
+      final pointsTotal =
+          pointsTotalRaw == null ? null : _toIntSafe(pointsTotalRaw);
+      final capturedAt = pending['capturedAt'] as DateTime?;
+      final lastBattleAt = pending['lastBattleAt'] as DateTime?;
+      final areaSqMeters = _toDoubleSafe(pending['areaSqMeters']);
+      final isOwn = pending['isOwn'] == true;
+      final baseAvatarSource = pending['avatarSource']?.toString();
+
+      void showSheet(String? avatar) {
+        _showTerritoryInfo(
+          ownerName: ownerName,
+          captureCount: captureCount,
+          isOwn: isOwn,
+          points: pointsTotal,
+          capturedAt: capturedAt,
+          lastBattleAt: lastBattleAt,
+          areaSqMeters: areaSqMeters,
+          avatarSource: avatar,
+        );
+      }
+
+      if (baseAvatarSource != null && baseAvatarSource.isNotEmpty) {
+        _scheduleCapturedAreaAvatarUpdate(
+          markerId: pending['markerId'] as String,
+          position: pending['position'] as LatLng,
+          avatarCacheKey: ownerId,
+          avatarSource: baseAvatarSource,
+          onTap: () => showSheet(baseAvatarSource),
+        );
+      }
+
+      _ensureUserProfile(ownerId).then((profile) {
+        final resolvedAvatar = _extractAvatarFromMap(profile) ??
+            (ownerId == _currentUserIdFromAuth()
+                ? _currentUserAvatarSource()
+                : null);
+        if (resolvedAvatar == null || resolvedAvatar.isEmpty) return;
+        _scheduleCapturedAreaAvatarUpdate(
+          markerId: pending['markerId'] as String,
+          position: pending['position'] as LatLng,
+          avatarCacheKey: ownerId,
+          avatarSource: resolvedAvatar,
+          onTap: () => showSheet(resolvedAvatar),
+        );
+      });
+    }
   }
 
   String _formatTime(DateTime time) {
@@ -1683,7 +2635,8 @@ class _MapScreenState extends State<MapScreen>
     final distanceDelta = currentDistanceKm - _lastDistanceUpdate;
 
     print(
-        '🔍 Distance check: current=${currentDistanceKm.toStringAsFixed(4)} km, last=${_lastDistanceUpdate.toStringAsFixed(4)} km, delta=${distanceDelta.toStringAsFixed(4)} km');
+      '🔍 Distance check: current=${currentDistanceKm.toStringAsFixed(4)} km, last=${_lastDistanceUpdate.toStringAsFixed(4)} km, delta=${distanceDelta.toStringAsFixed(4)} km',
+    );
 
     // REAL-TIME: Update when distance changes by at least 5 meters
     if (distanceDelta >= 0.005) {
@@ -1753,8 +2706,9 @@ class _MapScreenState extends State<MapScreen>
     if (locationState.routePoints.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
-              Text('No route recorded. Start tracking to capture territories!'),
+          content: Text(
+            'No route recorded. Start tracking to capture territories!',
+          ),
           backgroundColor: Colors.orange,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1781,15 +2735,21 @@ class _MapScreenState extends State<MapScreen>
     // =========================================================================
     // Convert route points to the format expected by AntiCheatValidator
     final routeWithTimestamps = locationState.routePoints
-        .map((p) =>
-            (position: LatLng(p.latitude, p.longitude), timestamp: p.timestamp))
+        .map(
+          (p) => (
+            position: LatLng(p.latitude, p.longitude),
+            timestamp: p.timestamp,
+          ),
+        )
         .toList();
 
-    final validationResult =
-        AntiCheatValidator.validateRoute(routeWithTimestamps);
+    final validationResult = AntiCheatValidator.validateRoute(
+      routeWithTimestamps,
+    );
     if (!validationResult.isValid) {
       print(
-          '⛔ ANTI-CHEAT: Route failed validation - ${validationResult.violation}');
+        '⛔ ANTI-CHEAT: Route failed validation - ${validationResult.violation}',
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Row(
@@ -1797,8 +2757,10 @@ class _MapScreenState extends State<MapScreen>
               Icon(Icons.warning_amber, color: Colors.white),
               SizedBox(width: 8),
               Expanded(
-                  child: Text(
-                      'Route validation failed: ${validationResult.violation}')),
+                child: Text(
+                  'Route validation failed: ${validationResult.violation}',
+                ),
+              ),
             ],
           ),
           backgroundColor: Colors.red.shade700,
@@ -1822,7 +2784,8 @@ class _MapScreenState extends State<MapScreen>
     // Warn if route is very inefficient (possible figure-8 or excessive crossing)
     if (routePerimeter > distanceKm * 1000 * 1.5) {
       print(
-          '⚠️ Route perimeter ($routePerimeter m) is much larger than distance traveled (${distanceKm * 1000} m)');
+        '⚠️ Route perimeter ($routePerimeter m) is much larger than distance traveled (${distanceKm * 1000} m)',
+      );
       // Note: This is just a warning, not blocking capture
     }
 
@@ -1847,7 +2810,8 @@ class _MapScreenState extends State<MapScreen>
     // Epsilon of 3 meters - removes noise while preserving shape
     final routeLatLngs = _simplifyRoute(rawRouteLatLngs, 3.0);
     print(
-        '📊 Route simplified: ${rawRouteLatLngs.length} → ${routeLatLngs.length} points');
+      '📊 Route simplified: ${rawRouteLatLngs.length} → ${routeLatLngs.length} points',
+    );
 
     // Check if route forms a closed loop (start and end are close)
     final distanceToStart = _calculateDistanceBetweenPoints(
@@ -1859,7 +2823,8 @@ class _MapScreenState extends State<MapScreen>
     final isClosedLoop = locationState.routePoints.length >= 3;
 
     print(
-        '🔍 Loop check: ${locationState.routePoints.length} points, distance to start: ${distanceToStart.toStringAsFixed(1)}m, closed: $isClosedLoop');
+      '🔍 Loop check: ${locationState.routePoints.length} points, distance to start: ${distanceToStart.toStringAsFixed(1)}m, closed: $isClosedLoop',
+    );
 
     if (isClosedLoop) {
       print('🎯 Closed loop detected! Capturing ENTIRE area inside polygon...');
@@ -1888,16 +2853,19 @@ class _MapScreenState extends State<MapScreen>
       final boundingAreaSqMeters = heightMeters * widthMeters;
 
       print(
-          '📐 Bounding box: ${widthMeters.toStringAsFixed(1)}m x ${heightMeters.toStringAsFixed(1)}m = ${boundingAreaSqMeters.toStringAsFixed(0)} m²');
+        '📐 Bounding box: ${widthMeters.toStringAsFixed(1)}m x ${heightMeters.toStringAsFixed(1)}m = ${boundingAreaSqMeters.toStringAsFixed(0)} m²',
+      );
 
       if (boundingAreaSqMeters < 100) {
         // 10m x 10m = 100 m² minimum
         print(
-            '⚠️ Loop too small to capture area: ${boundingAreaSqMeters.toStringAsFixed(0)} m² < 100 m²');
+          '⚠️ Loop too small to capture area: ${boundingAreaSqMeters.toStringAsFixed(0)} m² < 100 m²',
+        );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                'Loop area too small! Current: ${boundingAreaSqMeters.toStringAsFixed(0)} m² (need 100+ m²)'),
+              'Loop area too small! Current: ${boundingAreaSqMeters.toStringAsFixed(0)} m² (need 100+ m²)',
+            ),
             backgroundColor: Colors.orange,
             behavior: SnackBarBehavior.floating,
             duration: Duration(seconds: 3),
@@ -1932,11 +2900,13 @@ class _MapScreenState extends State<MapScreen>
                 // Recapture from another user or reinforce own territory
                 if (existingTerritory.ownerId != currentUserId) {
                   final recaptured = existingTerritory.recaptureBy(
-                      currentUserId, currentUserName);
+                    currentUserId,
+                    currentUserName,
+                  );
                   recapturedTerritories.add(recaptured);
-                  context
-                      .read<TerritoryBloc>()
-                      .add(CaptureTerritoryEvent(recaptured));
+                  context.read<TerritoryBloc>().add(
+                        CaptureTerritoryEvent(recaptured),
+                      );
                 }
                 // Skip if already owned by current user
               } else {
@@ -1949,9 +2919,9 @@ class _MapScreenState extends State<MapScreen>
                   ownerName: currentUserName,
                 );
                 newTerritories.add(territory);
-                context
-                    .read<TerritoryBloc>()
-                    .add(CaptureTerritoryEvent(territory));
+                context.read<TerritoryBloc>().add(
+                      CaptureTerritoryEvent(territory),
+                    );
               }
             }
           }
@@ -1959,15 +2929,18 @@ class _MapScreenState extends State<MapScreen>
       }
 
       print(
-          '📊 Scanned $scannedPoints points, $capturedPoints inside polygon, ${capturedHexIds.length} unique hexagons');
+        '📊 Scanned $scannedPoints points, $capturedPoints inside polygon, ${capturedHexIds.length} unique hexagons',
+      );
     } else {
       print(
-          '⚠️ Path not closed - distance to start: ${distanceToStart.toStringAsFixed(1)}m (need < 100m)');
+        '⚠️ Path not closed - distance to start: ${distanceToStart.toStringAsFixed(1)}m (need < 100m)',
+      );
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-              'Return to your starting point to capture the enclosed area!\nCurrent distance: ${distanceToStart.toStringAsFixed(0)}m (need < 100m)'),
+            'Return to your starting point to capture the enclosed area!\nCurrent distance: ${distanceToStart.toStringAsFixed(0)}m (need < 100m)',
+          ),
           backgroundColor: Colors.orange,
           duration: Duration(seconds: 4),
           behavior: SnackBarBehavior.floating,
@@ -1994,13 +2967,16 @@ class _MapScreenState extends State<MapScreen>
       });
 
       print(
-          '💾 Stored ${capturedHexIds.length} hex IDs for backend save. Total session: ${_capturedHexIds.length}');
+        '💾 Stored ${capturedHexIds.length} hex IDs for backend save. Total session: ${_capturedHexIds.length}',
+      );
       print(
-          '🎯 Completed 1 territory (loop with ${totalHexagonsCaptured} hexagons)');
+        '🎯 Completed 1 territory (loop with ${totalHexagonsCaptured} hexagons)',
+      );
     }
 
     print(
-        '✅ Captured ${newTerritories.length} new hexagons, ${recapturedTerritories.length} recaptured (${isClosedLoop ? "AREA" : "PATH"}), ${distanceKm.toStringAsFixed(2)} km');
+      '✅ Captured ${newTerritories.length} new hexagons, ${recapturedTerritories.length} recaptured (${isClosedLoop ? "AREA" : "PATH"}), ${distanceKm.toStringAsFixed(2)} km',
+    );
 
     // Return 1 territory if we completed a loop, 0 otherwise
     return totalHexagonsCaptured > 0 ? 1 : 0;
@@ -2013,6 +2989,16 @@ class _MapScreenState extends State<MapScreen>
 
     // Generate unique ID for this captured area using timestamp
     final areaId = DateTime.now().millisecondsSinceEpoch.toString();
+    double sumLat = 0;
+    double sumLng = 0;
+    for (final point in routePoints) {
+      sumLat += point.latitude;
+      sumLng += point.longitude;
+    }
+    final center = LatLng(
+      sumLat / routePoints.length,
+      sumLng / routePoints.length,
+    );
 
     setState(() {
       // DON'T clear existing polygons - just add the new one!
@@ -2024,8 +3010,9 @@ class _MapScreenState extends State<MapScreen>
         Polygon(
           polygonId: PolygonId('captured_area_$areaId'),
           points: routePoints,
-          fillColor:
-              Color(0xFF4CAF50).withOpacity(0.25), // Transparent green fill
+          fillColor: Color(
+            0xFF4CAF50,
+          ).withOpacity(0.25), // Transparent green fill
           strokeColor: Color(0xFF4CAF50),
           strokeWidth: 2,
         ),
@@ -2033,23 +3020,56 @@ class _MapScreenState extends State<MapScreen>
 
       // Show username in center of captured area
       if (routePoints.isNotEmpty) {
-        double sumLat = 0, sumLng = 0;
-        for (final point in routePoints) {
-          sumLat += point.latitude;
-          sumLng += point.longitude;
-        }
-
+        final authState = context.read<AuthBloc>().state;
+        final ownerName =
+            authState is Authenticated ? authState.user.name : 'You';
+        final areaSqMeters = _calculatePolygonAreaSqMeters(routePoints);
         _territoryMarkers.add(
           Marker(
             markerId: MarkerId('username_label_$areaId'),
-            position: LatLng(
-                sumLat / routePoints.length, sumLng / routePoints.length),
+            position: center,
             icon: BitmapDescriptor.defaultMarkerWithHue(
-                BitmapDescriptor.hueGreen),
+              BitmapDescriptor.hueGreen,
+            ),
+            onTap: () {
+              _showTerritoryInfo(
+                ownerName: ownerName,
+                captureCount: 1,
+                isOwn: true,
+                capturedAt: DateTime.now(),
+                areaSqMeters: areaSqMeters,
+                avatarSource: _currentUserAvatarSource(),
+              );
+            },
           ),
         );
       }
     });
+
+    final avatarSource = _currentUserAvatarSource();
+    final cacheKey = _currentUserIdFromAuth() ?? 'current_user';
+    if (avatarSource != null && avatarSource.isNotEmpty) {
+      _scheduleCapturedAreaAvatarUpdate(
+        markerId: 'username_label_$areaId',
+        position: center,
+        avatarCacheKey: cacheKey,
+        avatarSource: avatarSource,
+        onTap: () {
+          final authState = context.read<AuthBloc>().state;
+          final ownerName =
+              authState is Authenticated ? authState.user.name : 'You';
+          final areaSqMeters = _calculatePolygonAreaSqMeters(routePoints);
+          _showTerritoryInfo(
+            ownerName: ownerName,
+            captureCount: 1,
+            isOwn: true,
+            capturedAt: DateTime.now(),
+            areaSqMeters: areaSqMeters,
+            avatarSource: avatarSource,
+          );
+        },
+      );
+    }
 
     print('✅ Filled captured area with username');
   }
@@ -2087,9 +3107,19 @@ class _MapScreenState extends State<MapScreen>
 
   // Map control buttons
   Widget _buildMapControls() {
+    final isTracking = _trackingState != TrackingState.stopped;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (widget.onNavigateHome != null && isTracking) ...[
+          _buildControlButton(
+            icon: Icons.home,
+            label: 'Home',
+            isActive: false,
+            onTap: widget.onNavigateHome!,
+          ),
+          SizedBox(height: 8),
+        ],
         _buildControlButton(
           icon: Icons.my_location,
           label: 'Me',
@@ -2172,6 +3202,14 @@ class _MapScreenState extends State<MapScreen>
   Future<void> _centerOnUser() async {
     if (_mapController == null) return;
 
+    if (mounted) {
+      setState(() {
+        _followUser = true;
+      });
+    } else {
+      _followUser = true;
+    }
+
     LatLng? target;
     final locationState = context.read<LocationBloc>().state;
 
@@ -2211,127 +3249,626 @@ class _MapScreenState extends State<MapScreen>
     }
   }
 
+  List<LatLng> _buildPlannedRoutePreview(List<LatLng> points) {
+    if (points.length < 3) return List<LatLng>.from(points);
+    final simplified = _simplifyRoute(points, 2.0);
+    return simplified.length >= 2 ? simplified : List<LatLng>.from(points);
+  }
+
+  Future<void> _addCurrentLocationToPlan() async {
+    if (!_isPlanningRoute) return;
+    LatLng? target = _lastKnownLocation;
+    if (target == null) {
+      try {
+        final position = await geo.Geolocator.getCurrentPosition(
+          desiredAccuracy: geo.LocationAccuracy.high,
+        );
+        target = LatLng(position.latitude, position.longitude);
+      } catch (e) {
+        print('❌ Failed to get current location: $e');
+      }
+    }
+
+    if (target == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to get current location')),
+        );
+      }
+      return;
+    }
+
+    _lastKnownLocation = target;
+    _addPlannedRoutePoint(target);
+  }
+
   void _addPlannedRoutePoint(LatLng point) {
     setState(() {
       _plannedRoutePoints.add(point);
-      _updatePlannedRoutePolyline();
+      _plannedRoutePreviewPoints = _buildPlannedRoutePreview(
+        _plannedRoutePoints,
+      );
     });
+    _refreshRoutePreviewFromLocation(_lastKnownLocation, force: true);
   }
 
   void _undoPlannedRoutePoint() {
     if (_plannedRoutePoints.isEmpty) return;
     setState(() {
       _plannedRoutePoints.removeLast();
-      _updatePlannedRoutePolyline();
+      _plannedRoutePreviewPoints = _buildPlannedRoutePreview(
+        _plannedRoutePoints,
+      );
     });
+    _refreshRoutePreviewFromLocation(_lastKnownLocation, force: true);
   }
 
   void _clearPlannedRoute() {
     setState(() {
       _plannedRoutePoints.clear();
-      _updatePlannedRoutePolyline();
+      _plannedRoutePreviewPoints.clear();
     });
+    _refreshRoutePreviewFromLocation(_lastKnownLocation, force: true);
   }
 
-  void _updatePlannedRoutePolyline() {
-    _polylines.removeWhere(
-      (polyline) => polyline.polylineId.value == 'route_plan',
-    );
-    if (_plannedRoutePoints.length < 2) {
+  void _previewRoute(SavedRoute route) {
+    setState(() {
+      _selectedRoute = route;
+    });
+    _refreshRoutePreviewFromLocation(_lastKnownLocation, force: true);
+  }
+
+  List<LatLng> _getActiveRoutePoints() {
+    if (_selectedRoute != null && _selectedRoute!.points.length >= 2) {
+      return _selectedRoute!.points;
+    }
+    if (_plannedRoutePreviewPoints.isNotEmpty) {
+      return _plannedRoutePreviewPoints;
+    }
+    return _plannedRoutePoints;
+  }
+
+  void _refreshRoutePreviewFromLocation(
+    LatLng? location, {
+    bool force = false,
+  }) {
+    final routePoints = _getActiveRoutePoints();
+    if (routePoints.length < 2) {
+      if (!mounted) return;
+      setState(() {
+        _applyRouteGuidancePolylines(base: const []);
+        _routeTotalMeters = 0.0;
+        _routeRemainingMeters = 0.0;
+        _routeDeviationMeters = 0.0;
+        _routeEta = null;
+      });
       return;
     }
 
-    _polylines.add(
-      Polyline(
-        polylineId: PolylineId('route_plan'),
-        points: _plannedRoutePoints,
-        color: Colors.blueAccent,
-        width: 5,
-        patterns: [PatternItem.dash(12), PatternItem.gap(8)],
+    final now = DateTime.now();
+    if (!force &&
+        _lastRoutePreviewUpdate != null &&
+        now.difference(_lastRoutePreviewUpdate!) < _routePreviewThrottle) {
+      return;
+    }
+    _lastRoutePreviewUpdate = now;
+
+    if (!_isRealtimeRouteEnabled || location == null) {
+      final totalMeters = _calculateRouteDistanceMeters(routePoints);
+      final eta = _estimateEta(totalMeters);
+      if (!mounted) return;
+      setState(() {
+        _applyRouteGuidancePolylines(base: routePoints);
+        _routeTotalMeters = totalMeters;
+        _routeRemainingMeters = totalMeters;
+        _routeDeviationMeters = 0.0;
+        _routeEta = eta;
+      });
+      return;
+    }
+
+    final projection = _projectPointOntoRoute(location, routePoints);
+    final remainingMeters =
+        (projection.totalMeters - projection.distanceFromStartMeters).clamp(
+      0.0,
+      projection.totalMeters,
+    );
+    final progressPoints = _buildProgressPoints(
+      routePoints,
+      projection.segmentIndex,
+      projection.projectedPoint,
+    );
+    final remainingPoints = _buildRemainingPoints(
+      routePoints,
+      projection.segmentIndex,
+      projection.projectedPoint,
+    );
+    final eta = _estimateEta(remainingMeters);
+
+    if (!mounted) return;
+    setState(() {
+      _applyRouteGuidancePolylines(
+        base: routePoints,
+        progress: progressPoints,
+        remaining: remainingPoints,
+      );
+      _routeTotalMeters = projection.totalMeters;
+      _routeRemainingMeters = remainingMeters;
+      _routeDeviationMeters = projection.distanceToRouteMeters;
+      _routeEta = eta;
+    });
+  }
+
+  void _applyRouteGuidancePolylines({
+    required List<LatLng> base,
+    List<LatLng> progress = const [],
+    List<LatLng> remaining = const [],
+  }) {
+    _polylines.removeWhere((polyline) {
+      final id = polyline.polylineId.value;
+      return id == 'route_plan' ||
+          id == 'route_preview' ||
+          id == 'route_plan_base' ||
+          id == 'route_plan_progress' ||
+          id == 'route_plan_remaining';
+    });
+
+    if (base.length >= 2) {
+      final showDashed = _selectedRoute == null;
+      _polylines.add(
+        Polyline(
+          polylineId: const PolylineId('route_plan_base'),
+          points: base,
+          color: Colors.blueGrey.withOpacity(0.55),
+          width: 5,
+          patterns: showDashed
+              ? [PatternItem.dash(12), PatternItem.gap(8)]
+              : const <PatternItem>[],
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+          jointType: JointType.round,
+        ),
+      );
+    }
+
+    if (progress.length >= 2) {
+      _polylines.add(
+        Polyline(
+          polylineId: const PolylineId('route_plan_progress'),
+          points: progress,
+          color: Colors.green.shade600,
+          width: 6,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+          jointType: JointType.round,
+        ),
+      );
+    }
+
+    if (remaining.length >= 2) {
+      _polylines.add(
+        Polyline(
+          polylineId: const PolylineId('route_plan_remaining'),
+          points: remaining,
+          color: Colors.blueAccent.withOpacity(0.9),
+          width: 5,
+          patterns: [PatternItem.dash(10), PatternItem.gap(6)],
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+          jointType: JointType.round,
+        ),
+      );
+    }
+  }
+
+  List<LatLng> _buildProgressPoints(
+    List<LatLng> route,
+    int segmentIndex,
+    LatLng projectedPoint,
+  ) {
+    if (route.isEmpty) return [];
+    final points = <LatLng>[];
+    points.addAll(route.take(segmentIndex + 1));
+    if (points.isEmpty ||
+        points.last.latitude != projectedPoint.latitude ||
+        points.last.longitude != projectedPoint.longitude) {
+      points.add(projectedPoint);
+    }
+    return points;
+  }
+
+  List<LatLng> _buildRemainingPoints(
+    List<LatLng> route,
+    int segmentIndex,
+    LatLng projectedPoint,
+  ) {
+    if (route.isEmpty) return [];
+    final points = <LatLng>[projectedPoint];
+    if (segmentIndex + 1 < route.length) {
+      points.addAll(route.sublist(segmentIndex + 1));
+    }
+    return points;
+  }
+
+  _RouteProjectionResult _projectPointOntoRoute(
+    LatLng position,
+    List<LatLng> route,
+  ) {
+    double totalMeters = 0.0;
+    double bestDistance = double.infinity;
+    int bestIndex = 0;
+    LatLng bestPoint = route.first;
+    double bestDistanceFromStart = 0.0;
+
+    double distanceFromStart = 0.0;
+    for (int i = 0; i < route.length - 1; i++) {
+      final start = route[i];
+      final end = route[i + 1];
+      final segmentProjection = _projectPointOnSegment(position, start, end);
+      final segmentLength = segmentProjection.segmentLengthMeters;
+      if (segmentProjection.distanceMeters < bestDistance) {
+        bestDistance = segmentProjection.distanceMeters;
+        bestIndex = i;
+        bestPoint = segmentProjection.projectedPoint;
+        bestDistanceFromStart =
+            distanceFromStart + (segmentProjection.t * segmentLength);
+      }
+      distanceFromStart += segmentLength;
+    }
+    totalMeters = distanceFromStart;
+
+    return _RouteProjectionResult(
+      projectedPoint: bestPoint,
+      segmentIndex: bestIndex,
+      distanceFromStartMeters: bestDistanceFromStart,
+      distanceToRouteMeters: bestDistance,
+      totalMeters: totalMeters,
+    );
+  }
+
+  _SegmentProjection _projectPointOnSegment(
+    LatLng point,
+    LatLng start,
+    LatLng end,
+  ) {
+    final avgLat = (start.latitude + end.latitude) / 2;
+    final metersPerDegLat = EarthConstants.metersPerDegreeLat;
+    final metersPerDegLng = GeodesicCalculator.metersPerDegreeLng(avgLat);
+
+    final startX = 0.0;
+    final startY = 0.0;
+    final endX = (end.longitude - start.longitude) * metersPerDegLng;
+    final endY = (end.latitude - start.latitude) * metersPerDegLat;
+    final pointX = (point.longitude - start.longitude) * metersPerDegLng;
+    final pointY = (point.latitude - start.latitude) * metersPerDegLat;
+
+    final dx = endX - startX;
+    final dy = endY - startY;
+    final lengthSquared = dx * dx + dy * dy;
+    double t = lengthSquared == 0
+        ? 0.0
+        : ((pointX - startX) * dx + (pointY - startY) * dy) / lengthSquared;
+    t = t.clamp(0.0, 1.0);
+
+    final projX = startX + (t * dx);
+    final projY = startY + (t * dy);
+
+    final projectedPoint = LatLng(
+      start.latitude + (projY / metersPerDegLat),
+      start.longitude + (projX / metersPerDegLng),
+    );
+    final distanceMeters = sqrt(
+      pow(pointX - projX, 2) + pow(pointY - projY, 2),
+    );
+    final segmentLength = _calculateGeodesicDistance(start, end);
+
+    return _SegmentProjection(
+      projectedPoint: projectedPoint,
+      t: t,
+      distanceMeters: distanceMeters,
+      segmentLengthMeters: segmentLength,
+    );
+  }
+
+  double _calculateRouteDistanceMeters(List<LatLng> points) {
+    if (points.length < 2) return 0.0;
+    double total = 0.0;
+    for (int i = 1; i < points.length; i++) {
+      total += _calculateGeodesicDistance(points[i - 1], points[i]);
+    }
+    return total;
+  }
+
+  Duration? _estimateEta(double remainingMeters) {
+    if (remainingMeters <= 0) return Duration.zero;
+    final speedMps =
+        _currentSpeed > 0.8 ? (_currentSpeed / 3.6) : _fallbackSpeedMps();
+    if (speedMps <= 0) return null;
+    final seconds = max(1, (remainingMeters / speedMps).round());
+    return Duration(seconds: seconds);
+  }
+
+  double _fallbackSpeedMps() {
+    switch (_routeTravelMode) {
+      case RouteTravelMode.walk:
+        return 1.4;
+      case RouteTravelMode.run:
+        return 2.6;
+      case RouteTravelMode.bike:
+        return 4.4;
+    }
+  }
+
+  String _formatEta(Duration? eta) {
+    if (eta == null) return '--';
+    if (eta.inSeconds < 60) {
+      return '${eta.inSeconds}s';
+    }
+    if (eta.inMinutes < 60) {
+      return '${eta.inMinutes} min';
+    }
+    final hours = eta.inHours;
+    final minutes = eta.inMinutes % 60;
+    return '${hours}h ${minutes}m';
+  }
+
+  String _formatKm(double meters) {
+    if (meters < 1000) {
+      return '${meters.toStringAsFixed(0)} m';
+    }
+    return '${(meters / 1000).toStringAsFixed(2)} km';
+  }
+
+  bool _shouldShowRouteGuidanceCard() {
+    if (!_isRealtimeRouteEnabled) return false;
+    final activeRoute = _getActiveRoutePoints();
+    return activeRoute.length >= 2;
+  }
+
+  Widget _buildRouteGuidanceCard() {
+    final routeName = _selectedRoute?.name ?? 'Planned route';
+    final hasLocation = _lastKnownLocation != null;
+    final totalMeters = _routeTotalMeters > 0
+        ? _routeTotalMeters
+        : _calculateRouteDistanceMeters(_getActiveRoutePoints());
+    final remainingMeters =
+        _routeTotalMeters > 0 ? _routeRemainingMeters : totalMeters;
+    final etaLabel = _formatEta(_routeEta);
+    final isOffRoute =
+        hasLocation && _routeDeviationMeters > _offRouteThresholdMeters;
+    final statusText = !hasLocation
+        ? 'Waiting for GPS'
+        : isOffRoute
+            ? 'Off route by ${_routeDeviationMeters.toStringAsFixed(0)} m'
+            : 'On route';
+    final statusColor = !hasLocation
+        ? Colors.orange.shade700
+        : isOffRoute
+            ? Colors.redAccent
+            : Colors.green.shade700;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.95),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.12),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.blueGrey.shade50,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.route, color: Colors.blueGrey),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  routeName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Remaining ${_formatKm(remainingMeters)} of ${_formatKm(totalMeters)} · ETA $etaLabel',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  statusText,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: statusColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Icon(
+            Icons.wifi_tethering,
+            size: 18,
+            color: _isRealtimeRouteEnabled
+                ? Colors.blueAccent
+                : Colors.grey.shade400,
+          ),
+        ],
       ),
     );
   }
 
-  void _previewRoute(SavedRoute route) {
-    _polylines.removeWhere(
-      (polyline) => polyline.polylineId.value == 'route_preview',
-    );
-    if (route.points.length >= 2) {
-      _polylines.add(
-        Polyline(
-          polylineId: PolylineId('route_preview'),
-          points: route.points,
-          color: Colors.deepPurpleAccent,
-          width: 5,
-        ),
+  List<SavedRoute> _readRoutesCache(String key) {
+    try {
+      final cached = _prefs.getString(key);
+      if (cached == null) return [];
+      final decoded = jsonDecode(cached) as List<dynamic>;
+      return decoded
+          .map((item) => SavedRoute.fromMap(Map<String, dynamic>.from(item)))
+          .toList();
+    } catch (e) {
+      print('Error reading routes cache: $e');
+      return [];
+    }
+  }
+
+  Future<void> _writeRoutesCache(String key, List<dynamic> data) async {
+    try {
+      await _prefs.setString(key, jsonEncode(data));
+    } catch (e) {
+      print('Error saving routes cache: $e');
+    }
+  }
+
+  String _popularRoutesCacheKeyForTarget(LatLng? target) {
+    if (target == null) {
+      return _popularRoutesCacheKeyLast;
+    }
+    final lat = target.latitude.toStringAsFixed(3);
+    final lng = target.longitude.toStringAsFixed(3);
+    return '${_popularRoutesCacheKeyPrefix}_${lat}_${lng}_5_10';
+  }
+
+  LatLng? _resolvePopularRoutesTarget() {
+    final locationState = context.read<LocationBloc>().state;
+    if (locationState is LocationTracking) {
+      return LatLng(
+        locationState.currentPosition.latitude,
+        locationState.currentPosition.longitude,
+      );
+    } else if (locationState is LocationIdle &&
+        locationState.lastPosition != null) {
+      return LatLng(
+        locationState.lastPosition!.latitude,
+        locationState.lastPosition!.longitude,
       );
     }
-    setState(() {
-      _selectedRoute = route;
-    });
+    return null;
   }
 
   Future<void> _loadSavedRoutes() async {
+    await _loadSavedRoutesFromCache();
+    _refreshSavedRoutesFromBackend();
+  }
+
+  Future<void> _loadSavedRoutesFromCache() async {
+    final cachedRoutes = _readRoutesCache(_savedRoutesCacheKey);
+    if (cachedRoutes.isEmpty) {
+      if (mounted) {
+        setState(() => _isLoadingSavedRoutes = true);
+      }
+      return;
+    }
+    if (!mounted) return;
     setState(() {
-      _isLoadingSavedRoutes = true;
+      _savedRoutes = cachedRoutes;
+      _isLoadingSavedRoutes = false;
     });
+    _hasCachedSavedRoutes = true;
+  }
+
+  Future<void> _refreshSavedRoutesFromBackend() async {
+    if (_isRefreshingSavedRoutes) return;
+    _isRefreshingSavedRoutes = true;
     try {
       final routeApi = di.getIt<RouteApiService>();
       final data = await routeApi.getMyRoutes();
+      if (!mounted) return;
       setState(() {
         _savedRoutes = data.map((item) => SavedRoute.fromMap(item)).toList();
+        _isLoadingSavedRoutes = false;
       });
+      await _writeRoutesCache(_savedRoutesCacheKey, data);
+      _hasCachedSavedRoutes = true;
     } catch (e) {
-      print('❌ Failed to load saved routes: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoadingSavedRoutes = false;
-        });
+      print('Failed to load saved routes: $e');
+      if (mounted && !_hasCachedSavedRoutes) {
+        setState(() => _isLoadingSavedRoutes = false);
       }
+    } finally {
+      _isRefreshingSavedRoutes = false;
     }
   }
 
   Future<void> _loadPopularRoutes() async {
+    final target = _resolvePopularRoutesTarget();
+    await _loadPopularRoutesFromCache(target);
+    _refreshPopularRoutesFromBackend(target);
+  }
+
+  Future<void> _loadPopularRoutesFromCache(LatLng? target) async {
+    final key = _popularRoutesCacheKeyForTarget(target);
+    var cachedRoutes = _readRoutesCache(key);
+    if (cachedRoutes.isEmpty && key != _popularRoutesCacheKeyLast) {
+      cachedRoutes = _readRoutesCache(_popularRoutesCacheKeyLast);
+    }
+
+    if (cachedRoutes.isEmpty) {
+      if (mounted) {
+        setState(() => _isLoadingPopularRoutes = true);
+      }
+      return;
+    }
+
+    if (!mounted) return;
     setState(() {
-      _isLoadingPopularRoutes = true;
+      _popularRoutes = cachedRoutes;
+      _isLoadingPopularRoutes = false;
     });
+    _hasCachedPopularRoutes = true;
+  }
+
+  Future<void> _refreshPopularRoutesFromBackend(LatLng? target) async {
+    if (target == null) {
+      if (mounted && !_hasCachedPopularRoutes) {
+        setState(() => _isLoadingPopularRoutes = false);
+      }
+      return;
+    }
+    if (_isRefreshingPopularRoutes) return;
+    _isRefreshingPopularRoutes = true;
     try {
       final routeApi = di.getIt<RouteApiService>();
-      final locationState = context.read<LocationBloc>().state;
-      LatLng? target;
-      if (locationState is LocationTracking) {
-        target = LatLng(
-          locationState.currentPosition.latitude,
-          locationState.currentPosition.longitude,
-        );
-      } else if (locationState is LocationIdle &&
-          locationState.lastPosition != null) {
-        target = LatLng(
-          locationState.lastPosition!.latitude,
-          locationState.lastPosition!.longitude,
-        );
-      }
-      if (target == null) {
-        return;
-      }
       final data = await routeApi.getPopularRoutes(
         lat: target.latitude,
         lng: target.longitude,
         radiusKm: 5,
         limit: 10,
       );
+      if (!mounted) return;
       setState(() {
         _popularRoutes = data.map((item) => SavedRoute.fromMap(item)).toList();
+        _isLoadingPopularRoutes = false;
       });
+      final cacheKey = _popularRoutesCacheKeyForTarget(target);
+      await _writeRoutesCache(cacheKey, data);
+      await _writeRoutesCache(_popularRoutesCacheKeyLast, data);
+      _hasCachedPopularRoutes = true;
     } catch (e) {
-      print('❌ Failed to load popular routes: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoadingPopularRoutes = false;
-        });
+      print('Failed to load popular routes: $e');
+      if (mounted && !_hasCachedPopularRoutes) {
+        setState(() => _isLoadingPopularRoutes = false);
       }
+    } finally {
+      _isRefreshingPopularRoutes = false;
     }
   }
 
@@ -2399,7 +3936,7 @@ class _MapScreenState extends State<MapScreen>
                 ),
                 SizedBox(height: 8),
                 SizedBox(
-                  height: 320,
+                  height: 380,
                   child: TabBarView(
                     children: [
                       _buildCreateRouteTab(),
@@ -2420,8 +3957,9 @@ class _MapScreenState extends State<MapScreen>
     final distanceKm = _plannedRoutePoints.length < 2
         ? 0.0
         : _calculatePlannedRouteDistanceKm();
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 16),
+      physics: const BouncingScrollPhysics(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2439,11 +3977,19 @@ class _MapScreenState extends State<MapScreen>
                   onPressed: () {
                     setState(() {
                       _isPlanningRoute = !_isPlanningRoute;
+                      if (_isPlanningRoute) {
+                        _selectedRoute = null;
+                      }
                     });
+                    _refreshRoutePreviewFromLocation(
+                      _lastKnownLocation,
+                      force: true,
+                    );
                   },
                   icon: Icon(_isPlanningRoute ? Icons.close : Icons.edit_road),
-                  label:
-                      Text(_isPlanningRoute ? 'Stop Planning' : 'Plan Route'),
+                  label: Text(
+                    _isPlanningRoute ? 'Stop Planning' : 'Plan Route',
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor:
                         _isPlanningRoute ? Colors.red.shade400 : Colors.black,
@@ -2468,6 +4014,92 @@ class _MapScreenState extends State<MapScreen>
               Text(
                 '${_plannedRoutePoints.length} pts',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+            ],
+          ),
+          SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.wifi_tethering,
+                      size: 16,
+                      color: Colors.blueGrey.shade700,
+                    ),
+                    SizedBox(width: 8),
+                    Text(
+                      'Realtime guidance',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey.shade800,
+                      ),
+                    ),
+                    Spacer(),
+                    Switch(
+                      value: _isRealtimeRouteEnabled,
+                      activeColor: Colors.blueGrey.shade800,
+                      onChanged: (value) {
+                        setState(() => _isRealtimeRouteEnabled = value);
+                        _refreshRoutePreviewFromLocation(
+                          _lastKnownLocation,
+                          force: true,
+                        );
+                      },
+                    ),
+                  ],
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Travel mode',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                ),
+                SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  children: RouteTravelMode.values.map((mode) {
+                    final isSelected = _routeTravelMode == mode;
+                    final label = mode == RouteTravelMode.walk
+                        ? 'Walk'
+                        : mode == RouteTravelMode.run
+                            ? 'Run'
+                            : 'Bike';
+                    return ChoiceChip(
+                      label: Text(label),
+                      selected: isSelected,
+                      selectedColor: Colors.blueGrey.shade200,
+                      onSelected: (_) {
+                        setState(() => _routeTravelMode = mode);
+                        _refreshRoutePreviewFromLocation(
+                          _lastKnownLocation,
+                          force: true,
+                        );
+                      },
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed:
+                      _isPlanningRoute ? _addCurrentLocationToPlan : null,
+                  icon: Icon(Icons.my_location, size: 18),
+                  label: Text('Add My Location'),
+                ),
               ),
             ],
           ),
@@ -2514,8 +4146,10 @@ class _MapScreenState extends State<MapScreen>
     }
     if (_savedRoutes.isEmpty) {
       return Center(
-        child: Text('No saved routes yet',
-            style: TextStyle(color: Colors.grey.shade600)),
+        child: Text(
+          'No saved routes yet',
+          style: TextStyle(color: Colors.grey.shade600),
+        ),
       );
     }
     return ListView.separated(
@@ -2543,8 +4177,10 @@ class _MapScreenState extends State<MapScreen>
     }
     if (_popularRoutes.isEmpty) {
       return Center(
-        child: Text('No popular routes nearby',
-            style: TextStyle(color: Colors.grey.shade600)),
+        child: Text(
+          'No popular routes nearby',
+          style: TextStyle(color: Colors.grey.shade600),
+        ),
       );
     }
     return ListView.separated(
@@ -2556,7 +4192,8 @@ class _MapScreenState extends State<MapScreen>
         return ListTile(
           title: Text(route.name),
           subtitle: Text(
-              '${route.distanceKm.toStringAsFixed(2)} km • ${route.usageCount} uses'),
+            '${route.distanceKm.toStringAsFixed(2)} km • ${route.usageCount} uses',
+          ),
           trailing: Icon(Icons.chevron_right),
           onTap: () {
             _previewRoute(route);
@@ -2573,10 +4210,8 @@ class _MapScreenState extends State<MapScreen>
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         itemCount: 6,
         separatorBuilder: (_, __) => const SizedBox(height: 12),
-        itemBuilder: (context, index) => SkeletonBox(
-          height: 56,
-          borderRadius: BorderRadius.circular(12),
-        ),
+        itemBuilder: (context, index) =>
+            SkeletonBox(height: 56, borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
@@ -2608,9 +4243,7 @@ class _MapScreenState extends State<MapScreen>
                 children: [
                   TextField(
                     controller: controller,
-                    decoration: InputDecoration(
-                      labelText: 'Route name',
-                    ),
+                    decoration: InputDecoration(labelText: 'Route name'),
                   ),
                   SizedBox(height: 12),
                   Row(
@@ -2658,19 +4291,20 @@ class _MapScreenState extends State<MapScreen>
             .map((p) => {'lat': p.latitude, 'lng': p.longitude})
             .toList(),
       );
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Route saved')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Route saved')));
       setState(() {
         _isPlanningRoute = false;
         _plannedRoutePoints.clear();
-        _updatePlannedRoutePolyline();
+        _plannedRoutePreviewPoints.clear();
       });
+      _refreshRoutePreviewFromLocation(_lastKnownLocation, force: true);
       await _loadSavedRoutes();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save route')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to save route')));
     }
   }
 
@@ -2687,106 +4321,417 @@ class _MapScreenState extends State<MapScreen>
   Future<void> _loadBossTerritoriesFromBackend() async {
     try {
       final territoryApiService = di.getIt<TerritoryApiService>();
-      final bosses = await territoryApiService.getBossTerritories(limit: 3);
-
-      // Get current user ID to differentiate ownership
       final authService = di.getIt<AuthApiService>();
-      final currentUserId = await authService.getUserId();
+      final currentUserId = await authService.getUserId() ?? '';
 
-      setState(() {
-        _polygons.removeWhere(
-            (polygon) => polygon.polygonId.value.startsWith('boss_'));
-        _territoryMarkers
-            .removeWhere((marker) => marker.markerId.value.startsWith('boss_'));
+      final cached = await _territoryCacheDataSource.getBossTerritories();
+      if (cached.isNotEmpty && mounted) {
+        print('Using cached boss territories (${cached.length})');
+        _renderBossTerritories(cached, currentUserId);
+      }
 
-        for (final boss in bosses) {
-          final hexId = boss['hexId'];
-          final lat = boss['latitude'] is String
-              ? double.parse(boss['latitude'])
-              : (boss['latitude'] as num).toDouble();
-          final lng = boss['longitude'] is String
-              ? double.parse(boss['longitude'])
-              : (boss['longitude'] as num).toDouble();
-
-          final ownerId = boss['ownerId'];
-          final bool isOwnTerritory = ownerId == currentUserId;
-          final bossColor = Colors.amber;
-
-          final routePoints = boss['routePoints'] as List?;
-          List<LatLng> polygonPoints;
-
-          if (routePoints != null && routePoints.isNotEmpty) {
-            polygonPoints = routePoints.map((p) {
-              final pointLat = p['lat'] is String
-                  ? double.parse(p['lat'])
-                  : (p['lat'] as num).toDouble();
-              final pointLng = p['lng'] is String
-                  ? double.parse(p['lng'])
-                  : (p['lng'] as num).toDouble();
-              return LatLng(pointLat, pointLng);
-            }).toList();
-          } else {
-            polygonPoints = _generateCirclePoints(LatLng(lat, lng), 60);
-          }
-
-          _polygons.add(
-            Polygon(
-              polygonId: PolygonId('boss_$hexId'),
-              points: polygonPoints,
-              fillColor: bossColor.withOpacity(0.2),
-              strokeColor: bossColor,
-              strokeWidth: 3,
-            ),
-          );
-
-          _territoryMarkers.add(
-            Marker(
-              markerId: MarkerId('boss_$hexId'),
-              position: LatLng(lat, lng),
-              icon: BitmapDescriptor.defaultMarkerWithHue(
-                  BitmapDescriptor.hueOrange),
-              onTap: () {
-                _showTerritoryInfo(
-                  ownerName: boss['owner']?['name'] ?? 'Unknown',
-                  captureCount: boss['captureCount'] ?? 1,
-                  isOwn: isOwnTerritory,
-                  points: boss['points'],
-                  capturedAt: boss['capturedAt'] != null
-                      ? DateTime.parse(boss['capturedAt'])
-                      : null,
-                  lastBattleAt: boss['lastBattleAt'] != null
-                      ? DateTime.parse(boss['lastBattleAt'])
-                      : null,
-                  areaSqMeters: _calculatePolygonArea(polygonPoints),
-                  isBoss: true,
-                  bossRewardPoints: boss['bossRewardPoints'],
-                );
-              },
-            ),
-          );
-
-          _territoryData[hexId] = {
-            'polygonPoints': polygonPoints,
-            'ownerId': ownerId,
-            'ownerName': boss['owner']?['name'] ?? 'Unknown',
-            'captureCount': boss['captureCount'] ?? 1,
-            'isOwn': isOwnTerritory,
-            'points': boss['points'],
-            'capturedAt': boss['capturedAt'] != null
-                ? DateTime.parse(boss['capturedAt'])
-                : null,
-            'lastBattleAt': boss['lastBattleAt'] != null
-                ? DateTime.parse(boss['lastBattleAt'])
-                : null,
-            'areaSqMeters': _calculatePolygonArea(polygonPoints),
-            'isBoss': true,
-            'bossRewardPoints': boss['bossRewardPoints'],
-          };
+      try {
+        final bosses = await territoryApiService.getBossTerritories(limit: 3);
+        await _territoryCacheDataSource.saveBossTerritories(bosses);
+        if (mounted) {
+          _renderBossTerritories(bosses, currentUserId);
         }
-      });
+      } catch (e) {
+        print('Failed to load boss territories from backend: $e');
+        if (cached.isEmpty) {
+          print('No cached boss territories available');
+        }
+      }
     } catch (e) {
-      print('❌ Failed to load boss territories: $e');
+      print('Failed to load boss territories: $e');
     }
+  }
+
+  void _renderBossTerritories(
+    List<Map<String, dynamic>> bosses,
+    String currentUserId,
+  ) {
+    if (!mounted) return;
+
+    final pendingBossMarkers = <Map<String, dynamic>>[];
+    setState(() {
+      _polygons.removeWhere(
+        (polygon) => polygon.polygonId.value.startsWith('boss_'),
+      );
+      _territoryMarkers.removeWhere(
+        (marker) => marker.markerId.value.startsWith('boss_'),
+      );
+
+      for (final boss in bosses) {
+        final hexId = boss['hexId'];
+        final lat = boss['latitude'] is String
+            ? double.parse(boss['latitude'])
+            : (boss['latitude'] as num).toDouble();
+        final lng = boss['longitude'] is String
+            ? double.parse(boss['longitude'])
+            : (boss['longitude'] as num).toDouble();
+
+        final ownerId = boss['ownerId'];
+        final bool isOwnTerritory = ownerId == currentUserId;
+        final bossColor = Colors.amber;
+
+        final routePoints = boss['routePoints'] as List?;
+        List<LatLng> polygonPoints;
+
+        if (routePoints != null && routePoints.isNotEmpty) {
+          polygonPoints = routePoints.map((p) {
+            final pointLat = p['lat'] is String
+                ? double.parse(p['lat'])
+                : (p['lat'] as num).toDouble();
+            final pointLng = p['lng'] is String
+                ? double.parse(p['lng'])
+                : (p['lng'] as num).toDouble();
+            return LatLng(pointLat, pointLng);
+          }).toList();
+        } else {
+          polygonPoints = _generateCirclePoints(LatLng(lat, lng), 60);
+        }
+
+        _polygons.add(
+          Polygon(
+            polygonId: PolygonId('boss_$hexId'),
+            points: polygonPoints,
+            fillColor: bossColor.withOpacity(0.2),
+            strokeColor: bossColor,
+            strokeWidth: 3,
+          ),
+        );
+
+        final ownerName = boss['owner']?['name'] ?? 'Unknown';
+        final bossCaptureCount = _toIntSafe(boss['captureCount'], fallback: 1);
+        final bossPoints = boss['points'];
+        final bossCapturedAt = boss['capturedAt'] != null
+            ? DateTime.parse(boss['capturedAt'])
+            : null;
+        final bossLastBattleAt = boss['lastBattleAt'] != null
+            ? DateTime.parse(boss['lastBattleAt'])
+            : null;
+        final bossAreaSqMeters = _calculatePolygonArea(polygonPoints);
+        final ownerData = boss['owner'];
+        final ownerAvatarSource =
+            _extractAvatarFromMap(ownerData) ?? _extractAvatarFromMap(boss);
+
+        final bossOnTap = () {
+          _showTerritoryInfo(
+            ownerName: ownerName,
+            captureCount: bossCaptureCount,
+            isOwn: isOwnTerritory,
+            points: bossPoints,
+            capturedAt: bossCapturedAt,
+            lastBattleAt: bossLastBattleAt,
+            areaSqMeters: bossAreaSqMeters,
+            isBoss: true,
+            bossRewardPoints: boss['bossRewardPoints'],
+            avatarSource: ownerAvatarSource,
+          );
+        };
+
+        _territoryMarkers.add(
+          Marker(
+            markerId: MarkerId('boss_$hexId'),
+            position: LatLng(lat, lng),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueOrange,
+            ),
+            onTap: bossOnTap,
+          ),
+        );
+
+        final markerId = 'boss_$hexId';
+        final markerPosition = LatLng(lat, lng);
+        pendingBossMarkers.add({
+          'markerId': markerId,
+          'position': markerPosition,
+          'ownerId': ownerId,
+          'ownerName': ownerName,
+          'captureCount': bossCaptureCount,
+          'points': bossPoints,
+          'capturedAt': bossCapturedAt,
+          'lastBattleAt': bossLastBattleAt,
+          'areaSqMeters': bossAreaSqMeters,
+          'bossRewardPoints': boss['bossRewardPoints'],
+          'avatarSource': ownerAvatarSource,
+        });
+
+        _territoryData[hexId] = {
+          'polygonPoints': polygonPoints,
+          'ownerId': ownerId,
+          'ownerName': boss['owner']?['name'] ?? 'Unknown',
+          'captureCount': boss['captureCount'] ?? 1,
+          'isOwn': isOwnTerritory,
+          'points': boss['points'],
+          'capturedAt': boss['capturedAt'] != null
+              ? DateTime.parse(boss['capturedAt'])
+              : null,
+          'lastBattleAt': boss['lastBattleAt'] != null
+              ? DateTime.parse(boss['lastBattleAt'])
+              : null,
+          'areaSqMeters': _calculatePolygonArea(polygonPoints),
+          'isBoss': true,
+          'bossRewardPoints': boss['bossRewardPoints'],
+        };
+      }
+    });
+
+    for (final pending in pendingBossMarkers) {
+      final markerId = pending['markerId'] as String;
+      final position = pending['position'] as LatLng;
+      final ownerId = pending['ownerId']?.toString();
+      final ownerName = pending['ownerName']?.toString() ?? 'Unknown';
+      final captureCount = _toIntSafe(pending['captureCount'], fallback: 1);
+      final pointsRaw = pending['points'];
+      final points = pointsRaw == null ? null : _toIntSafe(pointsRaw);
+      final capturedAt = pending['capturedAt'] as DateTime?;
+      final lastBattleAt = pending['lastBattleAt'] as DateTime?;
+      final areaSqMeters = _toDoubleSafe(pending['areaSqMeters']);
+      final bossRewardRaw = pending['bossRewardPoints'];
+      final bossRewardPoints =
+          bossRewardRaw == null ? null : _toIntSafe(bossRewardRaw);
+      final baseAvatarSource = pending['avatarSource']?.toString();
+
+      void showSheet(String? avatar) {
+        _showTerritoryInfo(
+          ownerName: ownerName,
+          captureCount: captureCount,
+          isOwn: ownerId == _currentUserIdFromAuth(),
+          points: points,
+          capturedAt: capturedAt,
+          lastBattleAt: lastBattleAt,
+          areaSqMeters: areaSqMeters,
+          isBoss: true,
+          bossRewardPoints: bossRewardPoints,
+          avatarSource: avatar,
+        );
+      }
+
+      if (baseAvatarSource != null && baseAvatarSource.isNotEmpty) {
+        _scheduleCapturedAreaAvatarUpdate(
+          markerId: markerId,
+          position: position,
+          avatarCacheKey: ownerId ?? markerId,
+          avatarSource: baseAvatarSource,
+          onTap: () => showSheet(baseAvatarSource),
+        );
+      }
+
+      if (ownerId != null && ownerId.isNotEmpty) {
+        _ensureUserProfile(ownerId).then((profile) {
+          final resolvedAvatar = _extractAvatarFromMap(profile) ??
+              (ownerId == _currentUserIdFromAuth()
+                  ? _currentUserAvatarSource()
+                  : null);
+          if (resolvedAvatar == null || resolvedAvatar.isEmpty) return;
+          _scheduleCapturedAreaAvatarUpdate(
+            markerId: markerId,
+            position: position,
+            avatarCacheKey: ownerId,
+            avatarSource: resolvedAvatar,
+            onTap: () => showSheet(resolvedAvatar),
+          );
+        });
+      }
+    }
+  }
+
+  void _emitMyLocationUpdate() {
+    if (_currentUserId == null) return;
+    final locationState = context.read<LocationBloc>().state;
+    if (locationState is! LocationTracking) return;
+    _webSocketService.emitLocationUpdate(
+      userId: _currentUserId!,
+      lat: locationState.currentPosition.latitude,
+      lng: locationState.currentPosition.longitude,
+      speed: _currentSpeed,
+    );
+  }
+
+  Future<void> _handleUserLocation(dynamic payload) async {
+    if (!mounted) return;
+    if (payload is! Map) return;
+    final userId = payload['userId']?.toString();
+    if (userId == null || userId == _currentUserId) return;
+    final lat = payload['lat'];
+    final lng = payload['lng'];
+    if (lat is! num || lng is! num) return;
+
+    _userLastSeen[userId] = DateTime.now();
+    final position = LatLng(lat.toDouble(), lng.toDouble());
+    final profile = await _ensureUserProfile(userId);
+    final marker = await _buildUserMarker(userId, position, profile);
+    if (marker == null || !mounted) return;
+
+    setState(() {
+      _userMarkersById[userId] = marker;
+    });
+  }
+
+  Future<Map<String, dynamic>?> _ensureUserProfile(String userId) async {
+    final cached = _userProfileCache[userId];
+    if (cached != null) return cached;
+    if (_profileFetchInFlight.contains(userId)) return null;
+    _profileFetchInFlight.add(userId);
+    try {
+      final profile = await _userProfileApiService.getPublicProfile(userId);
+      _userProfileCache[userId] = profile;
+      return profile;
+    } catch (e) {
+      print('Failed to load user profile: $e');
+      return null;
+    } finally {
+      _profileFetchInFlight.remove(userId);
+    }
+  }
+
+  Future<Marker?> _buildUserMarker(
+    String userId,
+    LatLng position,
+    Map<String, dynamic>? profile,
+  ) async {
+    final name = profile?['name']?.toString() ?? 'Runner';
+    final avatarUrl = profile?['avatarImageUrl']?.toString() ??
+        profile?['avatarModelUrl']?.toString() ??
+        profile?['profilePicture']?.toString();
+    BitmapDescriptor? icon;
+    if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      icon = await _getAvatarMarkerIcon(userId, avatarUrl);
+    }
+
+    return Marker(
+      markerId: MarkerId('user_$userId'),
+      position: position,
+      icon: icon ??
+          BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+      infoWindow: InfoWindow(title: name),
+      zIndex: 20.0,
+    );
+  }
+
+  Future<void> _updateCurrentUserMarker(LatLng position) async {
+    final authState = context.read<AuthBloc>().state;
+    if (authState is! Authenticated) return;
+    final user = authState.user;
+    final avatarSource = user.avatarImageUrl ?? user.avatarModelUrl ?? '';
+
+    BitmapDescriptor? icon;
+    if (avatarSource.isNotEmpty) {
+      icon = await _getAvatarMarkerIcon(user.id, avatarSource);
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _currentUserMarker = Marker(
+        markerId: const MarkerId('current_user'),
+        position: position,
+        icon: icon ??
+            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        anchor: icon != null ? const Offset(0.5, 0.5) : const Offset(0.5, 1.0),
+        infoWindow: const InfoWindow(title: 'You'),
+        zIndex: 30.0,
+      );
+    });
+  }
+
+  Future<BitmapDescriptor?> _getAvatarMarkerIcon(
+    String userId,
+    String avatarUrl,
+  ) async {
+    final resolvedUrl = _resolveAvatarImageUrl(avatarUrl);
+    final cached = _userAvatarIconCache[userId];
+    if (cached != null && _userAvatarUrlCache[userId] == resolvedUrl) {
+      return cached;
+    }
+    try {
+      final bytes = await _loadAvatarBytes(resolvedUrl);
+      if (bytes == null) return null;
+      final icon = await _createCircularAvatarMarker(bytes);
+      _userAvatarIconCache[userId] = icon;
+      _userAvatarUrlCache[userId] = resolvedUrl;
+      return icon;
+    } catch (e) {
+      print('Failed to load avatar icon: $e');
+      return null;
+    }
+  }
+
+  String _resolveAvatarImageUrl(String avatarUrl) {
+    return AvatarPresetService.resolveAvatarImageUrl(avatarUrl);
+  }
+
+  Future<Uint8List?> _loadAvatarBytes(String avatarUrl) async {
+    if (AvatarPresetService.isAssetPath(avatarUrl)) {
+      final assetPath = AvatarPresetService.normalizeAssetPath(avatarUrl);
+      final data = await rootBundle.load(assetPath);
+      return data.buffer.asUint8List();
+    }
+    final uri = Uri.tryParse(avatarUrl);
+    if (uri == null || (!uri.isScheme('http') && !uri.isScheme('https'))) {
+      return null;
+    }
+    final response = await _httpClient.get(uri);
+    if (response.statusCode != 200) return null;
+    return response.bodyBytes;
+  }
+
+  Future<BitmapDescriptor> _createCircularAvatarMarker(
+    Uint8List bytes, {
+    int size = 96,
+  }) async {
+    final codec = await ui.instantiateImageCodec(
+      bytes,
+      targetWidth: size,
+      targetHeight: size,
+    );
+    final frame = await codec.getNextFrame();
+    final image = frame.image;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    final paint = Paint();
+    final rect = ui.Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble());
+    final radius = size / 2.0;
+    final clipPath = ui.Path()..addOval(rect);
+
+    canvas.clipPath(clipPath);
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      rect,
+      paint,
+    );
+
+    final borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4;
+    canvas.drawCircle(ui.Offset(radius, radius), radius - 2, borderPaint);
+
+    final picture = recorder.endRecording();
+    final roundedImage = await picture.toImage(size, size);
+    final byteData = await roundedImage.toByteData(
+      format: ui.ImageByteFormat.png,
+    );
+
+    return BitmapDescriptor.fromBytes(byteData!.buffer.asUint8List());
+  }
+
+  void _pruneStaleUsers() {
+    final cutoff = DateTime.now().subtract(const Duration(seconds: 90));
+    final staleIds = _userLastSeen.entries
+        .where((entry) => entry.value.isBefore(cutoff))
+        .map((entry) => entry.key)
+        .toList();
+    if (staleIds.isEmpty) return;
+    setState(() {
+      for (final userId in staleIds) {
+        _userMarkersById.remove(userId);
+        _userLastSeen.remove(userId);
+      }
+    });
   }
 
   void _toggleHeatmap() {
@@ -2813,9 +4758,10 @@ class _MapScreenState extends State<MapScreen>
       if (routePoints == null || routePoints.isEmpty) continue;
 
       for (int i = 0; i < routePoints.length; i += 5) {
-        final p = routePoints[i];
-        final lat = (p['latitude'] as num).toDouble();
-        final lng = (p['longitude'] as num).toDouble();
+        final parsed = _parseRoutePoint(routePoints[i]);
+        if (parsed == null) continue;
+        final lat = parsed.latitude;
+        final lng = parsed.longitude;
         final key = '${(lat / gridSize).round()}:${(lng / gridSize).round()}';
         final cell = cells.putIfAbsent(key, () => _HeatCell());
         cell.count += 1;
@@ -2836,7 +4782,8 @@ class _MapScreenState extends State<MapScreen>
       _heatmapCircles.add(
         Circle(
           circleId: CircleId(
-              'heat_${lat.toStringAsFixed(5)}_${lng.toStringAsFixed(5)}'),
+            'heat_${lat.toStringAsFixed(5)}_${lng.toStringAsFixed(5)}',
+          ),
           center: LatLng(lat, lng),
           radius: radius.toDouble(),
           fillColor: Colors.red.withOpacity(intensity),
@@ -2903,7 +4850,8 @@ class _MapScreenState extends State<MapScreen>
                 _useSimulation = value;
               });
               print(
-                  "${value ? '🎮' : '📍'} Simulation mode: ${value ? 'ON' : 'OFF'}");
+                "${value ? '🎮' : '📍'} Simulation mode: ${value ? 'ON' : 'OFF'}",
+              );
             },
             activeColor: Colors.white,
             activeTrackColor: Colors.blue.shade300,
@@ -3076,11 +5024,7 @@ class _MapScreenState extends State<MapScreen>
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.crop_square,
-                  size: 12,
-                  color: Colors.purple,
-                ),
+                Icon(Icons.crop_square, size: 12, color: Colors.purple),
                 SizedBox(width: 4),
                 Text(
                   _formatArea(_estimatedAreaSqMeters),
@@ -3100,11 +5044,7 @@ class _MapScreenState extends State<MapScreen>
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.flag,
-                  size: 12,
-                  color: Colors.blueGrey,
-                ),
+                Icon(Icons.flag, size: 12, color: Colors.blueGrey),
                 SizedBox(width: 4),
                 Text(
                   _goalDistanceKm != null
@@ -3190,14 +5130,14 @@ class _MapScreenState extends State<MapScreen>
     }
 
     // Convert route points to LatLng
-    final List<LatLng> latLngPoints = routePoints.map((point) {
-      return LatLng(
-        point['latitude'] as double,
-        point['longitude'] as double,
+    final List<LatLng> latLngPoints =
+        routePoints.map(_parseRoutePoint).whereType<LatLng>().toList();
+    if (latLngPoints.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Not enough route points to show activity')),
       );
-    }).toList();
-
-    if (latLngPoints.isEmpty) return;
+      return;
+    }
 
     // Clear existing polylines and add the activity route
     setState(() {
@@ -3248,9 +5188,7 @@ class _MapScreenState extends State<MapScreen>
     );
 
     // Animate camera to show the entire route
-    _mapController!.animateCamera(
-      CameraUpdate.newLatLngBounds(bounds, 50),
-    );
+    _mapController!.animateCamera(CameraUpdate.newLatLngBounds(bounds, 50));
   }
 
   /// ═══════════════════════════════════════════════════════════════════════════
@@ -3279,7 +5217,8 @@ class _MapScreenState extends State<MapScreen>
   /// ═══════════════════════════════════════════════════════════════════════════
   void _handleMapTapForActivities(LatLng tapPosition) {
     print(
-        '🗺️ Map tapped at: ${tapPosition.latitude}, ${tapPosition.longitude}');
+      '🗺️ Map tapped at: ${tapPosition.latitude}, ${tapPosition.longitude}',
+    );
     print('📊 Total activity data entries: ${_activityData.length}');
     print('�️ Total territory data entries: ${_territoryData.length}');
 
@@ -3291,8 +5230,10 @@ class _MapScreenState extends State<MapScreen>
 
         if (routeData != null && routeData.length >= 3) {
           final routePoints = routeData
-              .map((p) =>
-                  LatLng(p['latitude'] as double, p['longitude'] as double))
+              .map(
+                (p) =>
+                    LatLng(p['latitude'] as double, p['longitude'] as double),
+              )
               .toList();
 
           if (_isPointInPolygon(tapPosition, routePoints)) {
@@ -3420,18 +5361,11 @@ class _MapScreenState extends State<MapScreen>
                     decoration: BoxDecoration(
                       color: Color(0xFFF9FAFB),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Color(0xFFE5E7EB),
-                        width: 1,
-                      ),
+                      border: Border.all(color: Color(0xFFE5E7EB), width: 1),
                     ),
                     child: Row(
                       children: [
-                        Icon(
-                          Icons.emoji_events,
-                          color: Colors.amber,
-                          size: 24,
-                        ),
+                        Icon(Icons.emoji_events, color: Colors.amber, size: 24),
                         const SizedBox(width: 12),
                         Text(
                           'Captured ',
@@ -3487,8 +5421,9 @@ class _MapScreenState extends State<MapScreen>
 
     // Get more points for better averaging (up to 8)
     final numPoints = min(8, state.routePoints.length);
-    final recentPoints =
-        state.routePoints.sublist(state.routePoints.length - numPoints);
+    final recentPoints = state.routePoints.sublist(
+      state.routePoints.length - numPoints,
+    );
 
     if (recentPoints.length < 2) return;
 
@@ -3740,11 +5675,7 @@ class _MapScreenState extends State<MapScreen>
                       ),
                     ],
                   ),
-                  child: Icon(
-                    Icons.history,
-                    size: 28,
-                    color: Colors.black87,
-                  ),
+                  child: Icon(Icons.history, size: 28, color: Colors.black87),
                 ),
               ),
             ],
@@ -3755,6 +5686,9 @@ class _MapScreenState extends State<MapScreen>
   }
 
   void _startHoldTimer(BuildContext context) {
+    if (_isEndingSession || _showEndAnimation) return;
+    if (_trackingState == TrackingState.stopped) return;
+    _holdTimer?.cancel();
     setState(() {
       _isHoldingEnd = true;
       _holdProgress = 0.0;
@@ -3786,15 +5720,80 @@ class _MapScreenState extends State<MapScreen>
 
   void _cancelHoldTimer() {
     _holdTimer?.cancel();
+    _holdTimer = null;
     setState(() {
       _isHoldingEnd = false;
       _holdProgress = 0.0;
     });
   }
 
+  Future<void> _refreshSyncStatus() async {
+    try {
+      final pending = await _pendingSyncDataSource.getPending();
+      if (!mounted) return;
+      setState(() {
+        _pendingSyncCount = pending.length;
+      });
+    } catch (e) {
+      print('[warn] Sync status refresh failed: $e');
+    }
+  }
+
+  void _disableFollowOnGesture() {
+    if (_trackingState != TrackingState.started) return;
+    if (!_followUser) return;
+    if (!mounted) {
+      _followUser = false;
+      return;
+    }
+    setState(() {
+      _followUser = false;
+    });
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    _activePointers.add(event.pointer);
+    if (_activePointers.length >= 2) {
+      _disableFollowOnGesture();
+    }
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    _activePointers.remove(event.pointer);
+  }
+
+  void _handlePointerCancel(PointerCancelEvent event) {
+    _activePointers.remove(event.pointer);
+  }
+
+  void _triggerBackgroundSync() {
+    if (_isSyncing) return;
+    if (mounted) {
+      setState(() {
+        _isSyncing = true;
+      });
+    } else {
+      _isSyncing = true;
+    }
+
+    _offlineSyncService
+        .syncPending()
+        .then((_) => _refreshSyncStatus())
+        .whenComplete(() {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
+        });
+      } else {
+        _isSyncing = false;
+      }
+    });
+  }
+
   void _handleStart(BuildContext context) {
     setState(() {
       _trackingState = TrackingState.started;
+      _followUser = true;
     });
     _buttonAnimController.forward();
     _startCountdown(context);
@@ -3852,20 +5851,27 @@ class _MapScreenState extends State<MapScreen>
   }
 
   void _handleEnd(BuildContext context) {
+    if (_isEndingSession || _showEndAnimation) return;
+    if (_trackingState == TrackingState.stopped) return;
     print('🛑 _handleEnd called - Starting end countdown');
+    _isEndingSession = true;
+    _holdTimer?.cancel();
+    _holdTimer = null;
     // Start end countdown animation
     setState(() {
       _showEndAnimation = true;
       _endCountdown = 3;
     });
 
-    Timer.periodic(const Duration(seconds: 1), (timer) {
+    _endTimer?.cancel();
+    _endTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_endCountdown > 0) {
         // Audio removed - file not available
         setState(() => _endCountdown--);
         print('⏱️ End countdown: $_endCountdown');
       } else {
         timer.cancel();
+        _endTimer = null;
         setState(() => _showEndAnimation = false);
         print('✅ End countdown complete - calling _completeEndSession');
         _completeEndSession(context);
@@ -3875,145 +5881,157 @@ class _MapScreenState extends State<MapScreen>
 
   Future<void> _completeEndSession(BuildContext context) async {
     print('🏁 _completeEndSession START');
-    // CRITICAL: Capture location state BEFORE stopping tracking!
-    final locationState = context.read<LocationBloc>().state;
-    print('📍 LocationState captured: ${locationState.runtimeType}');
-    final distance = locationState is LocationTracking
-        ? locationState.totalDistance / 1000
-        : 0.0;
-    print('📏 Distance: $distance km');
+    try {
+      // CRITICAL: Capture location state BEFORE stopping tracking!
+      final locationState = context.read<LocationBloc>().state;
+      print('📍 LocationState captured: ${locationState.runtimeType}');
+      final distance = locationState is LocationTracking
+          ? locationState.totalDistance / 1000
+          : 0.0;
+      print('📏 Distance: $distance km');
 
-    // Calculate actual tracking duration (excluding paused time)
-    final totalDuration = _trackingStartTime != null
-        ? DateTime.now().difference(_trackingStartTime!)
-        : Duration.zero;
-    final activeDuration = totalDuration - _pausedDuration;
+      // Calculate actual tracking duration (excluding paused time)
+      final totalDuration = _trackingStartTime != null
+          ? DateTime.now().difference(_trackingStartTime!)
+          : Duration.zero;
+      final activeDuration = totalDuration - _pausedDuration;
 
-    final sessionSteps = _steps - _sessionStartSteps;
-    final avgSpeed = activeDuration.inSeconds > 0
-        ? (distance / (activeDuration.inSeconds / 3600))
-        : 0.0;
+      final sessionSteps = _steps - _sessionStartSteps;
+      final avgSpeed = activeDuration.inSeconds > 0
+          ? (distance / (activeDuration.inSeconds / 3600))
+          : 0.0;
 
-    print('=== ENDING TRACKING ===');
-    print('Distance: $distance km');
-    print('Active Duration: $activeDuration');
-    print('Paused Duration: $_pausedDuration');
-    print('LocationState type BEFORE stop: ${locationState.runtimeType}');
+      print('=== ENDING TRACKING ===');
+      print('Distance: $distance km');
+      print('Active Duration: $activeDuration');
+      print('Paused Duration: $_pausedDuration');
+      print('LocationState type BEFORE stop: ${locationState.runtimeType}');
 
-    // Check if loop was completed (returned within 100m of start)
-    final bool loopCompleted = _distanceToStart < 100;
-    final int newTerritoryCount =
-        loopCompleted ? 1 : 0; // 1 territory per completed loop
-
-    print(
-        '🔄 Loop completed: $loopCompleted (distance to start: ${_distanceToStart.toStringAsFixed(1)}m)');
-
-    // If loop completed, create a territory with the actual route shape
-    if (loopCompleted &&
-        locationState is LocationTracking &&
-        locationState.routePoints.isNotEmpty) {
-      // Calculate center point of the route
-      double sumLat = 0;
-      double sumLng = 0;
-      for (final point in locationState.routePoints) {
-        sumLat += point.latitude;
-        sumLng += point.longitude;
-      }
-      final centerLat = sumLat / locationState.routePoints.length;
-      final centerLng = sumLng / locationState.routePoints.length;
-
-      // Generate hex ID for this territory (for uniqueness)
-      final hexId = TerritoryGridHelper.getHexId(centerLat, centerLng);
-      _capturedHexIds.clear();
-      _capturedHexIds.add(hexId);
-
-      // Store the actual route points for the territory shape
-      _territoryRoutePoints = locationState.routePoints
-          .map((p) => LatLng(p.latitude, p.longitude))
-          .toList();
+      // Check if loop was completed (returned within 100m of start)
+      final bool loopCompleted = _distanceToStart < 100;
+      final int newTerritoryCount =
+          loopCompleted ? 1 : 0; // 1 territory per completed loop
 
       print(
-          '🏆 Territory created: loop shape with ${_territoryRoutePoints.length} points');
-    }
+        '🔄 Loop completed: $loopCompleted (distance to start: ${_distanceToStart.toStringAsFixed(1)}m)',
+      );
 
-    // 1 point per 100 meters walked
-    final pointsEarned =
-        (distance * 10).round(); // distance in km, so * 10 = per 100m
+      // If loop completed, create a territory with the actual route shape
+      if (loopCompleted &&
+          locationState is LocationTracking &&
+          locationState.routePoints.isNotEmpty) {
+        // Calculate center point of the route
+        double sumLat = 0;
+        double sumLng = 0;
+        for (final point in locationState.routePoints) {
+          sumLat += point.latitude;
+          sumLng += point.longitude;
+        }
+        final centerLat = sumLat / locationState.routePoints.length;
+        final centerLng = sumLng / locationState.routePoints.length;
 
-    print('✅ Territories captured: $newTerritoryCount');
-    print('💰 Points earned: $pointsEarned');
-    print('🔢 _capturedHexIds.length = ${_capturedHexIds.length}');
+        // Generate hex ID for this territory (for uniqueness)
+        final hexId = TerritoryGridHelper.getHexId(centerLat, centerLng);
+        _capturedHexIds.clear();
+        _capturedHexIds.add(hexId);
 
-    // Capture route points for display BEFORE stopping
-    final routePoints = locationState is LocationTracking
-        ? locationState.routePoints
+        // Store the actual route points for the territory shape
+        _territoryRoutePoints = locationState.routePoints
             .map((p) => LatLng(p.latitude, p.longitude))
-            .toList()
-        : <LatLng>[];
+            .toList();
 
-    // Show captured area as single filled polygon
-    if (routePoints.length >= 3) {
-      _showCapturedArea(routePoints);
-    }
+        print(
+          '🏆 Territory created: loop shape with ${_territoryRoutePoints.length} points',
+        );
+      }
 
-    // Save activity to history BEFORE stopping location tracking and clearing state
-    print('💾 About to call _saveActivityToHistory...');
-    print('   - locationState: ${locationState.runtimeType}');
-    print('   - distance: $distance');
-    print('   - territoriesCount: $newTerritoryCount');
-    print('   - routePoints: ${routePoints.length}');
-    print('   - capturedHexIds: ${_capturedHexIds.length}');
-    await _saveActivityToHistory(
-      locationState: locationState,
-      distance: distance,
-      activeDuration: activeDuration,
-      avgSpeed: avgSpeed,
-      sessionSteps: sessionSteps,
-      territoriesCount: newTerritoryCount,
-      pointsEarned: pointsEarned,
-      routePoints: routePoints,
-    );
+      // 1 point per 100 meters walked
+      final pointsEarned =
+          (distance * 10).round(); // distance in km, so * 10 = per 100m
 
-    // NOW clear state and stop tracking AFTER save is complete
-    setState(() {
-      _trackingState = TrackingState.stopped;
-      _currentSpeed = 0.0;
-      _capturedHexIds.clear(); // Clear AFTER save
-      _lastDistanceUpdate = 0.0;
-      _trackingStartTime = null;
-      _sessionStartSteps = 0;
-      _startPointCircle = null;
-      _distanceToStart = double.infinity;
-      _advancedSteps = 0;
-      _motionType = MotionType.stationary;
-      _pausedDuration = Duration.zero;
-      _pauseStartTime = null;
-      _hasGivenCloseLoopFeedback = false;
-      _estimatedAreaSqMeters = 0.0;
-    });
+      print('✅ Territories captured: $newTerritoryCount');
+      print('💰 Points earned: $pointsEarned');
+      print('🔢 _capturedHexIds.length = ${_capturedHexIds.length}');
 
-    _buttonAnimController.reverse();
-    BackgroundTrackingService.stopTracking();
+      // Capture route points for display BEFORE stopping
+      final routePoints = locationState is LocationTracking
+          ? locationState.routePoints
+              .map((p) => LatLng(p.latitude, p.longitude))
+              .toList()
+          : <LatLng>[];
 
-    // Stop location tracking after save is complete
-    context.read<LocationBloc>().add(StopLocationTracking());
-    _motionDetection.stopDetection();
+      // Show captured area as single filled polygon
+      if (routePoints.length >= 3) {
+        _showCapturedArea(routePoints);
+      }
 
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => WorkoutSummaryScreen(
-          distanceKm: distance,
-          territoriesCaptured: newTerritoryCount,
-          pointsEarned: pointsEarned,
-          duration: activeDuration,
-          avgSpeed: avgSpeed,
-          steps: sessionSteps,
-          routePoints: routePoints,
-          territories: _polygons.isNotEmpty ? _polygons : null,
-          workoutDate: _trackingStartTime,
+      // Save activity to history BEFORE stopping location tracking and clearing state
+      print('💾 About to call _saveActivityToHistory...');
+      print('   - locationState: ${locationState.runtimeType}');
+      print('   - distance: $distance');
+      print('   - territoriesCount: $newTerritoryCount');
+      print('   - routePoints: ${routePoints.length}');
+      print('   - capturedHexIds: ${_capturedHexIds.length}');
+      await _saveActivityToHistory(
+        locationState: locationState,
+        distance: distance,
+        activeDuration: activeDuration,
+        avgSpeed: avgSpeed,
+        sessionSteps: sessionSteps,
+        territoriesCount: newTerritoryCount,
+        pointsEarned: pointsEarned,
+        routePoints: routePoints,
+      );
+
+      // NOW clear state and stop tracking AFTER save is complete
+      setState(() {
+        _trackingState = TrackingState.stopped;
+        _currentSpeed = 0.0;
+        _capturedHexIds.clear(); // Clear AFTER save
+        _lastDistanceUpdate = 0.0;
+        _trackingStartTime = null;
+        _sessionStartSteps = 0;
+        _startPointCircle = null;
+        _distanceToStart = double.infinity;
+        _advancedSteps = 0;
+        _motionType = MotionType.stationary;
+        _pausedDuration = Duration.zero;
+        _pauseStartTime = null;
+        _hasGivenCloseLoopFeedback = false;
+        _estimatedAreaSqMeters = 0.0;
+      });
+
+      _buttonAnimController.reverse();
+      BackgroundTrackingService.stopTracking();
+
+      // Stop location tracking after save is complete
+      context.read<LocationBloc>().add(StopLocationTracking());
+      _motionDetection.stopDetection();
+
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => WorkoutSummaryScreen(
+            distanceKm: distance,
+            territoriesCaptured: newTerritoryCount,
+            pointsEarned: pointsEarned,
+            duration: activeDuration,
+            avgSpeed: avgSpeed,
+            steps: sessionSteps,
+            routePoints: routePoints,
+            territories: _polygons.isNotEmpty ? _polygons : null,
+            workoutDate: _trackingStartTime,
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isEndingSession = false;
+        });
+      } else {
+        _isEndingSession = false;
+      }
+    }
   }
 
   // Picture-in-Picture Mini View
@@ -4044,7 +6062,8 @@ class _MapScreenState extends State<MapScreen>
               ),
             );
         print(
-            '${_useSimulation ? "🎮" : "📍"} LocationBloc: StartLocationTracking (${_useSimulation ? "SIMULATION" : "REAL GPS"} MODE, ${_batterySaverEnabled ? "BATTERY SAVER" : "FULL ACCURACY"})');
+          '${_useSimulation ? "🎮" : "📍"} LocationBloc: StartLocationTracking (${_useSimulation ? "SIMULATION" : "REAL GPS"} MODE, ${_batterySaverEnabled ? "BATTERY SAVER" : "FULL ACCURACY"})',
+        );
 
         // Start ADVANCED motion detection
         _motionDetection.startDetection();
@@ -4066,7 +6085,8 @@ class _MapScreenState extends State<MapScreen>
         _recordSelectedRouteUsage();
 
         print(
-            '🚀 ADVANCED TRACKING STARTED - Real-time GPS + Motion Detection Active!');
+          '🚀 ADVANCED TRACKING STARTED - Real-time GPS + Motion Detection Active!',
+        );
         print('🔊 Waiting for location updates...');
       }
     });
@@ -4135,7 +6155,8 @@ class _MapScreenState extends State<MapScreen>
     if (locationState is! LocationTracking ||
         locationState.routePoints.isEmpty) {
       print(
-          '⚠️ No route data to save - locationState is not LocationTracking or route is empty');
+        '⚠️ No route data to save - locationState is not LocationTracking or route is empty',
+      );
       print('   locationState.runtimeType = ${locationState.runtimeType}');
       if (locationState is LocationTracking) {
         print('   routePoints.length = ${locationState.routePoints.length}');
@@ -4168,97 +6189,76 @@ class _MapScreenState extends State<MapScreen>
         routeMapSnapshot: mapSnapshot,
       );
 
-      // REMOVED: Local storage save - only save to backend
-      // Save activity to backend API only
-      try {
-        final trackingApiService = di.getIt<TrackingApiService>();
-        print('📤 Saving activity to backend...');
-        print('   Distance: ${distance * 1000}m');
-        print('   Duration: $activeDuration');
-        print('   Steps: $sessionSteps');
-        print('   Territories: $territoriesCount');
-        print('   Points: $pointsEarned');
-        print('   Route points: ${routePointsToSave.length}');
-        print('   Captured hex IDs: ${_capturedHexIds.length}');
+      // Always save locally first (offline-safe)
+      await _activityLocalDataSource.saveActivity(activity);
 
-        final activityResult = await trackingApiService.saveActivity(
-          routePoints: routePointsToSave
-              .map((p) => {
-                    'latitude': p.latitude,
-                    'longitude': p.longitude,
-                    'timestamp': p.timestamp.toIso8601String(),
-                  })
-              .toList(),
-          distanceMeters: distance * 1000,
-          duration:
-              '${activeDuration.inSeconds} seconds', // PostgreSQL interval format
-          startTime: _trackingStartTime ?? DateTime.now(),
-          endTime: DateTime.now(),
-          caloriesBurned: (distance * 65).round(),
-          averageSpeed: avgSpeed,
-          steps: sessionSteps,
-          territoriesCaptured: territoriesCount,
-          pointsEarned: pointsEarned,
-          capturedHexIds:
-              _capturedHexIds.isNotEmpty ? _capturedHexIds.toList() : null,
-        );
-        print('✅ Activity saved to backend! Response: $activityResult');
+      final activityPayload = {
+        'routePoints': routePointsToSave
+            .map(
+              (p) => {
+                'latitude': p.latitude,
+                'longitude': p.longitude,
+                'timestamp': p.timestamp.toIso8601String(),
+              },
+            )
+            .toList(),
+        'distanceMeters': distance * 1000,
+        'duration': '${activeDuration.inSeconds} seconds',
+        'startTime': (_trackingStartTime ?? DateTime.now()).toIso8601String(),
+        'endTime': DateTime.now().toIso8601String(),
+        'caloriesBurned': (distance * 65).round(),
+        'averageSpeed': avgSpeed,
+        'steps': sessionSteps,
+        'territoriesCaptured': territoriesCount,
+        'pointsEarned': pointsEarned,
+        if (_capturedHexIds.isNotEmpty)
+          'capturedHexIds': _capturedHexIds.toList(),
+        if (mapSnapshot != null) 'routeMapSnapshot': mapSnapshot,
+      };
 
-        // Save captured territories to backend with proper hex center coordinates
-        if (_capturedHexIds.isNotEmpty) {
-          print(
-              '📤 Saving ${_capturedHexIds.length} territories to backend...');
-          final territoryApiService = di.getIt<TerritoryApiService>();
+      // Queue first (offline-safe), then sync in background
+      await _offlineSyncService.queueActivityPayload(activityPayload);
+      print('[sync] Activity queued for background sync');
+      await _refreshSyncStatus();
 
-          // FIXED: Decode each hex ID to get its actual center coordinates
-          final hexCoordinates = <Map<String, double>>[];
-          for (final hexId in _capturedHexIds) {
-            // Use TerritoryGridHelper to get the true center of each hex
-            final (centerLat, centerLng) =
-                TerritoryGridHelper.getHexCenter(hexId);
-            hexCoordinates.add({
-              'lat': centerLat,
-              'lng': centerLng,
-            });
-          }
-
-          print('📍 Decoded ${hexCoordinates.length} hex center coordinates');
-          print('   First 3 hexIds: ${_capturedHexIds.take(3).toList()}');
-          print('   First 3 coords: ${hexCoordinates.take(3).toList()}');
-          print('   routePoints count: ${_territoryRoutePoints.length}');
-
-          // Convert route points to API format
-          final routePointsArray = _territoryRoutePoints.isNotEmpty
-              ? [
-                  _territoryRoutePoints
-                      .map((p) => {'lat': p.latitude, 'lng': p.longitude})
-                      .toList()
-                ]
-              : null;
-
-          final result = await territoryApiService.captureTerritories(
-            hexIds: _capturedHexIds.toList(),
-            coordinates: hexCoordinates,
-            routePoints: routePointsArray,
+      // Queue captured territories for background sync
+      if (_capturedHexIds.isNotEmpty) {
+        // FIXED: Decode each hex ID to get its actual center coordinates
+        final hexCoordinates = <Map<String, double>>[];
+        for (final hexId in _capturedHexIds) {
+          // Use TerritoryGridHelper to get the true center of each hex
+          final (centerLat, centerLng) = TerritoryGridHelper.getHexCenter(
+            hexId,
           );
-          print('✅ Backend territory response: $result');
-          print(
-              '✅ ${_capturedHexIds.length} territories saved to backend with ownership!');
-
-          // Reload game data and territories to reflect new captures
-          context.read<GameBloc>().add(LoadGameData());
-          _loadTerritoriesFromBackend();
-        } else {
-          print('ℹ️ No territories captured during this activity');
+          hexCoordinates.add({'lat': centerLat, 'lng': centerLng});
         }
-      } catch (e, stackTrace) {
-        print('⚠️ Error saving to backend: $e');
-        print('Stack trace: $stackTrace');
-        throw Exception('Failed to save activity and territories: $e');
+
+        // Convert route points to API format
+        final routePointsArray = _territoryRoutePoints.isNotEmpty
+            ? [
+                _territoryRoutePoints
+                    .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+                    .toList(),
+              ]
+            : null;
+
+        final territoryPayload = {
+          'hexIds': _capturedHexIds.toList(),
+          'coordinates': hexCoordinates,
+          if (routePointsArray != null) 'routePoints': routePointsArray,
+        };
+        await _offlineSyncService.queueTerritoryPayload(territoryPayload);
+        print('[sync] Territories queued for background sync');
+        await _refreshSyncStatus();
+      } else {
+        print('[info] No territories captured during this activity');
       }
+
+      // Kick off background sync without blocking the UI
+      _triggerBackgroundSync();
     } catch (e, stackTrace) {
-      print('❌ Error saving activity: $e');
-      print('❌ Stack trace: $stackTrace');
+      print('[error] Error saving activity: $e');
+      print('[error] Stack trace: $stackTrace');
     }
   }
 
@@ -4299,7 +6299,7 @@ class _MapScreenState extends State<MapScreen>
             // Map view
             GoogleMap(
               initialCameraPosition: cameraPosition,
-              myLocationEnabled: true,
+              myLocationEnabled: false,
               myLocationButtonEnabled: false,
               zoomControlsEnabled: false,
               mapToolbarEnabled: false,
@@ -4310,6 +6310,9 @@ class _MapScreenState extends State<MapScreen>
               tiltGesturesEnabled: false,
               polygons: _polygons,
               polylines: _polylines,
+              markers: _currentUserMarker != null
+                  ? {_currentUserMarker!}
+                  : const <Marker>{},
               mapType: _currentMapType,
               onMapCreated: (GoogleMapController controller) {
                 // Don't store controller in PiP mode to avoid conflicts
@@ -4322,8 +6325,10 @@ class _MapScreenState extends State<MapScreen>
                 top: 8,
                 left: 8,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.black.withOpacity(0.7),
                     borderRadius: BorderRadius.circular(16),
@@ -4357,7 +6362,36 @@ class _MapScreenState extends State<MapScreen>
       },
     );
   }
+}
 
+class _RouteProjectionResult {
+  final LatLng projectedPoint;
+  final int segmentIndex;
+  final double distanceFromStartMeters;
+  final double distanceToRouteMeters;
+  final double totalMeters;
+
+  const _RouteProjectionResult({
+    required this.projectedPoint,
+    required this.segmentIndex,
+    required this.distanceFromStartMeters,
+    required this.distanceToRouteMeters,
+    required this.totalMeters,
+  });
+}
+
+class _SegmentProjection {
+  final LatLng projectedPoint;
+  final double t;
+  final double distanceMeters;
+  final double segmentLengthMeters;
+
+  const _SegmentProjection({
+    required this.projectedPoint,
+    required this.t,
+    required this.distanceMeters,
+    required this.segmentLengthMeters,
+  });
 }
 
 class _HeatCell {
@@ -4386,10 +6420,12 @@ class SavedRoute {
   factory SavedRoute.fromMap(Map<String, dynamic> map) {
     final rawPoints = map['routePoints'] as List? ?? [];
     final points = rawPoints
-        .map((p) => LatLng(
-              (p['lat'] as num).toDouble(),
-              (p['lng'] as num).toDouble(),
-            ))
+        .map(
+          (p) => LatLng(
+            (p['lat'] as num).toDouble(),
+            (p['lng'] as num).toDouble(),
+          ),
+        )
         .toList();
 
     return SavedRoute(

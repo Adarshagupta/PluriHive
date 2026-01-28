@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 import '../../../../core/services/leaderboard_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/widgets/skeleton.dart';
@@ -15,6 +17,10 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
     with SingleTickerProviderStateMixin {
   late final LeaderboardApiService _apiService;
   late TabController _tabController;
+  late final SharedPreferences _prefs;
+  static const String _leaderboardCacheKey = 'leaderboard_cache_v1';
+  bool _hasCachedLeaderboard = false;
+  bool _isRefreshing = false;
 
   List<LeaderboardUser> _users = [];
   bool _isLoading = true;
@@ -25,6 +31,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
   void initState() {
     super.initState();
     _apiService = di.getIt<LeaderboardApiService>();
+    _prefs = di.getIt<SharedPreferences>();
     _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(_onTabChanged);
     _loadData();
@@ -44,30 +51,61 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
   }
 
   Future<void> _loadData() async {
-    if (!mounted) return;
+    await _loadLeaderboardFromCache();
+    _refreshLeaderboardFromBackend();
+  }
 
-    setState(() {
-      _isLoading = true;
-      _hasError = false;
-    });
+  Future<void> _loadLeaderboardFromCache() async {
+    try {
+      final cached = _prefs.getString(_leaderboardCacheKey);
+      if (cached == null) {
+        if (mounted) {
+          setState(() {
+            _isLoading = true;
+            _hasError = false;
+          });
+        }
+        return;
+      }
+      final decoded = jsonDecode(cached) as List<dynamic>;
+      final users = decoded
+          .map((u) => LeaderboardUser.fromMap(Map<String, dynamic>.from(u)))
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _users = users;
+        _isLoading = false;
+        _hasError = false;
+      });
+      _hasCachedLeaderboard = true;
+    } catch (e) {
+      print('Error reading leaderboard cache: $e');
+    }
+  }
 
+  Future<void> _refreshLeaderboardFromBackend() async {
+    if (_isRefreshing) return;
+    _isRefreshing = true;
     try {
       final data = await _apiService.getGlobalLeaderboard(limit: 100);
       final users = data.map((u) => LeaderboardUser.fromMap(u)).toList();
-
-      if (mounted) {
-        setState(() {
-          _users = users;
-          _isLoading = false;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _users = users;
+        _isLoading = false;
+        _hasError = false;
+      });
+      await _prefs.setString(_leaderboardCacheKey, jsonEncode(data));
+      _hasCachedLeaderboard = true;
     } catch (e) {
-      if (mounted) {
+      if (mounted && !_hasCachedLeaderboard) {
         setState(() {
           _isLoading = false;
           _hasError = true;
         });
       }
+    } finally {
+      _isRefreshing = false;
     }
   }
 

@@ -23,7 +23,7 @@ export class TerritoryController {
 
   @Get('all')
   async getAllTerritories(@Query('limit') limit?: number) {
-    const parsedLimit = limit ? Math.min(Number(limit), 500) : 500;
+    const parsedLimit = limit ? Math.min(Number(limit), 5000) : 5000;
     return this.territoryService.getAllTerritories(parsedLimit);
   }
 

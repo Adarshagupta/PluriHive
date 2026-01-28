@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ApiConfig {
   // Backend URLs
   static const String localUrl = 'http://10.1.80.51:3000';
-  static const String productionUrl = 'https://plurihubb.onrender.com';
+  static const String productionUrl = 'https://plurihub.sylicaai.com';
 
   static const String _backendPrefKey = 'selected_backend_url';
 
@@ -13,13 +13,15 @@ class ApiConfig {
   // Initialize backend URL from saved preference
   static Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
-    baseUrl = prefs.getString(_backendPrefKey) ?? localUrl; // Default to local for testing
+    baseUrl = prefs.getString(_backendPrefKey) ??
+        localUrl; // Default to local for testing
   }
 
   // Get current backend URL
   static Future<String> getBaseUrl() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_backendPrefKey) ?? localUrl; // Default to local for testing
+    return prefs.getString(_backendPrefKey) ??
+        localUrl; // Default to local for testing
   }
 
   // Set backend URL and update runtime value

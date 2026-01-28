@@ -14,9 +14,18 @@ class AppTheme {
   static const Color errorColor = Color(0xFFEF4444);
   static const Color successColor = Color(0xFF7FE87A);
   static const Color warningColor = Color(0xFFFBBF24);
+
+  static const PageTransitionsTheme _pageTransitionsTheme =
+      PageTransitionsTheme(
+    builders: {
+      TargetPlatform.android: _FadeSlidePageTransitionsBuilder(),
+      TargetPlatform.iOS: _FadeSlidePageTransitionsBuilder(),
+    },
+  );
   
   static ThemeData lightTheme = ThemeData(
     useMaterial3: true,
+    pageTransitionsTheme: _pageTransitionsTheme,
     colorScheme: ColorScheme.fromSeed(
       seedColor: primaryColor,
       brightness: Brightness.light,
@@ -80,6 +89,7 @@ class AppTheme {
   
   static ThemeData darkTheme = ThemeData(
     useMaterial3: true,
+    pageTransitionsTheme: _pageTransitionsTheme,
     colorScheme: ColorScheme.fromSeed(
       seedColor: primaryColor,
       brightness: Brightness.dark,
@@ -106,4 +116,38 @@ class AppTheme {
       ),
     ),
   );
+}
+
+class _FadeSlidePageTransitionsBuilder extends PageTransitionsBuilder {
+  const _FadeSlidePageTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    if (route.isFirst) {
+      return child;
+    }
+
+    final curvedAnimation = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+
+    return SlideTransition(
+      position: Tween<Offset>(
+        begin: const Offset(0.06, 0.0),
+        end: Offset.zero,
+      ).animate(curvedAnimation),
+      child: FadeTransition(
+        opacity: curvedAnimation,
+        child: child,
+      ),
+    );
+  }
 }

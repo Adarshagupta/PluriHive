@@ -8,6 +8,7 @@ class WebSocketService {
 
   IO.Socket? _socket;
   String? _userId;
+  final List<Function(dynamic)> _pendingUserStatsListeners = [];
 
   // Initialize and connect
   void connect(String userId, {String? token}) {
@@ -39,6 +40,10 @@ class WebSocketService {
       print('✅ WebSocket connected');
       // Announce user connection
       _socket!.emit('user:connect', {'userId': userId});
+      _socket!.off('user:stats:update');
+      for (final listener in _pendingUserStatsListeners) {
+        _socket!.on('user:stats:update', listener);
+      }
     });
 
     _socket!.onDisconnect((_) {
@@ -109,6 +114,10 @@ class WebSocketService {
     _socket?.on('user:location', callback);
   }
 
+  void offUserLocation(Function(dynamic) callback) {
+    _socket?.off('user:location', callback);
+  }
+
   // Listen for leaderboard update
   void onLeaderboardUpdate(Function(dynamic) callback) {
     _socket?.on('leaderboard:update', callback);
@@ -119,12 +128,28 @@ class WebSocketService {
     _socket?.on('achievement:unlocked', callback);
   }
 
+  // Listen for user stats update
+  void onUserStatsUpdate(Function(dynamic) callback) {
+    if (_socket != null) {
+      _socket!.on('user:stats:update', callback);
+    } else {
+      _pendingUserStatsListeners.add(callback);
+    }
+  }
+
+  // Remove user stats update listener
+  void offUserStatsUpdate(Function(dynamic) callback) {
+    _socket?.off('user:stats:update', callback);
+    _pendingUserStatsListeners.remove(callback);
+  }
+
   // Remove all listeners
   void removeAllListeners() {
     _socket?.off('territory:contested');
     _socket?.off('user:location');
     _socket?.off('leaderboard:update');
     _socket?.off('achievement:unlocked');
+    _socket?.off('user:stats:update');
   }
 
   bool get isConnected => _socket != null && _socket!.connected;

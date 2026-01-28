@@ -1,0 +1,77 @@
+import '../../features/tracking/data/datasources/pending_sync_data_source.dart';
+import 'auth_api_service.dart';
+import 'tracking_api_service.dart';
+import 'territory_api_service.dart';
+
+class OfflineSyncService {
+  final TrackingApiService _trackingApiService;
+  final TerritoryApiService _territoryApiService;
+  final PendingSyncDataSource _pendingSyncDataSource;
+  final AuthApiService _authApiService;
+
+  bool _isSyncing = false;
+
+  OfflineSyncService({
+    required TrackingApiService trackingApiService,
+    required TerritoryApiService territoryApiService,
+    required PendingSyncDataSource pendingSyncDataSource,
+    required AuthApiService authApiService,
+  })  : _trackingApiService = trackingApiService,
+        _territoryApiService = territoryApiService,
+        _pendingSyncDataSource = pendingSyncDataSource,
+        _authApiService = authApiService;
+
+  Future<void> syncPendingUploads() async {
+    if (_isSyncing) return;
+    _isSyncing = true;
+
+    try {
+      final token = await _authApiService.getToken();
+      if (token == null) return;
+
+      final pending = await _pendingSyncDataSource.getPendingSessions();
+      for (final session in pending) {
+        await _syncSession(session);
+      }
+    } finally {
+      _isSyncing = false;
+    }
+  }
+
+  Future<void> _syncSession(PendingSessionUpload session) async {
+    var current = session;
+
+    if (!current.activityUploaded) {
+      try {
+        await _trackingApiService.saveActivityPayload(current.activityPayload);
+        current = current.copyWith(activityUploaded: true, lastError: null);
+        await _pendingSyncDataSource.upsertSession(current);
+      } catch (e) {
+        await _pendingSyncDataSource.upsertSession(
+          current.copyWith(
+            attempts: current.attempts + 1,
+            lastError: e.toString(),
+          ),
+        );
+        return;
+      }
+    }
+
+    if (current.territoryPayload != null) {
+      try {
+        await _territoryApiService
+            .captureTerritoriesPayload(current.territoryPayload!);
+        await _pendingSyncDataSource.deleteSession(current.id);
+      } catch (e) {
+        await _pendingSyncDataSource.upsertSession(
+          current.copyWith(
+            attempts: current.attempts + 1,
+            lastError: e.toString(),
+          ),
+        );
+      }
+    } else {
+      await _pendingSyncDataSource.deleteSession(current.id);
+    }
+  }
+}

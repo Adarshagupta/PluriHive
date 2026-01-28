@@ -5,14 +5,17 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../core/widgets/patterned_background.dart';
 import '../../../../core/widgets/skeleton.dart';
 import '../../../../core/services/google_fit_service.dart';
+import '../../../../core/services/websocket_service.dart';
 import 'package:health/health.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../tracking/presentation/bloc/location_bloc.dart';
 import '../../../tracking/domain/entities/activity.dart';
+import '../../../tracking/data/datasources/activity_local_data_source.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import 'dart:async';
@@ -30,23 +33,49 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   GoogleMapController? _mapController;
   late AnimationController _animController;
   late TrackingApiService _trackingApiService;
+  final ActivityLocalDataSource _activityLocalDataSource =
+      ActivityLocalDataSourceImpl();
   late GoogleFitService _googleFitService;
+  late WebSocketService _webSocketService;
+  late final void Function(dynamic) _statsUpdateListener;
+  late SharedPreferences _prefs;
   Map<String, dynamic>? _weatherData;
   bool _isNight = false;
   String _greeting = 'Good morning';
   List<Activity> _recentActivities = [];
   bool _isLoadingActivities = false;
+  bool _hasLocalRecentActivities = false;
+  bool _isRefreshingRecentActivities = false;
   bool _isLoadingHealth = false;
   bool _healthConnected = false;
   HealthConnectSdkStatus? _healthConnectStatus;
   Map<String, dynamic>? _healthSummary;
   List<HeartRateSample> _heartRateSamples = [];
+  late List<String> _sectionOrder;
+
+  static const String _homeSectionOrderKey = 'home_section_order';
+  static const List<String> _defaultSectionOrder = [
+    'progress',
+    'miniStats',
+    'weeklyGoal',
+    'health',
+    'territory',
+    'recentActivity',
+  ];
 
   @override
   void initState() {
     super.initState();
     _trackingApiService = di.getIt<TrackingApiService>();
     _googleFitService = di.getIt<GoogleFitService>();
+    _webSocketService = di.getIt<WebSocketService>();
+    _prefs = di.getIt<SharedPreferences>();
+    _sectionOrder = _loadSectionOrder();
+    _statsUpdateListener = (_) {
+      if (!mounted) return;
+      _loadRecentActivities();
+    };
+    _webSocketService.onUserStatsUpdate(_statsUpdateListener);
     _animController = AnimationController(
       duration: Duration(milliseconds: 800),
       vsync: this,
@@ -54,7 +83,6 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     _animController.forward();
     // Load game data when home tab initializes
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<GameBloc>().add(LoadGameData());
       _fetchWeather();
       _loadRecentActivities();
       _loadHealthSummary();
@@ -65,6 +93,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   void dispose() {
     _animController.dispose();
     _mapController?.dispose();
+    _webSocketService.offUserStatsUpdate(_statsUpdateListener);
     super.dispose();
   }
 
@@ -137,8 +166,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
       if (status != null && status != HealthConnectSdkStatus.sdkAvailable) {
         if (!mounted) return;
-        final needsUpdate =
-            status == HealthConnectSdkStatus.sdkUnavailableProviderUpdateRequired;
+        final needsUpdate = status ==
+            HealthConnectSdkStatus.sdkUnavailableProviderUpdateRequired;
         final message = needsUpdate
             ? 'Health Connect needs an update to work. Update it to continue.'
             : 'Health Connect is not installed. Install it to continue.';
@@ -195,19 +224,210 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   Future<void> _loadRecentActivities() async {
-    setState(() => _isLoadingActivities = true);
+    await _loadRecentActivitiesFromLocal();
+    _refreshRecentActivitiesFromBackend();
+  }
+
+  Future<void> _loadRecentActivitiesFromLocal() async {
+    try {
+      final localActivities = await _activityLocalDataSource.getAllActivities();
+      localActivities.sort((a, b) => b.startTime.compareTo(a.startTime));
+      if (!mounted) return;
+      setState(() {
+        _recentActivities = localActivities.take(3).toList();
+        _isLoadingActivities = _recentActivities.isEmpty;
+      });
+      _hasLocalRecentActivities = _recentActivities.isNotEmpty;
+    } catch (e) {
+      print('Error loading local activities: $e');
+      if (mounted) {
+        setState(() => _isLoadingActivities = true);
+      }
+    }
+  }
+
+  Future<void> _refreshRecentActivitiesFromBackend() async {
+    if (_isRefreshingRecentActivities) return;
+    _isRefreshingRecentActivities = true;
     try {
       final activitiesData =
           await _trackingApiService.getUserActivities(limit: 3);
       final activities =
           activitiesData.map((data) => Activity.fromJson(data)).toList();
-      setState(() {
-        _recentActivities = activities;
-        _isLoadingActivities = false;
-      });
+      for (final activity in activities) {
+        await _activityLocalDataSource.saveActivity(activity);
+      }
+      if (!mounted) return;
+      if (activities.isNotEmpty || !_hasLocalRecentActivities) {
+        setState(() {
+          _recentActivities = activities;
+          _isLoadingActivities = false;
+        });
+      } else {
+        setState(() => _isLoadingActivities = false);
+      }
     } catch (e) {
       print('Error loading recent activities: $e');
-      setState(() => _isLoadingActivities = false);
+      if (mounted && !_hasLocalRecentActivities) {
+        setState(() => _isLoadingActivities = false);
+      }
+    } finally {
+      _isRefreshingRecentActivities = false;
+    }
+  }
+
+  List<String> _loadSectionOrder() {
+    final stored = _prefs.getStringList(_homeSectionOrderKey);
+    if (stored == null || stored.isEmpty) {
+      return List<String>.from(_defaultSectionOrder);
+    }
+
+    final seen = <String>{};
+    final valid = <String>[];
+    for (final id in stored) {
+      if (_defaultSectionOrder.contains(id) && seen.add(id)) {
+        valid.add(id);
+      }
+    }
+
+    for (final id in _defaultSectionOrder) {
+      if (!valid.contains(id)) {
+        valid.add(id);
+      }
+    }
+
+    return valid;
+  }
+
+  Future<void> _saveSectionOrder() async {
+    await _prefs.setStringList(_homeSectionOrderKey, _sectionOrder);
+  }
+
+  void _onReorder(int oldIndex, int newIndex) {
+    if (oldIndex == 0) return;
+    if (newIndex == 0) newIndex = 1;
+
+    final adjustedOldIndex = oldIndex - 1;
+    var adjustedNewIndex = newIndex - 1;
+    if (newIndex > oldIndex) {
+      adjustedNewIndex -= 1;
+    }
+
+    setState(() {
+      final item = _sectionOrder.removeAt(adjustedOldIndex);
+      _sectionOrder.insert(adjustedNewIndex, item);
+    });
+
+    _saveSectionOrder();
+  }
+
+  double _sectionSpacing(String id) {
+    if (id == 'recentActivity') {
+      return 40;
+    }
+    return 24;
+  }
+
+  Widget _buildHeaderItem() {
+    return Column(
+      key: const ValueKey('home_header'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header with gradient background
+        Stack(
+          children: [
+            // Weather gradient overlay
+            Container(
+              height: 140,
+              decoration: BoxDecoration(
+                gradient: _getWeatherGradient(),
+              ),
+            ),
+            // Header content on top of gradient
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 60, 24, 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: BlocBuilder<AuthBloc, AuthState>(
+                          builder: (context, authState) {
+                            final userName = authState is Authenticated
+                                ? (authState.user.name.isNotEmpty
+                                    ? authState.user.name
+                                    : 'Runner')
+                                : 'Runner';
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '$_greeting,',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w500,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                                Text(
+                                  userName,
+                                  style: TextStyle(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.black,
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  Widget _buildSectionItem(String id, int listIndex) {
+    return ReorderableDelayedDragStartListener(
+      key: ValueKey('section_$id'),
+      index: listIndex,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 24,
+          right: 24,
+          bottom: _sectionSpacing(id),
+        ),
+        child: _buildSectionContent(id),
+      ),
+    );
+  }
+
+  Widget _buildSectionContent(String id) {
+    switch (id) {
+      case 'progress':
+        return _buildProgressSection();
+      case 'miniStats':
+        return _buildMiniStatsSection();
+      case 'weeklyGoal':
+        return _buildWeeklyGoalSection();
+      case 'health':
+        return _buildHealthConnectCard();
+      case 'territory':
+        return _buildTerritoryStatsSection();
+      case 'recentActivity':
+        return _buildRecentActivitySection();
+      default:
+        return const SizedBox.shrink();
     }
   }
 
@@ -218,705 +438,609 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       body: PatternedBackground(
         child: RefreshIndicator(
           onRefresh: _refreshData,
-          child: SingleChildScrollView(
-            physics: AlwaysScrollableScrollPhysics(),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Header with gradient background
-                Stack(
-                  children: [
-                    // Weather gradient overlay
-                    Container(
-                      height: 140,
-                      decoration: BoxDecoration(
-                        gradient: _getWeatherGradient(),
-                      ),
-                    ),
-                    // Header content on top of gradient
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(24, 60, 24, 20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: BlocBuilder<AuthBloc, AuthState>(
-                                  builder: (context, authState) {
-                                    final userName = authState is Authenticated
-                                        ? (authState.user.name.isNotEmpty
-                                            ? authState.user.name
-                                            : 'Runner')
-                                        : 'Runner';
-                                    return Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          '$_greeting,',
-                                          style: TextStyle(
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.w500,
-                                            color: Colors.black87,
-                                          ),
-                                        ),
-                                        Text(
-                                          userName,
-                                          style: TextStyle(
-                                            fontSize: 24,
-                                            fontWeight: FontWeight.w800,
-                                            color: Colors.black,
-                                          ),
-                                        ),
-                                      ],
-                                    );
-                                  },
-                                ),
+          child: ReorderableListView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            onReorder: _onReorder,
+            itemCount: _sectionOrder.length + 1,
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return _buildHeaderItem();
+              }
+              final sectionId = _sectionOrder[index - 1];
+              return _buildSectionItem(sectionId, index);
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProgressSection() {
+    return BlocBuilder<GameBloc, GameState>(
+      builder: (context, state) {
+        if (state is! GameLoaded) {
+          return _buildProgressSkeleton();
+        }
+
+        // Use the progress calculation from UserStats
+        final stats = state.stats;
+        final progress = stats.progressToNextLevel;
+        final currentLevel = stats.level;
+        final xpForNextLevel = stats.nextLevelXP;
+        final currentXP = stats.totalPoints % xpForNextLevel;
+
+        print(
+            '📊 Progress Debug: Level=$currentLevel, TotalPoints=${stats.totalPoints}, CurrentXP=$currentXP, NextLevelXP=$xpForNextLevel, Progress=$progress (${(progress * 100).toInt()}%)');
+
+        // Calculate points progress for the circular indicator
+        final pointsProgress = xpForNextLevel > 0
+            ? (stats.totalPoints / xpForNextLevel).clamp(0.0, 1.0)
+            : 0.0;
+
+        final now = DateTime.now();
+        final dateStr = '${now.day} ${_getMonthName(now.month)}';
+
+        return Container(
+          padding: EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Color(0xFFB8E6E6),
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.08),
+                blurRadius: 20,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
                               ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-
-                SizedBox(height: 16),
-
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Your Progress Card
-                      BlocBuilder<GameBloc, GameState>(
-                        builder: (context, state) {
-                          if (state is! GameLoaded) {
-                            return _buildProgressSkeleton();
-                          }
-
-                          // Use the progress calculation from UserStats
-                          final stats = state.stats;
-                          final progress = stats.progressToNextLevel;
-                          final currentLevel = stats.level;
-                          final xpForNextLevel = stats.nextLevelXP;
-                          final currentXP = stats.totalPoints % xpForNextLevel;
-
-                          print(
-                              '📊 Progress Debug: Level=$currentLevel, TotalPoints=${stats.totalPoints}, CurrentXP=$currentXP, NextLevelXP=$xpForNextLevel, Progress=$progress (${(progress * 100).toInt()}%)');
-
-                          // Calculate points progress for the circular indicator
-                          final pointsProgress = xpForNextLevel > 0
-                              ? (stats.totalPoints / xpForNextLevel)
-                                  .clamp(0.0, 1.0)
-                              : 0.0;
-
-                          final now = DateTime.now();
-                          final dateStr =
-                              '${now.day} ${_getMonthName(now.month)}';
-
-                          return Container(
-                            padding: EdgeInsets.all(24),
-                            decoration: BoxDecoration(
-                              color: Color(0xFFB8E6E6),
-                              borderRadius: BorderRadius.circular(24),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.08),
-                                  blurRadius: 20,
-                                  offset: Offset(0, 4),
-                                ),
-                              ],
-                            ),
-                            child: Column(
-                              children: [
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              Container(
-                                                padding: EdgeInsets.all(8),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.white,
-                                                  borderRadius:
-                                                      BorderRadius.circular(12),
-                                                ),
-                                                child: Icon(
-                                                  Icons.trending_up,
-                                                  size: 20,
-                                                  color: Colors.black87,
-                                                ),
-                                              ),
-                                              SizedBox(width: 12),
-                                              Flexible(
-                                                child: Text(
-                                                  'Your Progress',
-                                                  style: TextStyle(
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.w600,
-                                                    color: Colors.black87,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          SizedBox(height: 16),
-                                          Text(
-                                            '${(progress * 100).toInt()}%',
-                                            style: TextStyle(
-                                              fontSize: 56,
-                                              fontWeight: FontWeight.w800,
-                                              color: Colors.black87,
-                                              height: 1,
-                                            ),
-                                          ),
-                                          SizedBox(height: 8),
-                                          Row(
-                                            children: [
-                                              Text(
-                                                dateStr,
-                                                style: TextStyle(
-                                                  fontSize: 14,
-                                                  fontWeight: FontWeight.w500,
-                                                  color: Colors.black54,
-                                                ),
-                                              ),
-                                              SizedBox(width: 4),
-                                              Icon(Icons.keyboard_arrow_down,
-                                                  size: 18,
-                                                  color: Colors.black54),
-                                            ],
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    SizedBox(width: 16),
-                                    // Circular progress for calories
-                                    Stack(
-                                      alignment: Alignment.center,
-                                      children: [
-                                        SizedBox(
-                                          width: 110,
-                                          height: 110,
-                                          child: CircularProgressIndicator(
-                                            value: pointsProgress,
-                                            strokeWidth: 12,
-                                            backgroundColor:
-                                                Colors.white.withOpacity(0.3),
-                                            valueColor:
-                                                AlwaysStoppedAnimation<Color>(
-                                              Colors.white,
-                                            ),
-                                          ),
-                                        ),
-                                        Column(
-                                          children: [
-                                            Text(
-                                              '${state.stats.totalPoints}',
-                                              style: TextStyle(
-                                                fontSize: 24,
-                                                fontWeight: FontWeight.w800,
-                                                color: Colors.black87,
-                                              ),
-                                            ),
-                                            Text(
-                                              'Points',
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w500,
-                                                color: Colors.black54,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        Positioned(
-                                          top: 0,
-                                          right: 0,
-                                          child: Container(
-                                            padding: EdgeInsets.all(4),
-                                            decoration: BoxDecoration(
-                                              color: Color(0xFFFFD700),
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: Icon(
-                                              Icons.local_fire_department,
-                                              size: 12,
-                                              color: Colors.white,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-
-                      const SizedBox(height: 16),
-
-                      // Weight and Calories Cards
-                      BlocBuilder<GameBloc, GameState>(
-                        builder: (context, state) {
-                          if (state is! GameLoaded) {
-                            return _buildMiniStatsSkeleton();
-                          }
-                          // Debug: Print the actual distance value
-                          print(
-                              '🏠 HOME TAB: Displaying distance = ${state.stats.totalDistanceKm} km');
-                          return Row(
-                            children: [
-                              Expanded(
-                                child: Container(
-                                  padding: EdgeInsets.all(20),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(20),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.05),
-                                        blurRadius: 15,
-                                        offset: Offset(0, 4),
-                                      ),
-                                    ],
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Icon(Icons.directions_run,
-                                              size: 18, color: Colors.black54),
-                                          SizedBox(width: 8),
-                                          Text(
-                                            'Total\nDistance',
-                                            style: TextStyle(
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.w600,
-                                              color: Colors.black87,
-                                              height: 1.2,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      SizedBox(height: 12),
-                                      Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.baseline,
-                                        textBaseline: TextBaseline.alphabetic,
-                                        children: [
-                                          Text(
-                                            '${state.stats.totalDistanceKm.toStringAsFixed(1)}',
-                                            style: TextStyle(
-                                              fontSize: 32,
-                                              fontWeight: FontWeight.w800,
-                                              color: Colors.black87,
-                                            ),
-                                          ),
-                                          SizedBox(width: 4),
-                                          Text(
-                                            'km',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.w500,
-                                              color: Colors.black38,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      SizedBox(height: 8),
-                                      Row(
-                                        children: [
-                                          Flexible(
-                                            child: Container(
-                                              padding: EdgeInsets.symmetric(
-                                                  horizontal: 6, vertical: 2),
-                                              decoration: BoxDecoration(
-                                                color: Colors.grey.shade200,
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                              ),
-                                              child: Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  Icon(Icons.trending_up,
-                                                      size: 12,
-                                                      color: Colors.black54),
-                                                  SizedBox(width: 4),
-                                                  Flexible(
-                                                    child: Text(
-                                                      'Lifetime',
-                                                      style: TextStyle(
-                                                        fontSize: 11,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        color: Colors.black54,
-                                                      ),
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                              child: Icon(
+                                Icons.trending_up,
+                                size: 20,
+                                color: Colors.black87,
                               ),
-                              SizedBox(width: 12),
-                              Expanded(
-                                child: Container(
-                                  padding: EdgeInsets.all(20),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(20),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.05),
-                                        blurRadius: 15,
-                                        offset: Offset(0, 4),
-                                      ),
-                                    ],
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Icon(Icons.flag_outlined,
-                                              size: 18, color: Colors.black54),
-                                          SizedBox(width: 8),
-                                          Text(
-                                            'Captured\nAreas',
-                                            style: TextStyle(
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.w600,
-                                              color: Colors.black87,
-                                              height: 1.2,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      SizedBox(height: 12),
-                                      Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.baseline,
-                                        textBaseline: TextBaseline.alphabetic,
-                                        children: [
-                                          Text(
-                                            '${state.stats.territoriesCaptured}',
-                                            style: TextStyle(
-                                              fontSize: 32,
-                                              fontWeight: FontWeight.w800,
-                                              color: Colors.black87,
-                                            ),
-                                          ),
-                                          SizedBox(width: 4),
-                                          Text(
-                                            'zones',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.w500,
-                                              color: Colors.black38,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      SizedBox(height: 8),
-                                      Row(
-                                        children: [
-                                          Flexible(
-                                            child: Container(
-                                              padding: EdgeInsets.symmetric(
-                                                  horizontal: 6, vertical: 2),
-                                              decoration: BoxDecoration(
-                                                color: Colors.grey.shade200,
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                              ),
-                                              child: Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  Icon(Icons.shield_outlined,
-                                                      size: 12,
-                                                      color: Colors.black54),
-                                                  SizedBox(width: 4),
-                                                  Flexible(
-                                                    child: Text(
-                                                      '${state.stats.currentStreak} day streak',
-                                                      style: TextStyle(
-                                                        fontSize: 11,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        color: Colors.black54,
-                                                      ),
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // Weekly Goal
-                      BlocBuilder<GameBloc, GameState>(
-                        builder: (context, state) {
-                          if (state is! GameLoaded) {
-                            return _buildWeeklyGoalSkeleton();
-                          }
-                          final weeklyGoal = 50.0; // km
-                          final currentWeekly =
-                              state.stats.totalDistanceKm % weeklyGoal;
-                          final progress =
-                              (currentWeekly / weeklyGoal).clamp(0.0, 1.0);
-
-                          return Container(
-                            padding: EdgeInsets.all(20),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(20),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.05),
-                                  blurRadius: 15,
-                                  offset: Offset(0, 5),
-                                ),
-                              ],
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Icon(Icons.flag_outlined,
-                                            color: Color(0xFF7FE87A), size: 20),
-                                        SizedBox(width: 8),
-                                        Text(
-                                          'Weekly Goal',
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w700,
-                                            color: Colors.black87,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    Text(
-                                      '${currentWeekly.toStringAsFixed(1)}/${weeklyGoal.toStringAsFixed(0)} km',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.grey.shade600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                SizedBox(height: 12),
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(10),
-                                  child: LinearProgressIndicator(
-                                    value: progress,
-                                    minHeight: 12,
-                                    backgroundColor: Colors.grey.shade200,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      Color(0xFF7FE87A),
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(height: 8),
-                                Text(
-                                  '${((progress) * 100).toInt()}% complete',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w500,
-                                    color: Colors.grey.shade600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-
-                      const SizedBox(height: 24),
-
-                      // Health Connect Summary
-                      _buildHealthConnectCard(),
-
-                      // Territory Stats
-                      BlocBuilder<GameBloc, GameState>(
-                        builder: (context, state) {
-                          if (state is! GameLoaded) {
-                            return _buildTerritoryStatsSkeleton();
-                          }
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Territory Stats',
+                            SizedBox(width: 12),
+                            Flexible(
+                              child: Text(
+                                'Your Progress',
                                 style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
                                   color: Colors.black87,
                                 ),
                               ),
-                              const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: _TerritoryStatCard(
-                                      icon: Icons.square_outlined,
-                                      value:
-                                          '${state.stats.territoriesCaptured}',
-                                      label: 'Captured',
-                                      color: Color(0xFF7FE87A),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12),
-                                  Expanded(
-                                    child: _TerritoryStatCard(
-                                      icon: Icons.shield_outlined,
-                                      value: '${state.stats.currentStreak}',
-                                      label: 'Day Streak',
-                                      color: Color(0xFF6DD5ED),
-                                    ),
-                                  ),
-                                  SizedBox(width: 12),
-                                  Expanded(
-                                    child: _TerritoryStatCard(
-                                      icon: Icons.star_outline,
-                                      value: '${state.stats.totalPoints}',
-                                      label: 'Points',
-                                      color: Color(0xFFFFB84D),
-                                    ),
-                                  ),
-                                ],
+                            ),
+                          ],
+                        ),
+                        SizedBox(height: 16),
+                        Text(
+                          '${(progress * 100).toInt()}%',
+                          style: TextStyle(
+                            fontSize: 56,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.black87,
+                            height: 1,
+                          ),
+                        ),
+                        SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Text(
+                              dateStr,
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.black54,
                               ),
-                            ],
-                          );
-                        },
+                            ),
+                            SizedBox(width: 4),
+                            Icon(Icons.keyboard_arrow_down,
+                                size: 18, color: Colors.black54),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(width: 16),
+                  // Circular progress for calories
+                  Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      SizedBox(
+                        width: 110,
+                        height: 110,
+                        child: CircularProgressIndicator(
+                          value: pointsProgress,
+                          strokeWidth: 12,
+                          backgroundColor: Colors.white.withOpacity(0.3),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
                       ),
+                      Column(
+                        children: [
+                          Text(
+                            '${state.stats.totalPoints}',
+                            style: TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.black87,
+                            ),
+                          ),
+                          Text(
+                            'Points',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Positioned(
+                        top: 0,
+                        right: 0,
+                        child: Container(
+                          padding: EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: Color(0xFFFFD700),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.local_fire_department,
+                            size: 12,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
-                      const SizedBox(height: 24),
+  Widget _buildMiniStatsSection() {
+    return BlocBuilder<GameBloc, GameState>(
+      builder: (context, state) {
+        if (state is! GameLoaded) {
+          return _buildMiniStatsSkeleton();
+        }
+        // Debug: Print the actual distance value
+        print(
+            '🏠 HOME TAB: Displaying distance = ${state.stats.totalDistanceKm} km');
+        return Row(
+          children: [
+            Expanded(
+              child: Container(
+                padding: EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 15,
+                      offset: Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.directions_run,
+                            size: 18, color: Colors.black54),
+                        SizedBox(width: 8),
+                        Text(
+                          'Total\nDistance',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                            height: 1.2,
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 12),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
+                        Text(
+                          '${state.stats.totalDistanceKm.toStringAsFixed(1)}',
+                          style: TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          'km',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.black38,
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Container(
+                            padding: EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade200,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.trending_up,
+                                    size: 12, color: Colors.black54),
+                                SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    'Lifetime',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.black54,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Container(
+                padding: EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 15,
+                      offset: Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.flag_outlined,
+                            size: 18, color: Colors.black54),
+                        SizedBox(width: 8),
+                        Text(
+                          'Captured\nAreas',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                            height: 1.2,
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 12),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
+                        Text(
+                          '${state.stats.territoriesCaptured}',
+                          style: TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          'zones',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.black38,
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Container(
+                            padding: EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade200,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.shield_outlined,
+                                    size: 12, color: Colors.black54),
+                                SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    '${state.stats.currentStreak} day streak',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.black54,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
-                      // Recent Activity
+  Widget _buildWeeklyGoalSection() {
+    return BlocBuilder<GameBloc, GameState>(
+      builder: (context, state) {
+        if (state is! GameLoaded) {
+          return _buildWeeklyGoalSkeleton();
+        }
+        final weeklyGoal = 50.0; // km
+        final currentWeekly = state.stats.totalDistanceKm % weeklyGoal;
+        final progress = (currentWeekly / weeklyGoal).clamp(0.0, 1.0);
+
+        return Container(
+          padding: EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 15,
+                offset: Offset(0, 5),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.flag_outlined,
+                          color: Color(0xFF7FE87A), size: 20),
+                      SizedBox(width: 8),
                       Text(
-                        'Recent Activity',
+                        'Weekly Goal',
                         style: TextStyle(
-                          fontSize: 18,
+                          fontSize: 16,
                           fontWeight: FontWeight.w700,
                           color: Colors.black87,
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      _isLoadingActivities
-                          ? _buildRecentActivitySkeleton()
-                          : _recentActivities.isEmpty
-                              ? Container(
-                                  padding: EdgeInsets.all(24),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(16),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.05),
-                                        blurRadius: 10,
-                                        offset: Offset(0, 4),
-                                      ),
-                                    ],
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      Icon(Icons.directions_run,
-                                          size: 40, color: Colors.grey),
-                                      SizedBox(height: 8),
-                                      Text(
-                                        'No activities yet',
-                                        style: TextStyle(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w600,
-                                          color: Colors.grey[700],
-                                        ),
-                                      ),
-                                      SizedBox(height: 4),
-                                      Text(
-                                        'Start your first workout!',
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          color: Colors.grey[500],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                )
-                              : Column(
-                                  children: _recentActivities.map((activity) {
-                                    final distanceKm =
-                                        activity.distanceMeters / 1000;
-                                    final durationMin =
-                                        activity.duration.inMinutes;
-                                    final timeAgo =
-                                        _getTimeAgo(activity.startTime);
-
-                                    return Padding(
-                                      padding:
-                                          const EdgeInsets.only(bottom: 8.0),
-                                      child: _RecentActivityCard(
-                                        icon: Icons.directions_run,
-                                        title: 'Workout',
-                                        subtitle:
-                                            '${distanceKm.toStringAsFixed(1)} km • $durationMin min',
-                                        time: timeAgo,
-                                        color: Color(0xFF7FE87A),
-                                      ),
-                                    );
-                                  }).toList(),
-                                ),
-
-                      const SizedBox(height: 40),
                     ],
+                  ),
+                  Text(
+                    '${currentWeekly.toStringAsFixed(1)}/${weeklyGoal.toStringAsFixed(0)} km',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 12,
+                  backgroundColor: Colors.grey.shade200,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    Color(0xFF7FE87A),
+                  ),
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                '${((progress) * 100).toInt()}% complete',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildTerritoryStatsSection() {
+    return BlocBuilder<GameBloc, GameState>(
+      builder: (context, state) {
+        if (state is! GameLoaded) {
+          return _buildTerritoryStatsSkeleton();
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Territory Stats',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _TerritoryStatCard(
+                    icon: Icons.square_outlined,
+                    value: '${state.stats.territoriesCaptured}',
+                    label: 'Captured',
+                    color: Color(0xFF7FE87A),
+                  ),
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: _TerritoryStatCard(
+                    icon: Icons.shield_outlined,
+                    value: '${state.stats.currentStreak}',
+                    label: 'Day Streak',
+                    color: Color(0xFF6DD5ED),
+                  ),
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: _TerritoryStatCard(
+                    icon: Icons.star_outline,
+                    value: '${state.stats.totalPoints}',
+                    label: 'Points',
+                    color: Color(0xFFFFB84D),
                   ),
                 ),
               ],
             ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildRecentActivitySection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Recent Activity',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            color: Colors.black87,
           ),
         ),
-      ),
+        const SizedBox(height: 12),
+        _isLoadingActivities
+            ? _buildRecentActivitySkeleton()
+            : _recentActivities.isEmpty
+                ? Container(
+                    padding: EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.05),
+                          blurRadius: 10,
+                          offset: Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        Icon(Icons.directions_run,
+                            size: 40, color: Colors.grey),
+                        SizedBox(height: 8),
+                        Text(
+                          'No activities yet',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey[700],
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'Start your first workout!',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey[500],
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : Column(
+                    children: _recentActivities.map((activity) {
+                      final distanceKm = activity.distanceMeters / 1000;
+                      final durationMin = activity.duration.inMinutes;
+                      final timeAgo = _getTimeAgo(activity.startTime);
+
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8.0),
+                        child: _RecentActivityCard(
+                          icon: Icons.directions_run,
+                          title: 'Workout',
+                          subtitle:
+                              '${distanceKm.toStringAsFixed(1)} km • $durationMin min',
+                          time: timeAgo,
+                          color: Color(0xFF7FE87A),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+      ],
     );
   }
 
@@ -1000,11 +1124,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     return SkeletonShimmer(
       child: Column(
         children: const [
-          SkeletonBox(height: 88, borderRadius: BorderRadius.all(Radius.circular(16))),
+          SkeletonBox(
+              height: 88, borderRadius: BorderRadius.all(Radius.circular(16))),
           SizedBox(height: 8),
-          SkeletonBox(height: 88, borderRadius: BorderRadius.all(Radius.circular(16))),
+          SkeletonBox(
+              height: 88, borderRadius: BorderRadius.all(Radius.circular(16))),
           SizedBox(height: 8),
-          SkeletonBox(height: 88, borderRadius: BorderRadius.all(Radius.circular(16))),
+          SkeletonBox(
+              height: 88, borderRadius: BorderRadius.all(Radius.circular(16))),
         ],
       ),
     );
@@ -1059,7 +1186,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   color: const Color(0xFF4CAF50).withOpacity(0.12),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: const Icon(Icons.favorite, color: Color(0xFF4CAF50), size: 18),
+                child: const Icon(Icons.favorite,
+                    color: Color(0xFF4CAF50), size: 18),
               ),
               const SizedBox(width: 8),
               const Text(
@@ -1077,7 +1205,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                 label: const Text('Refresh'),
                 style: TextButton.styleFrom(
                   foregroundColor: Colors.grey.shade700,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 ),
               ),
             ],
@@ -1142,15 +1271,18 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                     ),
                     Text(
                       'avg ${heartStats['avg']}',
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.grey.shade600),
                     ),
                     Text(
                       '${heartStats['min']} - ${heartStats['max']}',
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.grey.shade600),
                     ),
                     Text(
                       '${_heartRateSamples.length} readings',
-                      style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                      style:
+                          TextStyle(fontSize: 11, color: Colors.grey.shade500),
                     ),
                   ],
                 ),

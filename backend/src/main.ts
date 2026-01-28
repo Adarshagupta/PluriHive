@@ -1,9 +1,13 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { json, urlencoded } from 'body-parser';
+import { existsSync } from 'fs';
+import * as path from 'path';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   
   const isProd = process.env.NODE_ENV === 'production';
   const corsOrigins = (process.env.CORS_ORIGINS || '')
@@ -19,6 +23,15 @@ async function bootstrap() {
     origin: isProd ? corsOrigins : true,
     credentials: true,
   });
+
+  const bodyLimit = process.env.BODY_LIMIT || '10mb';
+  app.use(json({ limit: bodyLimit }));
+  app.use(urlencoded({ extended: true, limit: bodyLimit }));
+
+  const staticRoot = path.join(__dirname, '..', 'public');
+  if (existsSync(staticRoot)) {
+    app.useStaticAssets(staticRoot, { prefix: '/static' });
+  }
 
   if (isProd) {
     const requiredEnv = ['JWT_SECRET', 'DATABASE_PASSWORD'];

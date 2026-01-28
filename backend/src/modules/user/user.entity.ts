@@ -44,6 +44,12 @@ export class User {
   @Column({ nullable: true })
   profilePicture: string;
 
+  @Column({ nullable: true, type: "text" })
+  avatarModelUrl: string;
+
+  @Column({ nullable: true, type: "text" })
+  avatarImageUrl: string;
+
   // Physical stats
   @Column({ type: "decimal", nullable: true })
   weight: number;
