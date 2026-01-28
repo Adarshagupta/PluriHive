@@ -326,8 +326,14 @@ class _MapScreenState extends State<MapScreen>
       _polygons.removeWhere(
         (polygon) => polygon.polygonId.value.startsWith('territory_'),
       );
-      _territoryMarkers.clear();
+      _territoryMarkers.removeWhere(
+        (marker) => marker.markerId.value.startsWith('territory_'),
+      );
+      final bossEntries = Map<String, Map<String, dynamic>>.fromEntries(
+        _territoryData.entries.where((entry) => entry.value['isBoss'] == true),
+      );
       _territoryData.clear();
+      _territoryData.addAll(bossEntries);
 
       for (final territory in displayTerritories) {
         final lat = territory['latitude'] is String
@@ -343,73 +349,45 @@ class _MapScreenState extends State<MapScreen>
             isOwnTerritory ? const Color(0xFF4CAF50) : const Color(0xFFFF5722);
 
         final routePoints = territory['routePoints'] as List?;
+        List<LatLng>? polygonPoints;
 
         if (routePoints != null && routePoints.isNotEmpty) {
-          final polygonPoints = routePoints.map((p) {
-            final pointLat = p['lat'] is String
-                ? double.parse(p['lat'])
-                : (p['lat'] as num).toDouble();
-            final pointLng = p['lng'] is String
-                ? double.parse(p['lng'])
-                : (p['lng'] as num).toDouble();
-            return LatLng(pointLat, pointLng);
-          }).toList();
-
-          _polygons.add(
-            Polygon(
-              polygonId: PolygonId('territory_${territory['hexId']}'),
-              points: polygonPoints,
-              fillColor: territoryColor.withOpacity(0.25),
-              strokeColor: territoryColor,
-              strokeWidth: 3,
-            ),
-          );
-
-          _territoryData[territory['hexId']] = {
-            'polygonPoints': polygonPoints,
-            'ownerId': ownerId,
-            'ownerName': territory['owner']?['name'] ?? 'Unknown',
-            'captureCount': territory['captureCount'] ?? 1,
-            'isOwn': isOwnTerritory,
-            'points': territory['points'],
-            'capturedAt': territory['capturedAt'] != null
-                ? DateTime.parse(territory['capturedAt'])
-                : null,
-            'lastBattleAt': territory['lastBattleAt'] != null
-                ? DateTime.parse(territory['lastBattleAt'])
-                : null,
-            'areaSqMeters': _calculatePolygonArea(polygonPoints),
-          };
-        } else {
-          final center = LatLng(lat, lng);
-          final circlePoints = _generateCirclePoints(center, 50);
-
-          _polygons.add(
-            Polygon(
-              polygonId: PolygonId('territory_${territory['hexId']}'),
-              points: circlePoints,
-              fillColor: territoryColor.withOpacity(0.25),
-              strokeColor: territoryColor,
-              strokeWidth: 2,
-            ),
-          );
-
-          _territoryData[territory['hexId']] = {
-            'polygonPoints': circlePoints,
-            'ownerId': ownerId,
-            'ownerName': territory['owner']?['name'] ?? 'Unknown',
-            'captureCount': territory['captureCount'] ?? 1,
-            'isOwn': isOwnTerritory,
-            'points': territory['points'],
-            'capturedAt': territory['capturedAt'] != null
-                ? DateTime.parse(territory['capturedAt'])
-                : null,
-            'lastBattleAt': territory['lastBattleAt'] != null
-                ? DateTime.parse(territory['lastBattleAt'])
-                : null,
-            'areaSqMeters': _calculatePolygonArea(circlePoints),
-          };
+          final parsedPoints = routePoints
+              .map(_parseRoutePoint)
+              .whereType<LatLng>()
+              .toList();
+          if (parsedPoints.length >= 3) {
+            polygonPoints = parsedPoints;
+          }
         }
+
+        polygonPoints ??= _generateCirclePoints(LatLng(lat, lng), 50);
+
+        _polygons.add(
+          Polygon(
+            polygonId: PolygonId('territory_${territory['hexId']}'),
+            points: polygonPoints,
+            fillColor: territoryColor.withOpacity(0.25),
+            strokeColor: territoryColor,
+            strokeWidth: polygonPoints.length >= 3 ? 3 : 2,
+          ),
+        );
+
+        _territoryData[territory['hexId']] = {
+          'polygonPoints': polygonPoints,
+          'ownerId': ownerId,
+          'ownerName': territory['owner']?['name'] ?? 'Unknown',
+          'captureCount': territory['captureCount'] ?? 1,
+          'isOwn': isOwnTerritory,
+          'points': territory['points'],
+          'capturedAt': territory['capturedAt'] != null
+              ? DateTime.parse(territory['capturedAt'])
+              : null,
+          'lastBattleAt': territory['lastBattleAt'] != null
+              ? DateTime.parse(territory['lastBattleAt'])
+              : null,
+          'areaSqMeters': _calculatePolygonArea(polygonPoints),
+        };
       }
     });
 

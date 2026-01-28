@@ -59,16 +59,18 @@ class UpdateUserProfile extends AuthEvent {
   final double heightCm;
   final int age;
   final String gender;
+  final String? country;
   
   UpdateUserProfile({
     required this.weightKg,
     required this.heightCm,
     required this.age,
     required this.gender,
+    this.country,
   });
   
   @override
-  List<Object?> get props => [weightKg, heightCm, age, gender];
+  List<Object?> get props => [weightKg, heightCm, age, gender, country];
 }
 
 class UpdateUserAvatar extends AuthEvent {
@@ -212,6 +214,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
               heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
               age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
               gender: userData['gender']?.toString(),
+              country: userData['country']?.toString(),
               avatarModelUrl: userData['avatarModelUrl']?.toString(),
               avatarImageUrl: userData['avatarImageUrl']?.toString(),
             );
@@ -255,6 +258,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
               heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
               age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
               gender: userData['gender']?.toString(),
+              country: userData['country']?.toString(),
               avatarModelUrl: userData['avatarModelUrl']?.toString(),
               avatarImageUrl: userData['avatarImageUrl']?.toString(),
             );
@@ -310,6 +314,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         hasCompletedOnboarding: false,
         avatarModelUrl: userData['avatarModelUrl']?.toString(),
         avatarImageUrl: userData['avatarImageUrl']?.toString(),
+        country: userData['country']?.toString(),
       );
       
       // Save locally - don't mark onboarding complete yet
@@ -362,6 +367,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
         age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
         gender: userData['gender']?.toString(),
+        country: userData['country']?.toString(),
         avatarModelUrl: userData['avatarModelUrl']?.toString(),
         avatarImageUrl: userData['avatarImageUrl']?.toString(),
       );
@@ -421,6 +427,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         heightCm: userData['height'] != null ? double.tryParse(userData['height'].toString()) : null,
         age: userData['age'] != null ? int.tryParse(userData['age'].toString()) : null,
         gender: userData['gender']?.toString(),
+        country: userData['country']?.toString(),
         avatarModelUrl: userData['avatarModelUrl']?.toString(),
         avatarImageUrl: userData['avatarImageUrl']?.toString(),
       );
@@ -466,6 +473,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
           'height': event.heightCm,
           'age': event.age,
           'gender': event.gender,
+          if (event.country != null) 'country': event.country,
         });
         
         print('✅ Profile update complete');
@@ -475,6 +483,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
           heightCm: event.heightCm,
           age: event.age,
           gender: event.gender,
+          country: event.country ?? currentUser.country,
         );
         
         await repository.saveUser(updatedUser);

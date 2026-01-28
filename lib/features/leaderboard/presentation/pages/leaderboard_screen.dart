@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../../../../core/services/leaderboard_api_service.dart';
@@ -141,55 +142,170 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[50],
-      appBar: AppBar(
-        title: Text(
-          'Leaderboard',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w600,
-            color: Colors.grey[900],
+      body: Stack(
+        children: [
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Color(0xFFF7F7F2),
+                  Color(0xFFE4F8E8),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
           ),
-        ),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        automaticallyImplyLeading: false,
-        actions: [
-          IconButton(
-            icon: Icon(Icons.refresh, color: Colors.grey[700]),
-            onPressed: _loadData,
+          Positioned(
+            right: -140,
+            top: -110,
+            child: Container(
+              width: 260,
+              height: 260,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    Color(0xFF9BE15D),
+                    Color(0x00F7F7F2),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: -90,
+            bottom: -120,
+            child: Transform.rotate(
+              angle: -0.25,
+              child: Container(
+                width: 220,
+                height: 220,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(48),
+                  gradient: const LinearGradient(
+                    colors: [
+                      Color(0xFF111827),
+                      Color(0xFF1F2937),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.15),
+                      blurRadius: 30,
+                      offset: const Offset(0, 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Column(
+              children: [
+                _buildHeader(),
+                const SizedBox(height: 12),
+                _buildMetricSelector(),
+                const SizedBox(height: 8),
+                _buildTabBar(),
+                const SizedBox(height: 8),
+                Expanded(child: _buildContent()),
+              ],
+            ),
           ),
         ],
       ),
-      body: Column(
+    );
+  }
+
+  Widget _buildHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+      child: Row(
         children: [
-          _buildMetricSelector(),
-          _buildTabBar(),
-          Expanded(child: _buildContent()),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Leaderboard',
+                style: GoogleFonts.spaceGrotesk(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
+                  color: const Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Top runners by ${_getMetricLabel()}',
+                style: GoogleFonts.dmSans(
+                  fontSize: 13,
+                  color: const Color(0xFF64748B),
+                ),
+              ),
+            ],
+          ),
+          const Spacer(),
+          InkWell(
+            onTap: _loadData,
+            borderRadius: BorderRadius.circular(16),
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withOpacity(0.6)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.08),
+                    blurRadius: 16,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: const Icon(Icons.refresh, color: Color(0xFF111827)),
+            ),
+          ),
         ],
       ),
     );
   }
 
   Widget _buildMetricSelector() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.all(12),
-      child: Row(
-        children: [
-          _buildMetricChip('points', 'Points'),
-          const SizedBox(width: 8),
-          _buildMetricChip('distance', 'Distance'),
-          const SizedBox(width: 8),
-          _buildMetricChip('territories', 'Areas'),
-          const SizedBox(width: 8),
-          _buildMetricChip('steps', 'Steps'),
-        ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.9),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white.withOpacity(0.6)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 16,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            _buildMetricChip('points', 'Points', Icons.stars),
+            const SizedBox(width: 8),
+            _buildMetricChip('distance', 'Distance', Icons.alt_route),
+            const SizedBox(width: 8),
+            _buildMetricChip('territories', 'Areas', Icons.layers),
+            const SizedBox(width: 8),
+            _buildMetricChip('steps', 'Steps', Icons.directions_walk),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildMetricChip(String metric, String label) {
+  Widget _buildMetricChip(String metric, String label, IconData icon) {
     final isSelected = _selectedMetric == metric;
     return Expanded(
       child: GestureDetector(
@@ -202,17 +318,33 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(
-            color: isSelected ? Colors.grey[800] : Colors.grey[100],
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              color: isSelected ? Colors.white : Colors.grey[700],
+            color: isSelected ? const Color(0xFF111827) : Colors.transparent,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isSelected
+                  ? const Color(0xFF111827)
+                  : const Color(0xFFE2E8F0),
             ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 14,
+                color: isSelected ? Colors.white : const Color(0xFF475569),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.dmSans(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: isSelected ? Colors.white : const Color(0xFF475569),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -220,18 +352,31 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
   }
 
   Widget _buildTabBar() {
-    return Container(
-      color: Colors.white,
-      child: TabBar(
-        controller: _tabController,
-        indicatorColor: Colors.grey[800],
-        labelColor: Colors.grey[900],
-        unselectedLabelColor: Colors.grey[500],
-        tabs: const [
-          Tab(text: 'All Time'),
-          Tab(text: 'Weekly'),
-          Tab(text: 'Monthly'),
-        ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Container(
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.9),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white.withOpacity(0.6)),
+        ),
+        child: TabBar(
+          controller: _tabController,
+          indicator: BoxDecoration(
+            color: const Color(0xFF111827),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          labelColor: Colors.white,
+          unselectedLabelColor: const Color(0xFF64748B),
+          labelStyle: GoogleFonts.dmSans(fontWeight: FontWeight.w700),
+          unselectedLabelStyle: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
+          tabs: const [
+            Tab(text: 'All Time'),
+            Tab(text: 'Weekly'),
+            Tab(text: 'Monthly'),
+          ],
+        ),
       ),
     );
   }
@@ -267,6 +412,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
     }
 
     final users = _getSortedUsers();
+    final showTopThree = users.length >= 3;
+    final rest = showTopThree ? users.sublist(3) : users;
 
     if (users.isEmpty) {
       return Center(
@@ -279,12 +426,119 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
 
     return RefreshIndicator(
       onRefresh: _loadData,
-      child: ListView.builder(
+      child: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: showTopThree ? _buildTopThree(users) : const SizedBox.shrink(),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            sliver: SliverList.separated(
+              itemCount: rest.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                final rankOffset = showTopThree ? 4 : 1;
+                return _buildUserCard(rest[index], index + rankOffset);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTopThree(List<LeaderboardUser> users) {
+    if (users.length < 3) return const SizedBox.shrink();
+    final topThree = users.take(3).toList();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      child: Container(
         padding: const EdgeInsets.all(16),
-        itemCount: users.length,
-        itemBuilder: (context, index) {
-          return _buildUserCard(users[index], index + 1);
-        },
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.92),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white.withOpacity(0.6)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 20,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Expanded(child: _buildPodiumCard(topThree[1], 2)),
+            const SizedBox(width: 12),
+            Expanded(child: _buildPodiumCard(topThree[0], 1, isCenter: true)),
+            const SizedBox(width: 12),
+            Expanded(child: _buildPodiumCard(topThree[2], 3)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPodiumCard(LeaderboardUser user, int rank, {bool isCenter = false}) {
+    final accent = _getRankColor(rank);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(isCenter ? 0.18 : 0.1),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accent.withOpacity(0.35)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            width: isCenter ? 42 : 36,
+            height: isCenter ? 42 : 36,
+            decoration: BoxDecoration(
+              color: accent,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: accent.withOpacity(0.4),
+                  blurRadius: 12,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Center(
+              child: Text(
+                _getRankEmoji(rank),
+                style: TextStyle(fontSize: isCenter ? 18 : 16),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            user.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.spaceGrotesk(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: const Color(0xFF0F172A),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _getMetricValue(user),
+            style: GoogleFonts.dmSans(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: const Color(0xFF0F172A),
+            ),
+          ),
+          Text(
+            _getMetricLabel(),
+            style: GoogleFonts.dmSans(
+              fontSize: 10,
+              color: const Color(0xFF64748B),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -296,31 +550,44 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: isTopThree
-            ? Border.all(color: _getRankColor(rank), width: 2)
-            : null,
+        color: Colors.white.withOpacity(0.92),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isTopThree
+              ? _getRankColor(rank).withOpacity(0.6)
+              : const Color(0xFFE2E8F0),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 8),
+          ),
+        ],
       ),
       child: Row(
         children: [
           // Rank
           Container(
-            width: 36,
-            height: 36,
+            width: 38,
+            height: 38,
             decoration: BoxDecoration(
-              color: isTopThree ? _getRankColor(rank) : Colors.grey[100],
+              color: isTopThree
+                  ? _getRankColor(rank)
+                  : const Color(0xFFF1F5F9),
               shape: BoxShape.circle,
             ),
             child: Center(
               child: isTopThree
-                  ? Text(_getRankEmoji(rank),
-                      style: const TextStyle(fontSize: 16))
+                  ? Text(
+                      _getRankEmoji(rank),
+                      style: const TextStyle(fontSize: 16),
+                    )
                   : Text(
                       '$rank',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.grey[600],
+                      style: GoogleFonts.dmSans(
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF475569),
                       ),
                     ),
             ),
@@ -334,18 +601,18 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
               children: [
                 Text(
                   user.name,
-                  style: TextStyle(
+                  style: GoogleFonts.spaceGrotesk(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
-                    color: Colors.grey[900],
+                    color: const Color(0xFF0F172A),
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   'Level ${user.level} • ${user.totalTerritoriesCaptured} territories',
-                  style: TextStyle(
+                  style: GoogleFonts.dmSans(
                     fontSize: 12,
-                    color: Colors.grey[600],
+                    color: const Color(0xFF64748B),
                   ),
                 ),
               ],
@@ -358,17 +625,17 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
             children: [
               Text(
                 _getMetricValue(user),
-                style: TextStyle(
+                style: GoogleFonts.spaceGrotesk(
                   fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey[900],
+                  fontWeight: FontWeight.w700,
+                  color: const Color(0xFF0F172A),
                 ),
               ),
               Text(
                 _getMetricLabel(),
-                style: TextStyle(
+                style: GoogleFonts.dmSans(
                   fontSize: 11,
-                  color: Colors.grey[500],
+                  color: const Color(0xFF64748B),
                 ),
               ),
             ],
@@ -413,13 +680,13 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
   Color _getRankColor(int rank) {
     switch (rank) {
       case 1:
-        return Colors.amber;
+        return const Color(0xFFFBBF24);
       case 2:
-        return Colors.grey[400]!;
+        return const Color(0xFFCBD5F5);
       case 3:
-        return Colors.orange[700]!;
+        return const Color(0xFFF59E0B);
       default:
-        return Colors.grey[300]!;
+        return const Color(0xFFE2E8F0);
     }
   }
 
@@ -438,12 +705,12 @@ class _LeaderboardScreenState extends State<LeaderboardScreen>
   Widget _buildLeaderboardSkeleton() {
     return SkeletonShimmer(
       child: ListView.separated(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         itemCount: 8,
         separatorBuilder: (_, __) => const SizedBox(height: 8),
         itemBuilder: (context, index) => SkeletonBox(
-          height: 72,
-          borderRadius: BorderRadius.circular(12),
+          height: 78,
+          borderRadius: BorderRadius.circular(18),
         ),
       ),
     );

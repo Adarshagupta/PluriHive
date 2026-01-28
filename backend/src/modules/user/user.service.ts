@@ -36,6 +36,7 @@ export class UserService {
     if (updates.height !== undefined) allowedUpdates.height = updates.height;
     if (updates.age !== undefined) allowedUpdates.age = updates.age;
     if (updates.gender !== undefined) allowedUpdates.gender = updates.gender;
+    if (updates.country !== undefined) allowedUpdates.country = updates.country;
     if (updates.profilePicture !== undefined) {
       allowedUpdates.profilePicture = updates.profilePicture;
     }
@@ -54,6 +55,7 @@ export class UserService {
       height: updatedUser.height,
       age: updatedUser.age,
       gender: updatedUser.gender,
+      country: updatedUser.country,
     });
 
     await this.bumpUserCacheVersion(userId);

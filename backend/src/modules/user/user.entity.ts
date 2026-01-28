@@ -63,6 +63,9 @@ export class User {
   @Column({ nullable: true })
   gender: string;
 
+  @Column({ nullable: true })
+  country: string;
+
   // Onboarding status - MUST complete onboarding (non-negotiable)
   @Column({ default: false })
   hasCompletedOnboarding: boolean;

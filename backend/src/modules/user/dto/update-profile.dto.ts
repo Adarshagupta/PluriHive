@@ -1,5 +1,14 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import {
+  IsIn,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+} from 'class-validator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -32,6 +41,12 @@ export class UpdateProfileDto {
   @IsString()
   @IsIn(['male', 'female', 'other', 'prefer_not_say', 'unspecified'])
   gender?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(56)
+  country?: string;
 
   @IsOptional()
   @IsString()
