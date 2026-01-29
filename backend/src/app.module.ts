@@ -12,6 +12,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
 import { RoutesModule } from './modules/routes/routes.module';
 import { AppModule as AppUpdateModule } from './modules/app/app.module';
 import { EngagementModule } from './modules/engagement/engagement.module';
+import { LegalModule } from './modules/legal/legal.module';
 
 @Module({
   imports: [
@@ -75,6 +76,7 @@ import { EngagementModule } from './modules/engagement/engagement.module';
     RoutesModule,
     AppUpdateModule,
     EngagementModule,
+    LegalModule,
   ],
 })
 export class AppModule {}

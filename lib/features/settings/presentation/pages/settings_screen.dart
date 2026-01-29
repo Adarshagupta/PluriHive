@@ -14,6 +14,8 @@ import '../../../../core/services/update_service.dart';
 import '../../../../core/services/code_push_service.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/services/smart_reminder_service.dart';
+import '../../../../core/services/auth_api_service.dart';
+import 'legal_screen.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/widgets/skeleton.dart';
 import '../../../profile/presentation/pages/personal_info_screen.dart';
@@ -28,6 +30,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen>
     with TickerProviderStateMixin {
   static const String _settingsCacheKey = 'settings_cache_v1';
+  static const String _settingsCacheTimeKey = 'settings_cache_time_v1';
   String _selectedBackend = ApiConfig.localUrl;
   late final SettingsApiService _settingsService;
   late final SharedPreferences _prefs;
@@ -44,12 +47,15 @@ class _SettingsScreenState extends State<SettingsScreen>
   String? _smartReminderTime;
   bool _darkMode = false;
   String _language = 'English';
-  bool _isLoading = true;
+  bool _isInitialLoading = true;
+  bool _isSaving = false;
+  bool _isDeletingAccount = false;
 
   late AnimationController _floatController;
   late final Future<PackageInfo> _packageInfoFuture;
   late final TrackingApiService _trackingService;
   late final SmartReminderService _smartReminderService;
+  late final AuthApiService _authApiService;
   bool _isSmartReminderUpdating = false;
 
   @override
@@ -59,6 +65,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     _prefs = di.getIt<SharedPreferences>();
     _trackingService = di.getIt<TrackingApiService>();
     _smartReminderService = di.getIt<SmartReminderService>();
+    _authApiService = di.getIt<AuthApiService>();
     _smartReminderService.initialize();
     _floatController = AnimationController(
       duration: const Duration(seconds: 3),
@@ -71,18 +78,20 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   Future<void> _loadSettings() async {
     await _loadSettingsFromCache();
-    _refreshSettingsFromBackend();
+    if (_shouldRefreshSettings()) {
+      _refreshSettingsFromBackend();
+    }
   }
 
   Future<void> _loadSettingsFromCache() async {
     final cached = _prefs.getString(_settingsCacheKey);
     if (cached == null) {
-      if (mounted) setState(() => _isLoading = true);
+      if (mounted) setState(() => _isInitialLoading = false);
       return;
     }
     final settings = jsonDecode(cached) as Map<String, dynamic>;
     _applySettings(settings);
-    if (mounted) setState(() => _isLoading = false);
+    if (mounted) setState(() => _isInitialLoading = false);
   }
 
   Future<void> _refreshSettingsFromBackend() async {
@@ -113,22 +122,34 @@ class _SettingsScreenState extends State<SettingsScreen>
       _smartReminderTime = settings['smartReminderTime'];
       _darkMode = settings['darkMode'] ?? false;
       _language = settings['language'] ?? 'English';
-      _isLoading = false;
+      _isInitialLoading = false;
     });
     _scheduleSmartReminderIfNeeded();
   }
 
   Future<void> _persistSettingsCache(Map<String, dynamic> settings) async {
     await _prefs.setString(_settingsCacheKey, jsonEncode(settings));
+    await _prefs.setInt(
+      _settingsCacheTimeKey,
+      DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  bool _shouldRefreshSettings() {
+    final last = _prefs.getInt(_settingsCacheTimeKey);
+    if (last == null) return true;
+    final age = DateTime.now()
+        .difference(DateTime.fromMillisecondsSinceEpoch(last));
+    return age > const Duration(hours: 6);
   }
 
   Future<void> _updateSetting(
     String key,
     dynamic value, {
-    bool showLoading = true,
+    bool showLoading = false,
   }) async {
     if (showLoading) {
-      setState(() => _isLoading = true);
+      if (mounted) setState(() => _isSaving = true);
     }
     try {
       await _settingsService.updateSettings({key: value});
@@ -144,7 +165,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         );
       }
     } finally {
-      if (mounted && showLoading) setState(() => _isLoading = false);
+      if (mounted && showLoading) setState(() => _isSaving = false);
     }
   }
 
@@ -232,35 +253,52 @@ class _SettingsScreenState extends State<SettingsScreen>
       child: Scaffold(
         backgroundColor: const Color(0xFFF7F7F2),
         body: SafeArea(
-          child: _isLoading
+          child: _isInitialLoading
               ? _buildSettingsSkeleton()
-              : CustomScrollView(
-                  physics: const BouncingScrollPhysics(),
-                  slivers: [
-                    _buildHeader(),
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const SizedBox(height: 20),
-                            _buildProfileSection(),
-                            const SizedBox(height: 32),
-                            _buildActivitySection(),
-                            const SizedBox(height: 32),
-                            _buildNotificationSection(),
-                            const SizedBox(height: 32),
-                            _buildPreferencesSection(),
-                            const SizedBox(height: 32),
-                            _buildAboutSection(),
-                            const SizedBox(height: 40),
-                            _buildLogoutButton(),
-                            const SizedBox(height: 60),
-                          ],
+              : Stack(
+                  children: [
+                    CustomScrollView(
+                      physics: const BouncingScrollPhysics(),
+                      slivers: [
+                        _buildHeader(),
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 24),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const SizedBox(height: 20),
+                                _buildProfileSection(),
+                                const SizedBox(height: 32),
+                                _buildActivitySection(),
+                                const SizedBox(height: 32),
+                                _buildNotificationSection(),
+                                const SizedBox(height: 32),
+                                _buildPreferencesSection(),
+                                const SizedBox(height: 32),
+                                _buildAboutSection(),
+                                const SizedBox(height: 40),
+                                _buildDangerZoneSection(),
+                                const SizedBox(height: 24),
+                                _buildLogoutButton(),
+                                const SizedBox(height: 60),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (_isSaving || _isRefreshing)
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: LinearProgressIndicator(
+                          minHeight: 2,
+                          backgroundColor: Colors.transparent,
+                          color: AppTheme.primaryColor,
                         ),
                       ),
-                    ),
                   ],
                 ),
         ),
@@ -639,6 +677,20 @@ class _SettingsScreenState extends State<SettingsScreen>
                 value: 'help@territory.fitness',
               ),
               const SizedBox(height: 16),
+              _buildActionRow(
+                icon: Icons.policy_outlined,
+                label: 'Legal & privacy',
+                value: 'Privacy policy, terms, account deletion',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const LegalScreen(),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
               Align(
                 alignment: Alignment.centerLeft,
                 child: TextButton.icon(
@@ -664,6 +716,51 @@ class _SettingsScreenState extends State<SettingsScreen>
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildDangerZoneSection() {
+    return _buildSectionCard(
+      title: 'Danger zone',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Delete your account and all stored activity data.',
+            style: GoogleFonts.dmSans(
+              fontSize: 12,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: OutlinedButton(
+              onPressed: _isDeletingAccount ? null : _confirmDeleteAccount,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFEF4444),
+                side: const BorderSide(color: Color(0xFFEF4444)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              child: _isDeletingAccount
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text(
+                      'Delete account',
+                      style: GoogleFonts.spaceGrotesk(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -733,6 +830,64 @@ class _SettingsScreenState extends State<SettingsScreen>
 
     if (shouldLogout == true && mounted) {
       context.read<AuthBloc>().add(SignOut());
+    }
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        title: Text(
+          'Delete account?',
+          style: GoogleFonts.spaceGrotesk(
+            color: AppTheme.textPrimary,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        content: Text(
+          'This permanently deletes your account and all activity data. '
+          'This cannot be undone.',
+          style: GoogleFonts.dmSans(
+            color: AppTheme.textSecondary,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldDelete == true && mounted) {
+      try {
+        setState(() => _isDeletingAccount = true);
+        await _authApiService.deleteAccount();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to delete account: $e')),
+          );
+        }
+      } finally {
+        if (mounted) {
+          setState(() => _isDeletingAccount = false);
+          context.read<AuthBloc>().add(SignOut());
+        }
+      }
     }
   }
 
@@ -988,6 +1143,49 @@ class _SettingsScreenState extends State<SettingsScreen>
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildActionRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildIconBadge(icon),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: GoogleFonts.dmSans(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(Icons.chevron_right, color: Color(0xFF94A3B8)),
+        ],
+      ),
     );
   }
 

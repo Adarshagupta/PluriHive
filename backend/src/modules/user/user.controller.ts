@@ -1,4 +1,15 @@
-import { Controller, Get, Put, Body, UseGuards, Request, Param, ForbiddenException, Headers } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Put,
+  Body,
+  UseGuards,
+  Request,
+  Param,
+  ForbiddenException,
+  Headers,
+  Delete,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UserService } from './user.service';
@@ -48,6 +59,12 @@ export class UserController {
   @Put('settings')
   async updateSettings(@Request() req, @Body() settings: UpdateSettingsDto) {
     return this.userService.updateSettings(req.user.id, settings);
+  }
+
+  @Delete('me')
+  async deleteAccount(@Request() req) {
+    await this.userService.deleteAccount(req.user.id);
+    return { success: true };
   }
 
   @Get('stats')

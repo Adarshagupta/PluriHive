@@ -2,7 +2,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
   // Backend URLs
-  static const String localUrl = 'http://10.1.80.51:3000';
+  static const String localUrl = 'https://plurihub.sylicaai.com:443';
   static const String productionUrl = 'https://plurihub.sylicaai.com:443';
 
   static const String _backendPrefKey = 'selected_backend_url';
@@ -106,10 +106,19 @@ class ApiConfig {
   // Leaderboard endpoints
   static const String leaderboardEndpoint = '/leaderboard/global';
 
+  // Legal URLs (update to your hosted docs)
+  static const String privacyPolicyUrl =
+      'https://territoryfitness.com/privacy.html';
+  static const String termsOfServiceUrl =
+      'https://territoryfitness.com/terms.html';
+  static const String accountDeletionUrl =
+      'https://territoryfitness.com/delete-account.html';
+
   // Engagement endpoints
   static const String dropsSyncEndpoint = '/engagement/drops/sync';
   static const String poiMissionEndpoint = '/engagement/missions/poi';
-  static const String poiMissionVisitEndpoint = '/engagement/missions/poi/visit';
+  static const String poiMissionVisitEndpoint =
+      '/engagement/missions/poi/visit';
   static const String rewardsEndpoint = '/engagement/rewards';
   static const String rewardsUnlockEndpoint = '/engagement/rewards/unlock';
   static const String rewardsSelectEndpoint = '/engagement/rewards/select';

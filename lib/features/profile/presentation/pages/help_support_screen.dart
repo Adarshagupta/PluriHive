@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../../settings/presentation/pages/legal_screen.dart';
 
 class HelpSupportScreen extends StatelessWidget {
   const HelpSupportScreen({super.key});
@@ -136,9 +137,21 @@ class HelpSupportScreen extends StatelessWidget {
           const SizedBox(height: 24),
 
           // Legal Links
-          _buildLegalLink('Privacy Policy', () {}),
-          _buildLegalLink('Terms of Service', () {}),
-          _buildLegalLink('Licenses', () {}),
+          _buildLegalLink('Privacy Policy', () {
+            _openLegalDoc(context, LegalDocType.privacy);
+          }),
+          _buildLegalLink('Terms of Service', () {
+            _openLegalDoc(context, LegalDocType.terms);
+          }),
+          _buildLegalLink('Delete Account', () {
+            _openLegalDoc(context, LegalDocType.deleteAccount);
+          }),
+          _buildLegalLink('Licenses', () {
+            showLicensePage(
+              context: context,
+              applicationName: 'Plurihive',
+            );
+          }),
         ],
       ),
     );
@@ -270,6 +283,14 @@ class HelpSupportScreen extends StatelessWidget {
     if (await canLaunchUrl(emailUri)) {
       await launchUrl(emailUri);
     }
+  }
+
+  void _openLegalDoc(BuildContext context, LegalDocType type) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LegalDetailScreen(type: type),
+      ),
+    );
   }
 
   Future<void> _launchURL(String url) async {

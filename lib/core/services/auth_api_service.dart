@@ -352,6 +352,29 @@ class AuthApiService {
     }
   }
 
+  Future<void> deleteAccount() async {
+    try {
+      final token = await getToken();
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+
+      await _client
+          .delete(
+            Uri.parse('${ApiConfig.baseUrl}/users/me'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(ApiConfig.defaultTimeout);
+    } catch (e) {
+      throw Exception('Delete account error: $e');
+    } finally {
+      await clearAuth();
+    }
+  }
+
   Future<void> clearAuth() async {
     await _secureStorage.delete(key: _tokenKey);
     await _secureStorage.delete(key: _userIdKey);

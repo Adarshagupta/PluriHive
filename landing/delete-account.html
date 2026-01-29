@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Delete Account - Plurihive</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #0f172a;
+        --muted: #475569;
+        --card: #ffffff;
+        --bg: #f8fafc;
+        --accent: #ef4444;
+      }
+      body {
+        margin: 0;
+        font-family: "Inter", "Segoe UI", Arial, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        line-height: 1.6;
+      }
+      main {
+        max-width: 760px;
+        margin: 32px auto 60px;
+        padding: 0 20px;
+      }
+      header {
+        background: var(--card);
+        border-bottom: 1px solid #e2e8f0;
+        padding: 18px 20px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 26px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 18px 20px;
+        margin-top: 16px;
+      }
+      .steps {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .danger {
+        color: var(--accent);
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Delete your Plurihive account</h1>
+    </header>
+    <main>
+      <div class="card">
+        <p>
+          You can delete your account directly in the app. This removes your
+          profile and activity data from our servers.
+        </p>
+        <ol class="steps">
+          <li>Open the Plurihive app.</li>
+          <li>Go to Settings.</li>
+          <li>Scroll to <span class="danger">Danger zone</span>.</li>
+          <li>Tap <strong>Delete account</strong> and confirm.</li>
+        </ol>
+      </div>
+      <div class="card">
+        <p>
+          If you cannot access the app, email
+          <a href="mailto:support@territoryfitness.com">support@territoryfitness.com</a>
+          with the subject "Account Deletion" and we will verify your identity
+          and process the request.
+        </p>
+      </div>
+    </main>
+  </body>
+</html>

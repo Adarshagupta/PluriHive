@@ -16,16 +16,14 @@ class GoogleFitService {
     HealthDataType.DISTANCE_DELTA,
     HealthDataType.ACTIVE_ENERGY_BURNED,
     HealthDataType.HEART_RATE,
-    HealthDataType.WORKOUT,
   ];
 
   // Permissions for each data type
   static final List<HealthDataAccess> _permissions = [
-    HealthDataAccess.READ_WRITE,
-    HealthDataAccess.READ_WRITE,
-    HealthDataAccess.READ_WRITE,
     HealthDataAccess.READ,
-    HealthDataAccess.READ_WRITE,
+    HealthDataAccess.READ,
+    HealthDataAccess.READ,
+    HealthDataAccess.READ,
   ];
 
   static final List<HealthDataType> _readTypes = [

@@ -5,11 +5,12 @@ import { UserController } from "./user.controller";
 import { UserService } from "./user.service";
 import { RedisModule } from "../redis/redis.module";
 import { RealtimeModule } from "../realtime/realtime.module";
+import { EmailService } from "../notifications/email.service";
 
 @Module({
   imports: [TypeOrmModule.forFeature([User]), RedisModule, RealtimeModule],
   controllers: [UserController],
-  providers: [UserService],
+  providers: [UserService, EmailService],
   exports: [UserService],
 })
 export class UserModule {}

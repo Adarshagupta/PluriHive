@@ -1,11 +1,20 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { DataSource, Repository } from "typeorm";
 import { User } from "./user.entity";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 import { UpdateSettingsDto } from "./dto/update-settings.dto";
 import { RedisService } from "../redis/redis.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
+import { Activity } from "../tracking/activity.entity";
+import { Territory } from "../territory/territory.entity";
+import { RouteEntity } from "../routes/route.entity";
+import { MapDrop } from "../engagement/entities/map-drop.entity";
+import { MapDropBoost } from "../engagement/entities/map-drop-boost.entity";
+import { PoiMissionEntity } from "../engagement/entities/poi-mission.entity";
+import { RewardUnlock } from "../engagement/entities/reward-unlock.entity";
+import { Friendship } from "../leaderboard/friendship.entity";
+import { EmailService } from "../notifications/email.service";
 
 @Injectable()
 export class UserService {
@@ -14,6 +23,8 @@ export class UserService {
     private userRepository: Repository<User>,
     private redisService: RedisService,
     private realtimeGateway: RealtimeGateway,
+    private dataSource: DataSource,
+    private emailService: EmailService,
   ) {}
 
   async findById(id: string): Promise<User> {
@@ -122,6 +133,36 @@ export class UserService {
     await this.bumpUserCacheVersion(userId);
     await this.redisService.bumpVersion("cache:leaderboard:version");
     return saved;
+  }
+
+  async deleteAccount(userId: string): Promise<void> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ["id", "email", "name"],
+    });
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.delete(Friendship, [
+        { userId },
+        { friendId: userId },
+      ]);
+      await manager.delete(MapDropBoost, { userId });
+      await manager.delete(MapDrop, { userId });
+      await manager.delete(PoiMissionEntity, { userId });
+      await manager.delete(RewardUnlock, { userId });
+      await manager.delete(Activity, { userId });
+      await manager.delete(RouteEntity, { userId });
+      await manager.delete(Territory, { ownerId: userId });
+      await manager.delete(User, { id: userId });
+    });
+
+    await this.redisService.bumpVersion(this.getUserGlobalVersionKey());
+    await this.redisService.bumpVersion(this.getUserVersionKey(userId));
+    await this.redisService.bumpVersion("cache:leaderboard:version");
+
+    if (user?.email && this.emailService.isEnabled()) {
+      await this.emailService.sendAccountDeletion(user.email, user.name);
+    }
   }
 
   async updateLastLocation(

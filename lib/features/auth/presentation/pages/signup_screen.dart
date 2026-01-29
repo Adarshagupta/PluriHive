@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../../settings/presentation/pages/legal_screen.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/services/google_signin_service.dart';
 import '../../../../core/widgets/auth_backdrop.dart';
@@ -320,12 +322,40 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    Text(
-                      'By continuing, you agree to our Terms and Privacy Policy.',
+                    RichText(
                       textAlign: TextAlign.center,
-                      style: GoogleFonts.dmSans(
-                        fontSize: 12,
-                        color: AppTheme.textSecondary,
+                      text: TextSpan(
+                        style: GoogleFonts.dmSans(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                        children: [
+                          const TextSpan(text: 'By continuing, you agree to our '),
+                            TextSpan(
+                              text: 'Terms',
+                              style: GoogleFonts.dmSans(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary,
+                                decoration: TextDecoration.underline,
+                              ),
+                              recognizer: TapGestureRecognizer()
+                              ..onTap = () => _openLegalDoc(LegalDocType.terms),
+                            ),
+                          const TextSpan(text: ' and '),
+                            TextSpan(
+                              text: 'Privacy Policy',
+                              style: GoogleFonts.dmSans(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary,
+                                decoration: TextDecoration.underline,
+                              ),
+                              recognizer: TapGestureRecognizer()
+                              ..onTap = () => _openLegalDoc(LegalDocType.privacy),
+                            ),
+                          const TextSpan(text: '.'),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -411,6 +441,14 @@ class _SignUpScreenState extends State<SignUpScreen> {
         ],
       ),
       child: child,
+    );
+  }
+
+  void _openLegalDoc(LegalDocType type) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LegalDetailScreen(type: type),
+      ),
     );
   }
 }

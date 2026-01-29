@@ -50,6 +50,7 @@ import '../services/poi_mission_service.dart';
 import '../services/rewards_shop_service.dart';
 import '../services/engagement_api_service.dart';
 import '../services/smart_reminder_service.dart';
+import '../services/legal_api_service.dart';
 
 final getIt = GetIt.instance;
 
@@ -126,6 +127,10 @@ Future<void> initializeDependencies() async {
   );
 
   getIt.registerSingleton<WebSocketService>(WebSocketService());
+
+  getIt.registerLazySingleton<LegalApiService>(
+    () => LegalApiService(client: getIt()),
+  );
 
   getIt.registerLazySingleton<SmartReminderService>(
     () => SmartReminderService(),
