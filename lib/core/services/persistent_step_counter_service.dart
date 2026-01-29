@@ -35,21 +35,30 @@ class PersistentStepCounterService {
     // Request activity recognition permission (for step counting)
     var activityStatus = await Permission.activityRecognition.request();
     print('🏃 Activity Recognition: ${activityStatus.isGranted ? "GRANTED" : "DENIED"}');
-    
-    // Request notification permission
-    var notificationStatus = await Permission.notification.request();
-    print('🔔 Notification: ${notificationStatus.isGranted ? "GRANTED" : "DENIED"}');
-    
-    // Request ignore battery optimization (critical for background step counting)
-    var batteryStatus = await Permission.ignoreBatteryOptimizations.request();
-    print('⚡ Battery Optimization: ${batteryStatus.isGranted ? "GRANTED" : "DENIED"}');
-    
+
     if (!activityStatus.isGranted) {
       print('⚠️ Activity Recognition permission denied - step counting may not work');
     }
+  }
+
+  static Future<bool> requestBackgroundPermissions() async {
+    // Request notification permission (Android 13+)
+    var notificationStatus = await Permission.notification.request();
+    print('🔔 Notification: ${notificationStatus.isGranted ? "GRANTED" : "DENIED"}');
+
+    if (!notificationStatus.isGranted) {
+      return false;
+    }
+
+    // Request ignore battery optimization (optional but improves reliability)
+    var batteryStatus = await Permission.ignoreBatteryOptimizations.request();
+    print('⚡ Battery Optimization: ${batteryStatus.isGranted ? "GRANTED" : "DENIED"}');
+
     if (!batteryStatus.isGranted) {
       print('⚠️ Battery optimization not disabled - background counting may be unreliable');
     }
+
+    return true;
   }
   
   static Future<void> _loadTodayData() async {
@@ -188,7 +197,17 @@ class PersistentStepCounterService {
   }
   
   // Start background service
-  static Future<void> startBackgroundService() async {
+  static Future<bool> startBackgroundService({bool requestPermissions = true}) async {
+    if (await FlutterForegroundTask.isRunningService) {
+      return true;
+    }
+    if (requestPermissions) {
+      final ok = await requestBackgroundPermissions();
+      if (!ok) return false;
+    } else {
+      final status = await Permission.notification.status;
+      if (!status.isGranted) return false;
+    }
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'step_counter_service',
@@ -204,7 +223,7 @@ class PersistentStepCounterService {
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
         eventAction: ForegroundTaskEventAction.repeat(2000),
-        autoRunOnBoot: true,
+        autoRunOnBoot: false,
         allowWakeLock: true,
         allowWifiLock: false,
       ),
@@ -218,6 +237,7 @@ class PersistentStepCounterService {
     );
     
     print('🔄 Foreground service started - notification cannot be dismissed');
+    return true;
   }
   
   static Future<void> updateBackgroundNotification() async {

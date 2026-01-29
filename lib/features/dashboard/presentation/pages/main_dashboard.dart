@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../../tracking/presentation/pages/map_screen.dart';
 import '../../../profile/presentation/pages/profile_screen.dart';
 import '../../../leaderboard/presentation/pages/leaderboard_screen.dart';
 import '../../../history/presentation/pages/activity_history_screen.dart';
 import '../../../tracking/presentation/bloc/location_bloc.dart';
 import '../../../../core/services/persistent_step_counter_service.dart';
-import '../../../../core/widgets/permission_gate.dart';
+import '../../../../core/services/strict_permission_service.dart';
 import '../../../../core/services/pip_service.dart';
 import 'home_tab.dart';
 
@@ -24,8 +26,18 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _permissionsChecked = false;
   bool _isInPipMode = false;
   final PipService _pipService = PipService();
+  final StrictPermissionService _permissionService = StrictPermissionService();
+  bool _permissionPromptVisible = false;
   late final PageController _pageController;
   late final List<Widget> _screens;
+  static const List<_NavItem> _navItems = [
+    _NavItem(index: 0, icon: Icons.cottage_rounded),
+    _NavItem(index: 1, icon: Icons.explore_rounded),
+    _NavItem(index: 3, icon: Icons.emoji_events_rounded),
+    _NavItem(index: 4, icon: Icons.sentiment_satisfied_rounded),
+  ];
+  static const String _backgroundStepTrackingKey =
+      'background_step_tracking_enabled';
 
   @override
   void initState() {
@@ -46,8 +58,10 @@ class _DashboardScreenState extends State<DashboardScreen>
     _initializePipListener();
     _requestLocationPermissions();
     _pipService.disablePip();
-    // Disabled: Auto-start of step counter (was showing unwanted notification)
-    // _initializePersistentStepCounter();
+    _initializePersistentStepCounter();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _promptPermissionsIfNeeded();
+    });
   }
 
   @override
@@ -60,7 +74,54 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // PiP is handled by individual screens (permission and map)
+    if (state == AppLifecycleState.resumed) {
+      _promptPermissionsIfNeeded();
+    }
+  }
+
+  Future<void> _promptPermissionsIfNeeded() async {
+    if (!mounted || _permissionPromptVisible) return;
+
+    final locationAndActivityGranted =
+        await _permissionService.areAllPermissionsGranted();
+    final notificationStatus = await Permission.notification.status;
+    final notificationsGranted = notificationStatus.isGranted;
+
+    if (locationAndActivityGranted && notificationsGranted) {
+      return;
+    }
+
+    _permissionPromptVisible = true;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Permissions needed'),
+          content: const Text(
+            'Location and activity permissions power territory tracking. '
+            'Precise location is required for the map. '
+            'Notifications are optional but recommended for reminders.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Not now'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _permissionService.requestAllPermissions();
+                await Permission.notification.request();
+                _requestLocationPermissions();
+              },
+              child: const Text('Grant permissions'),
+            ),
+          ],
+        );
+      },
+    );
+    _permissionPromptVisible = false;
   }
 
   Future<void> _initializePipListener() async {
@@ -114,12 +175,25 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Future<void> _initializePersistentStepCounter() async {
     await PersistentStepCounterService.initialize();
-    await PersistentStepCounterService.startBackgroundService();
+    final prefs = await SharedPreferences.getInstance();
+    final backgroundEnabled =
+        prefs.getBool(_backgroundStepTrackingKey) ?? false;
+    if (backgroundEnabled) {
+      await PersistentStepCounterService.startBackgroundService(
+        requestPermissions: false,
+      );
+    }
     print('✅ Persistent step counter initialized in dashboard');
   }
 
   Future<void> _requestLocationPermissions() async {
-    if (_permissionsChecked) return;
+    if (_permissionsChecked) {
+      final current = await Geolocator.checkPermission();
+      if (current != LocationPermission.denied &&
+          current != LocationPermission.deniedForever) {
+        return;
+      }
+    }
     _permissionsChecked = true;
 
     // Check if location services are enabled
@@ -169,8 +243,8 @@ class _DashboardScreenState extends State<DashboardScreen>
       builder: (context) => AlertDialog(
         title: const Text('Location Service Disabled'),
         content: const Text(
-          'Please enable location services to use Plurihive. '
-          'This app requires your location to track your runs and capture territories.',
+          'Please enable location services to use tracking features. '
+          'Location is used to draw routes and capture territories.',
         ),
         actions: [
           TextButton(
@@ -198,7 +272,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         title: const Text('Location Permission Required'),
         content: const Text(
           'Plurihive needs location access to track your runs and capture territories. '
-          'Please grant location permission to use the app.',
+          'You can grant it now or later in Settings.',
         ),
         actions: [
           TextButton(
@@ -227,7 +301,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         title: const Text('Location Permission Permanently Denied'),
         content: const Text(
           'You have permanently denied location permission. '
-          'Please go to app settings and grant location permission to use Plurihive.',
+          'Enable it in Settings to use tracking features.',
         ),
         actions: [
           TextButton(
@@ -250,85 +324,80 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   Widget build(BuildContext context) {
-    return PermissionGate(
-      child: BlocListener<LocationBloc, LocationState>(
-        listener: (context, state) {
-          if (_currentIndex == 1) return;
-          final trackingActive = state is LocationTracking;
-          if (trackingActive) {
-            _pipService.enablePipForScreen('map');
-          } else {
-            _pipService.disablePip();
-          }
-        },
-        child: Scaffold(
-          backgroundColor: Colors.white,
-          extendBody: true,
-          body: Stack(
-            children: [
-              PageView(
-                controller: _pageController,
-                physics: _currentIndex == 1
-                    ? const NeverScrollableScrollPhysics()
-                    : const PageScrollPhysics(),
-                onPageChanged: (index) {
-                  if (_currentIndex == index) return;
-                  final trackingActive =
-                      context.read<LocationBloc>().state is LocationTracking;
-                  setState(() {
-                    _currentIndex = index;
-                    if (index != 1) {
-                      _isInPipMode = false;
-                    }
-                  });
+    return BlocListener<LocationBloc, LocationState>(
+      listener: (context, state) {
+        if (_currentIndex == 1) return;
+        final trackingActive = state is LocationTracking;
+        if (trackingActive) {
+          _pipService.enablePipForScreen('map');
+        } else {
+          _pipService.disablePip();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        extendBody: true,
+        body: Stack(
+          children: [
+            PageView(
+              controller: _pageController,
+              physics: _currentIndex == 1
+                  ? const NeverScrollableScrollPhysics()
+                  : const PageScrollPhysics(),
+              onPageChanged: (index) {
+                if (_currentIndex == index) return;
+                final trackingActive =
+                    context.read<LocationBloc>().state is LocationTracking;
+                setState(() {
+                  _currentIndex = index;
                   if (index != 1) {
-                    if (trackingActive) {
-                      _pipService.enablePipForScreen('map');
-                    } else {
-                      _pipService.disablePip();
-                    }
-                  } else {
-                    _pipService.enablePipForScreen('map');
+                    _isInPipMode = false;
                   }
-                },
-                children: _screens,
-              ),
-              _buildTrackingBanner(),
-            ],
-          ),
-          bottomNavigationBar: _isInPipMode || _currentIndex == 1
-              ? null
-              : Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Container(
-                    height: 70,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(35),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
-                          blurRadius: 20,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          _buildNavItem(0, Icons.cottage_rounded),
-                          _buildNavItem(1, Icons.explore_rounded),
-                          _buildNavItem(2, Icons.menu_book_rounded),
-                          _buildNavItem(3, Icons.emoji_events_rounded),
-                          _buildNavItem(4, Icons.sentiment_satisfied_rounded),
-                        ],
+                });
+                if (index != 1) {
+                  if (trackingActive) {
+                    _pipService.enablePipForScreen('map');
+                  } else {
+                    _pipService.disablePip();
+                  }
+                } else {
+                  _pipService.enablePipForScreen('map');
+                }
+              },
+              children: _screens,
+            ),
+            _buildTrackingBanner(),
+          ],
+        ),
+        bottomNavigationBar: _isInPipMode || _currentIndex == 1
+            ? null
+            : Padding(
+                padding: const EdgeInsets.all(20),
+                child: Container(
+                  height: 70,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(35),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 20,
+                        offset: const Offset(0, 5),
                       ),
+                    ],
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        for (final item in _navItems)
+                          _buildNavItem(item.index, item.icon),
+                      ],
                     ),
                   ),
                 ),
-        ),
+              ),
       ),
     );
   }
@@ -397,31 +466,49 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Widget _buildNavItem(int index, IconData icon) {
     final isSelected = _currentIndex == index;
-    final colors = [
-      Color(0xFF2D2D2D), // dark for home
-      Color(0xFFB0B0B0), // gray for map
-      Color(0xFF4CAF50), // green for history
-      Color(0xFFB0B0B0), // gray for leaderboard
-      Color(0xFF7B68EE), // purple for profile
-    ];
+    final colors = {
+      0: Color(0xFF2D2D2D), // home
+      1: Color(0xFF3B82F6), // map
+      3: Color(0xFFF59E0B), // leaderboard
+      4: Color(0xFF7B68EE), // profile
+    };
 
     return GestureDetector(
       onTap: () {
         _setCurrentIndex(index);
       },
-      child: Container(
-        width: 50,
-        height: 50,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        width: 52,
+        height: 52,
         decoration: BoxDecoration(
-          color: isSelected ? colors[index] : Colors.transparent,
-          shape: BoxShape.circle,
+          color: isSelected
+              ? colors[index]!.withOpacity(0.18)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected
+                ? colors[index]!.withOpacity(0.5)
+                : Colors.transparent,
+          ),
         ),
         child: Icon(
           icon,
-          color: isSelected ? Colors.white : colors[index],
+          color: isSelected ? colors[index]! : Colors.grey.shade400,
           size: 26,
         ),
       ),
     );
   }
+}
+
+class _NavItem {
+  final int index;
+  final IconData icon;
+
+  const _NavItem({
+    required this.index,
+    required this.icon,
+  });
 }

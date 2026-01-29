@@ -19,6 +19,8 @@ import '../../../tracking/data/datasources/activity_local_data_source.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import 'dart:async';
+import '../../../history/presentation/pages/activity_history_screen.dart';
+import '../../../../core/widgets/rain_overlay.dart';
 
 class HomeTab extends StatefulWidget {
   final Function(int)? onNavigateToTab;
@@ -343,6 +345,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                 gradient: _getWeatherGradient(),
               ),
             ),
+            if (_isRaining())
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: RainOverlay(
+                    intensity: _rainIntensity(),
+                    color: Colors.white,
+                    slant: 0.12,
+                  ),
+                ),
+              ),
             // Header content on top of gradient
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 60, 24, 20),
@@ -732,97 +744,112 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             ),
             SizedBox(width: 12),
             Expanded(
-              child: Container(
-                padding: EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 15,
-                      offset: Offset(0, 4),
+              child: GestureDetector(
+                onTap: () {
+                  if (widget.onNavigateToTab != null) {
+                    widget.onNavigateToTab!(2);
+                    return;
+                  }
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const ActivityHistoryScreen(),
                     ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(Icons.flag_outlined,
-                            size: 18, color: Colors.black54),
-                        SizedBox(width: 8),
-                        Text(
-                          'Captured\nAreas',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.black87,
-                            height: 1.2,
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: 12),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
-                      children: [
-                        Text(
-                          '${state.stats.territoriesCaptured}',
-                          style: TextStyle(
-                            fontSize: 32,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.black87,
-                          ),
-                        ),
-                        SizedBox(width: 4),
-                        Text(
-                          'zones',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.black38,
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Container(
-                            padding: EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade200,
-                              borderRadius: BorderRadius.circular(12),
+                  );
+                },
+                child: Container(
+                  padding: EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 15,
+                        offset: Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.flag_outlined,
+                              size: 18, color: Colors.black54),
+                          SizedBox(width: 8),
+                          Text(
+                            'Captured\nAreas',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87,
+                              height: 1.2,
                             ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.shield_outlined,
-                                    size: 12, color: Colors.black54),
-                                SizedBox(width: 4),
-                                Flexible(
-                                  child: Text(
-                                    '${state.stats.currentStreak} day streak',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.black54,
+                          ),
+                          const Spacer(),
+                          Icon(Icons.history, size: 16, color: Colors.black38),
+                        ],
+                      ),
+                      SizedBox(height: 12),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                        textBaseline: TextBaseline.alphabetic,
+                        children: [
+                          Text(
+                            '${state.stats.territoriesCaptured}',
+                            style: TextStyle(
+                              fontSize: 32,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.black87,
+                            ),
+                          ),
+                          SizedBox(width: 4),
+                          Text(
+                            'zones',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.black38,
+                            ),
+                          ),
+                        ],
+                      ),
+                      SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Container(
+                              padding: EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade200,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.shield_outlined,
+                                      size: 12, color: Colors.black54),
+                                  SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(
+                                      '${state.stats.currentStreak} day streak',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.black54,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -894,7 +921,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   minHeight: 12,
                   backgroundColor: Colors.grey.shade200,
                   valueColor: AlwaysStoppedAnimation<Color>(
-                    Color(0xFF7FE87A),
+                    Color(0xFFB8E6E6),
                   ),
                 ),
               ),
@@ -1631,9 +1658,35 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (aqi <= 300) return 'Very Unhealthy';
     return 'Hazardous';
   }
+
+  bool _isRaining() {
+    if (_weatherData == null) return false;
+    final weatherMain =
+        _weatherData!['weather'][0]['main'].toString().toLowerCase();
+    return weatherMain.contains('rain') ||
+        weatherMain.contains('drizzle') ||
+        weatherMain.contains('thunder');
+  }
+
+  double _rainIntensity() {
+    if (_weatherData == null) return 0.4;
+    final weatherMain =
+        _weatherData!['weather'][0]['main'].toString().toLowerCase();
+    final description =
+        _weatherData!['weather'][0]['description'].toString().toLowerCase();
+    if (weatherMain.contains('thunder') || description.contains('heavy')) {
+      return 0.75;
+    }
+    if (weatherMain.contains('drizzle') || description.contains('light')) {
+      return 0.35;
+    }
+    return 0.55;
+  }
+
 }
 
 // Quick Action Button
+
 class _QuickActionButton extends StatelessWidget {
   final IconData icon;
   final String label;

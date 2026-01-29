@@ -15,6 +15,7 @@ import 'dart:math';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import '../../../../core/theme/app_theme.dart';
 import '../../../../core/services/background_tracking_service.dart';
 import '../../../../core/services/motion_detection_service.dart';
 import '../../../../core/services/tracking_api_service.dart';
@@ -29,12 +30,14 @@ import '../../../../core/services/avatar_preset_service.dart';
 import '../../../../core/services/map_drop_service.dart';
 import '../../../../core/services/poi_mission_service.dart';
 import '../../../../core/services/rewards_shop_service.dart';
+import '../../../../core/services/territory_prefetch_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/utils/picture_in_picture.dart';
 import '../../../../core/algorithms/geospatial_algorithms.dart';
 import '../../../../core/widgets/skeleton.dart';
 import '../../../../core/services/pip_service.dart';
 import '../../../../core/navigation/app_route_observer.dart';
+import '../../../../core/widgets/rain_overlay.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../tracking/domain/entities/activity.dart';
 import '../../../tracking/domain/entities/position.dart';
@@ -83,6 +86,7 @@ class _MapScreenState extends State<MapScreen>
   late final UserProfileApiService _userProfileApiService;
   late final AuthApiService _authApiService;
   late final http.Client _httpClient;
+  late final TerritoryPrefetchService _territoryPrefetchService;
   final Map<String, Marker> _userMarkersById = {};
   static const String _offlineSnapshotKey = 'offline_map_snapshot';
   String? _offlineSnapshotBase64;
@@ -101,12 +105,27 @@ class _MapScreenState extends State<MapScreen>
   final Set<Marker> _territoryMarkers = {};
   Set<Marker> _dropMarkers = {};
   Set<Circle> _dropCircles = {};
+  BitmapDescriptor? _dropMarkerIcon;
+  bool _isDropIconLoading = false;
   Set<Marker> _poiMarkers = {};
   Set<Circle> _poiCircles = {};
   PoiMission? _activePoiMission;
   MapDropBoost? _activeDropBoost;
   DateTime? _lastEngagementUpdateAt;
   Timer? _boostTicker;
+  Map<String, dynamic>? _weatherData;
+  bool _isRaining = false;
+  Timer? _weatherTimer;
+  bool _locationServiceEnabled = true;
+  geo.LocationPermission _locationPermissionStatus =
+      geo.LocationPermission.denied;
+  bool _preciseLocationGranted = true;
+  bool _isCheckingLocationGate = false;
+  bool _isMapReady = false;
+  bool _dropsLoading = false;
+  bool _hasLoadedDrops = false;
+  Timer? _mapStartupTimer;
+  bool _mapDataStarted = false;
   Color _markerRingColor = Colors.white;
   final Map<String, Map<String, dynamic>> _activityData =
       {}; // Store activity data by polylineId
@@ -124,6 +143,9 @@ class _MapScreenState extends State<MapScreen>
     5.0,
     10.0,
   ];
+  static const String _weatherApiKey = '5031f2deb028a21f969207e55fa35755';
+  static const double _territoryFillOpacity = 0.03;
+  static const double _capturedAreaFillOpacity = 0.02;
   static const double _territoryRefetchDistanceMeters = 250.0;
   static const Duration _territoryFetchTtl = Duration(minutes: 3);
   Timer? _territoryRefreshTimer;
@@ -271,6 +293,7 @@ class _MapScreenState extends State<MapScreen>
     _userProfileApiService = di.getIt<UserProfileApiService>();
     _authApiService = di.getIt<AuthApiService>();
     _httpClient = di.getIt<http.Client>();
+    _territoryPrefetchService = di.getIt<TerritoryPrefetchService>();
     _offlineSnapshotBase64 = _prefs.getString(_offlineSnapshotKey);
     _animController = AnimationController(
       duration: Duration(milliseconds: 400),
@@ -291,57 +314,20 @@ class _MapScreenState extends State<MapScreen>
 
     // Initialize step counter (fallback)
     _initStepCounter();
-
-    _initEngagementSystems();
-
-    // Load captured areas from activity history to show on map
-    _loadSavedCapturedAreas();
-
-    // Kick off any pending offline sync in background
-    _refreshSyncStatus();
-    _triggerBackgroundSync();
-    _syncStatusTimer = Timer.periodic(
-      const Duration(seconds: 12),
-      (_) => _refreshSyncStatus(),
-    );
-
-    _authApiService.getUserId().then((id) => _currentUserId = id);
-    _webSocketService.onUserLocation(_handleUserLocation);
-    _webSocketService.onTerritoryCaptured(_handleTerritoryCaptured);
-    _webSocketService.onTerritorySnapshot(_handleTerritorySnapshot);
-    _webSocketService.onDropBoostUpdate(_handleBoostUpdate);
-    _ensureWebSocketConnected();
-    _locationBroadcastTimer = Timer.periodic(
-      const Duration(seconds: 6),
-      (_) => _emitMyLocationUpdate(),
-    );
-    _liveUserCleanupTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => _pruneStaleUsers(),
-    );
-
-    _territoryRefreshTimer = Timer.periodic(
-      const Duration(seconds: 45),
-      (_) {
-        if (!mounted) return;
-        if (!_webSocketService.isConnected) {
-          _ensureWebSocketConnected();
-          _refreshRecentTerritories();
-        }
-      },
-    );
-
-    // DISABLED: Don't load individual hex territories - they're just for backend tracking
-    // Load all territories to show on map (visible to all users)
-    _loadTerritoriesFromBackend();
-    _loadCachedNearbyTerritories();
-    _loadBossTerritoriesFromBackend();
+    _mapStartupTimer = Timer(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      _startMapDataLoadOnce();
+    });
 
     // Get initial location
     // IMPORTANT: Stop any previous tracking session first
     context.read<LocationBloc>().add(StopLocationTracking());
     context.read<LocationBloc>().add(GetInitialLocation());
     context.read<TerritoryBloc>().add(LoadTerritories());
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_checkPreciseLocationAccess(requestPermission: true));
+    });
   }
 
   @override
@@ -361,6 +347,193 @@ class _MapScreenState extends State<MapScreen>
   @override
   void didPopNext() {
     _pipService.enablePipForScreen('map');
+    unawaited(_checkPreciseLocationAccess());
+  }
+
+  void _startMapDataLoadOnce() {
+    if (_mapDataStarted) return;
+    _mapDataStarted = true;
+    _mapStartupTimer?.cancel();
+    if (!_hasLoadedDrops) {
+      _dropsLoading = true;
+      if (mounted) {
+        setState(() {});
+      }
+    }
+
+    // Load captured areas from activity history to show on map
+    _loadSavedCapturedAreas();
+
+    // Load cached nearby territories first (fast), then full sets.
+    _loadCachedNearbyTerritories();
+    _loadTerritoriesFromBackend();
+    _loadBossTerritoriesFromBackend();
+
+    unawaited(_initEngagementSystems());
+
+    _fetchWeatherForMap();
+    _weatherTimer ??= Timer.periodic(
+      const Duration(minutes: 15),
+      (_) => _fetchWeatherForMap(),
+    );
+
+    // Prefetch nearby territories once map is live.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_territoryPrefetchService.prefetchAroundUser());
+    });
+
+    // Kick off any pending offline sync in background
+    _refreshSyncStatus();
+    _triggerBackgroundSync();
+    _syncStatusTimer ??= Timer.periodic(
+      const Duration(seconds: 12),
+      (_) => _refreshSyncStatus(),
+    );
+
+    _authApiService.getUserId().then((id) => _currentUserId = id);
+    _webSocketService.onUserLocation(_handleUserLocation);
+    _webSocketService.onTerritoryCaptured(_handleTerritoryCaptured);
+    _webSocketService.onTerritorySnapshot(_handleTerritorySnapshot);
+    _webSocketService.onDropBoostUpdate(_handleBoostUpdate);
+    _ensureWebSocketConnected();
+    _locationBroadcastTimer ??= Timer.periodic(
+      const Duration(seconds: 6),
+      (_) => _emitMyLocationUpdate(),
+    );
+    _liveUserCleanupTimer ??= Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _pruneStaleUsers(),
+    );
+
+    _territoryRefreshTimer ??= Timer.periodic(
+      const Duration(seconds: 45),
+      (_) {
+        if (!mounted) return;
+        if (!_webSocketService.isConnected) {
+          _ensureWebSocketConnected();
+          _refreshRecentTerritories();
+        }
+      },
+    );
+  }
+
+  Future<void> _checkPreciseLocationAccess({bool requestPermission = false}) async {
+    if (_isCheckingLocationGate) return;
+    if (mounted) {
+      setState(() => _isCheckingLocationGate = true);
+    } else {
+      _isCheckingLocationGate = true;
+    }
+
+    try {
+      final serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
+      _locationServiceEnabled = serviceEnabled;
+      if (!serviceEnabled) {
+        return;
+      }
+
+      var permission = await geo.Geolocator.checkPermission();
+      if (permission == geo.LocationPermission.denied && requestPermission) {
+        permission = await geo.Geolocator.requestPermission();
+      }
+      _locationPermissionStatus = permission;
+
+      if (permission == geo.LocationPermission.denied ||
+          permission == geo.LocationPermission.deniedForever) {
+        _preciseLocationGranted = false;
+        return;
+      }
+
+      _preciseLocationGranted = await _isPreciseLocationGranted();
+    } catch (e) {
+      print('Failed to check location accuracy: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isCheckingLocationGate = false);
+      } else {
+        _isCheckingLocationGate = false;
+      }
+    }
+  }
+
+  Future<bool> _isPreciseLocationGranted() async {
+    try {
+      final accuracyStatus = await geo.Geolocator.getLocationAccuracy();
+      if (accuracyStatus == geo.LocationAccuracyStatus.precise) {
+        return true;
+      }
+      if (accuracyStatus == geo.LocationAccuracyStatus.reduced) {
+        return false;
+      }
+    } catch (_) {
+      // Some platforms do not report accuracy status.
+    }
+
+    try {
+      final position = await geo.Geolocator.getCurrentPosition(
+        desiredAccuracy: geo.LocationAccuracy.high,
+      );
+      return position.accuracy <= 65;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  bool get _showLocationGate {
+    if (!_locationServiceEnabled) return true;
+    if (_locationPermissionStatus == geo.LocationPermission.denied ||
+        _locationPermissionStatus == geo.LocationPermission.deniedForever) {
+      return true;
+    }
+    return !_preciseLocationGranted;
+  }
+
+  String _locationGateTitle() {
+    if (!_locationServiceEnabled) {
+      return 'Enable location services';
+    }
+    if (_locationPermissionStatus == geo.LocationPermission.denied) {
+      return 'Location permission needed';
+    }
+    if (_locationPermissionStatus == geo.LocationPermission.deniedForever) {
+      return 'Location permission disabled';
+    }
+    return 'Precise location required';
+  }
+
+  String _locationGateMessage() {
+    if (!_locationServiceEnabled) {
+      return 'Turn on location services to use the map.';
+    }
+    if (_locationPermissionStatus == geo.LocationPermission.denied) {
+      return 'Allow location access to show your position and capture territory.';
+    }
+    if (_locationPermissionStatus == geo.LocationPermission.deniedForever) {
+      return 'Enable location permission in Settings to use the map.';
+    }
+    return 'Enable precise location. Approximate location will not work for the map.';
+  }
+
+  Future<void> _handleLocationGatePrimaryAction() async {
+    if (!_locationServiceEnabled) {
+      await geo.Geolocator.openLocationSettings();
+      return;
+    }
+    if (_locationPermissionStatus == geo.LocationPermission.denied) {
+      await _checkPreciseLocationAccess(requestPermission: true);
+      return;
+    }
+    await geo.Geolocator.openAppSettings();
+  }
+
+  String _locationGatePrimaryLabel() {
+    if (!_locationServiceEnabled) {
+      return 'Open location settings';
+    }
+    if (_locationPermissionStatus == geo.LocationPermission.denied) {
+      return 'Allow location';
+    }
+    return 'Open app settings';
   }
 
   Future<void> _ensureWebSocketConnected() async {
@@ -566,8 +739,8 @@ class _MapScreenState extends State<MapScreen>
           Polygon(
             polygonId: PolygonId(polygonId),
             points: polygonPoints,
-            fillColor: territoryColor.withOpacity(0.12),
-            strokeColor: territoryColor.withOpacity(0.7),
+            fillColor: territoryColor.withOpacity(_territoryFillOpacity),
+            strokeColor: territoryColor.withOpacity(0.5),
             strokeWidth: polygonPoints.length >= 3 ? 2 : 1,
           ),
         );
@@ -1520,7 +1693,8 @@ class _MapScreenState extends State<MapScreen>
               Polygon(
                 polygonId: PolygonId(polygonId),
                 points: routePoints,
-                fillColor: const Color(0xFF4CAF50).withOpacity(0.15),
+                fillColor:
+                    const Color(0xFF4CAF50).withOpacity(_capturedAreaFillOpacity),
                 strokeColor: const Color(0xFF2E7D32).withOpacity(0.7),
                 strokeWidth: 2,
                 consumeTapEvents: true,
@@ -1724,8 +1898,66 @@ class _MapScreenState extends State<MapScreen>
     await _poiMissionService.initialize();
     await _rewardsShopService.initialize();
     _refreshMarkerCosmetics();
+    await _ensureDropMarkerIcon();
     _refreshDropMarkers();
     _refreshPoiMarkers();
+  }
+
+  Future<void> _fetchWeatherForMap() async {
+    try {
+      final permission = await geo.Geolocator.checkPermission();
+      if (permission == geo.LocationPermission.denied ||
+          permission == geo.LocationPermission.deniedForever) {
+        return;
+      }
+
+      final position = await geo.Geolocator.getCurrentPosition(
+        desiredAccuracy: geo.LocationAccuracy.medium,
+      ).timeout(const Duration(seconds: 10));
+
+      final url =
+          'https://api.openweathermap.org/data/2.5/weather?lat=${position.latitude}&lon=${position.longitude}&appid=$_weatherApiKey&units=metric';
+      final response =
+          await _httpClient.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) return;
+      final data = json.decode(response.body);
+      final raining = _isRainingFromWeather(data);
+      if (!mounted) return;
+      setState(() {
+        _weatherData = data;
+        _isRaining = raining;
+      });
+    } catch (e) {
+      print('Map weather fetch failed: $e');
+    }
+  }
+
+  bool _isRainingFromWeather(Map<String, dynamic> data) {
+    try {
+      final main =
+          data['weather'][0]['main'].toString().toLowerCase();
+      return main.contains('rain') ||
+          main.contains('drizzle') ||
+          main.contains('thunder');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  double _rainIntensityFromWeather() {
+    if (_weatherData == null) return 0.5;
+    final main =
+        _weatherData!['weather'][0]['main'].toString().toLowerCase();
+    final desc =
+        _weatherData!['weather'][0]['description'].toString().toLowerCase();
+    if (main.contains('thunder') || desc.contains('heavy')) {
+      return 0.8;
+    }
+    if (main.contains('drizzle') || desc.contains('light')) {
+      return 0.35;
+    }
+    return 0.6;
   }
 
   Future<void> _handleEngagementUpdate(LatLng position) async {
@@ -1736,8 +1968,17 @@ class _MapScreenState extends State<MapScreen>
     }
     _lastEngagementUpdateAt = now;
 
+    if (!_hasLoadedDrops) {
+      _dropsLoading = true;
+      if (mounted) {
+        setState(() {});
+      }
+    }
+
+    bool dropsSynced = false;
     try {
       final pickup = await _mapDropService.syncDrops(position);
+      dropsSynced = true;
       if (pickup.pickedDrops.isNotEmpty) {
         _showDropPickupSnack();
       }
@@ -1769,6 +2010,16 @@ class _MapScreenState extends State<MapScreen>
       }
     } catch (e) {
       print('[engagement] update failed: $e');
+    } finally {
+      if (!_hasLoadedDrops) {
+        _dropsLoading = false;
+        if (dropsSynced) {
+          _hasLoadedDrops = true;
+        }
+        if (mounted) {
+          setState(() {});
+        }
+      }
     }
   }
 
@@ -1792,6 +2043,9 @@ class _MapScreenState extends State<MapScreen>
   }
 
   void _refreshDropMarkers() {
+    if (_dropMarkerIcon == null && !_isDropIconLoading) {
+      unawaited(_ensureDropMarkerIcon());
+    }
     final drops = _mapDropService.activeDrops;
     final markers = <Marker>{};
     final circles = <Circle>{};
@@ -1800,9 +2054,14 @@ class _MapScreenState extends State<MapScreen>
         Marker(
           markerId: MarkerId('drop_${drop.id}'),
           position: drop.position,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            BitmapDescriptor.hueYellow,
-          ),
+          icon: _dropMarkerIcon ??
+              BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueYellow,
+              ),
+          anchor: _dropMarkerIcon != null
+              ? const Offset(0.5, 0.5)
+              : const Offset(0.5, 1.0),
+          zIndex: 16.0,
           onTap: _showDropInfoSheet,
         ),
       );
@@ -1826,6 +2085,63 @@ class _MapScreenState extends State<MapScreen>
       _dropMarkers = markers;
       _dropCircles = circles;
     }
+  }
+
+  Future<void> _ensureDropMarkerIcon() async {
+    if (_dropMarkerIcon != null || _isDropIconLoading) return;
+    _isDropIconLoading = true;
+    try {
+      _dropMarkerIcon = await _createPowerDropMarker();
+    } catch (e) {
+      print('Failed to build power drop icon: $e');
+    } finally {
+      _isDropIconLoading = false;
+      if (mounted) {
+        setState(() {});
+      }
+    }
+  }
+
+  Future<BitmapDescriptor> _createPowerDropMarker({int size = 96}) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    final center = ui.Offset(size / 2, size / 2);
+    final radius = size / 2.0;
+
+    final glowPaint = Paint()
+      ..color = const Color(0xFFFCD34D).withOpacity(0.35)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, radius * 0.92, glowPaint);
+
+    final basePaint = Paint()
+      ..color = const Color(0xFFF59E0B)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, radius * 0.72, basePaint);
+
+    final ringPaint = Paint()
+      ..color = Colors.white.withOpacity(0.9)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = radius * 0.08;
+    canvas.drawCircle(center, radius * 0.62, ringPaint);
+
+    final boltPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    final bolt = ui.Path()
+      ..moveTo(size * 0.58, size * 0.18)
+      ..lineTo(size * 0.38, size * 0.55)
+      ..lineTo(size * 0.52, size * 0.55)
+      ..lineTo(size * 0.44, size * 0.85)
+      ..lineTo(size * 0.70, size * 0.44)
+      ..lineTo(size * 0.56, size * 0.44)
+      ..close();
+    canvas.drawPath(bolt, boltPaint);
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size, size);
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+
+    return BitmapDescriptor.fromBytes(byteData!.buffer.asUint8List());
   }
 
   void _refreshPoiMarkers() {
@@ -2026,7 +2342,9 @@ class _MapScreenState extends State<MapScreen>
     _locationBroadcastTimer?.cancel();
     _liveUserCleanupTimer?.cancel();
     _territoryFetchDebounce?.cancel();
+    _mapStartupTimer?.cancel();
     _boostTicker?.cancel();
+    _weatherTimer?.cancel();
     _webSocketService.offUserLocation(_handleUserLocation);
     _webSocketService.offTerritoryCaptured(_handleTerritoryCaptured);
     _webSocketService.offTerritorySnapshot(_handleTerritorySnapshot);
@@ -2135,59 +2453,72 @@ class _MapScreenState extends State<MapScreen>
                       onPointerDown: _handlePointerDown,
                       onPointerUp: _handlePointerUp,
                       onPointerCancel: _handlePointerCancel,
-                      child: GoogleMap(
-                        initialCameraPosition: initialPosition,
-                        myLocationEnabled: false,
-                        myLocationButtonEnabled: false,
-                        mapType: _currentMapType,
-                        zoomControlsEnabled: false,
-                        tiltGesturesEnabled: true,
-                        rotateGesturesEnabled: true,
-                        polygons: _polygons,
-                        polylines: _polylines,
-                        markers: {
-                          ..._territoryMarkers,
-                          ..._dropMarkers,
-                          ..._poiMarkers,
-                          ..._userMarkersById.values,
-                          if (_currentUserMarker != null) _currentUserMarker!,
-                        },
-                        circles: _getMapCircles(),
-                        onCameraMoveStarted: () {
-                          if (_activePointers.length >= 2) {
-                            _disableFollowOnGesture();
-                          }
-                        },
-                        onMapCreated: (controller) {
-                          _mapController = controller;
-                          if (locationState is LocationIdle &&
-                              locationState.lastPosition != null) {
-                            controller.animateCamera(
-                              CameraUpdate.newLatLng(
-                                LatLng(
-                                  locationState.lastPosition!.latitude,
-                                  locationState.lastPosition!.longitude,
+                      child: Stack(
+                        children: [
+                          GoogleMap(
+                            initialCameraPosition: initialPosition,
+                            myLocationEnabled: false,
+                            myLocationButtonEnabled: false,
+                            mapType: _currentMapType,
+                            zoomControlsEnabled: false,
+                            tiltGesturesEnabled: true,
+                            rotateGesturesEnabled: true,
+                            polygons: _polygons,
+                            polylines: _polylines,
+                            markers: {
+                              ..._territoryMarkers,
+                              ..._dropMarkers,
+                              ..._poiMarkers,
+                              ..._userMarkersById.values,
+                              if (_currentUserMarker != null) _currentUserMarker!,
+                            },
+                            circles: _getMapCircles(),
+                            onCameraMoveStarted: () {
+                              if (_activePointers.length >= 2) {
+                                _disableFollowOnGesture();
+                              }
+                            },
+                            onMapCreated: (controller) {
+                              _mapController = controller;
+                              if (!_isMapReady) {
+                                setState(() => _isMapReady = true);
+                              }
+                              if (locationState is LocationIdle &&
+                                  locationState.lastPosition != null) {
+                                controller.animateCamera(
+                                  CameraUpdate.newLatLng(
+                                    LatLng(
+                                      locationState.lastPosition!.latitude,
+                                      locationState.lastPosition!.longitude,
+                                    ),
+                                  ),
+                                );
+                              }
+                              _startMapDataLoadOnce();
+                            },
+                            onTap: (LatLng position) {
+                              if (_isPlanningRoute) {
+                                _addPlannedRoutePoint(position);
+                                return;
+                              }
+                              // Check if tap is inside any activity polygon to show drawer
+                              _handleMapTapForActivities(position);
+                            },
+                            onCameraMove: (position) {
+                              // Could generate visible territories here
+                            },
+                          ),
+                          if (_isRaining)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: RainOverlay(
+                                  intensity: _rainIntensityFromWeather(),
+                                  color: Colors.white,
+                                  slant: 0.14,
                                 ),
                               ),
-                            );
-                          }
-
-                          // Load territories when map is ready
-                          print('[map] Map created, loading territories...');
-                          _loadTerritoriesFromBackend();
-                          _loadBossTerritoriesFromBackend();
-                        },
-                        onTap: (LatLng position) {
-                          if (_isPlanningRoute) {
-                            _addPlannedRoutePoint(position);
-                            return;
-                          }
-                          // Check if tap is inside any activity polygon to show drawer
-                          _handleMapTapForActivities(position);
-                        },
-                        onCameraMove: (position) {
-                          // Could generate visible territories here
-                        },
+                            ),
+                        ],
                       ),
                     );
                   },
@@ -2232,6 +2563,92 @@ class _MapScreenState extends State<MapScreen>
                   ),
                 ),
               ),
+            if (_showLocationGate)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.white.withOpacity(0.94),
+                  child: Center(
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 24),
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.08),
+                            blurRadius: 24,
+                            offset: const Offset(0, 12),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 64,
+                            height: 64,
+                            decoration: BoxDecoration(
+                              color: AppTheme.accentColor.withOpacity(0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.my_location,
+                              color: AppTheme.accentColor,
+                              size: 30,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            _locationGateTitle(),
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _locationGateMessage(),
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.dmSans(
+                              fontSize: 13,
+                              color: AppTheme.textSecondary,
+                              height: 1.4,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          if (_isCheckingLocationGate)
+                            const CircularProgressIndicator(strokeWidth: 2)
+                          else ...[
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton(
+                                onPressed: _handleLocationGatePrimaryAction,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppTheme.accentColor,
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: Text(_locationGatePrimaryLabel()),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            TextButton(
+                              onPressed: () =>
+                                  _checkPreciseLocationAccess(),
+                              child: const Text('Try again'),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
 
             // Minimal top stats bar + sync status
             Positioned(top: 0, left: 0, right: 0, child: _buildTopStatusArea()),
@@ -2239,7 +2656,7 @@ class _MapScreenState extends State<MapScreen>
             // Map control buttons (right side)
             Positioned(
               right: 16,
-              top: 120,
+              top: 150,
               child: SafeArea(
                 child: FadeTransition(
                   opacity: _animController,
@@ -2716,6 +3133,11 @@ class _MapScreenState extends State<MapScreen>
 
   Widget _buildInlineStatusChips() {
     final chips = <Widget>[
+      if (!_isMapReady) _buildLoadingChip('Loading map'),
+      if (_allTerritoriesLoading ||
+          (_mapDataStarted && !_allTerritoriesLoaded))
+        _buildLoadingChip('Loading territories'),
+      if (_dropsLoading) _buildLoadingChip('Loading power drops'),
       _buildSyncStatusChip(),
       _buildQualityChip(),
       _buildSplitChip(),
@@ -2805,6 +3227,39 @@ class _MapScreenState extends State<MapScreen>
             style: const TextStyle(
               color: Colors.white,
               fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.68),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -3275,11 +3730,11 @@ class _MapScreenState extends State<MapScreen>
 
         if (isOwnTerritory) {
           // Your territory - green
-          fillColor = Color(0xFF4CAF50).withOpacity(0.12);
+          fillColor = Color(0xFF4CAF50).withOpacity(_territoryFillOpacity);
           strokeColor = Color(0xFF4CAF50).withOpacity(0.7);
         } else {
           // Other player's territory - red
-          fillColor = Color(0xFFE53935).withOpacity(0.12);
+          fillColor = Color(0xFFE53935).withOpacity(_territoryFillOpacity);
           strokeColor = Color(0xFFE53935).withOpacity(0.7);
         }
 
@@ -3996,8 +4451,9 @@ class _MapScreenState extends State<MapScreen>
         Polygon(
           polygonId: PolygonId('captured_area_$areaId'),
           points: routePoints,
-          fillColor: const Color(0xFF4CAF50).withOpacity(0.12),
-          strokeColor: const Color(0xFF4CAF50).withOpacity(0.7),
+          fillColor:
+              const Color(0xFF4CAF50).withOpacity(_capturedAreaFillOpacity),
+          strokeColor: const Color(0xFF4CAF50).withOpacity(0.5),
           strokeWidth: 2,
           consumeTapEvents: true,
           onTap: () {
@@ -5505,7 +5961,7 @@ class _MapScreenState extends State<MapScreen>
           Polygon(
             polygonId: PolygonId('boss_$hexId'),
             points: polygonPoints,
-            fillColor: bossColor.withOpacity(0.12),
+            fillColor: bossColor.withOpacity(_territoryFillOpacity),
             strokeColor: bossColor.withOpacity(0.7),
             strokeWidth: 3,
           ),
@@ -7125,6 +7581,15 @@ class _MapScreenState extends State<MapScreen>
   }
 
   void _handleStart(BuildContext context) {
+    if (_showLocationGate) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enable precise location to start tracking.'),
+        ),
+      );
+      _checkPreciseLocationAccess(requestPermission: true);
+      return;
+    }
     setState(() {
       _currentLoopId = _uuid.v4();
       _trackingState = TrackingState.started;

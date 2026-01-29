@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/pages/signin_screen.dart';
@@ -15,6 +16,7 @@ import '../../../../core/services/code_push_service.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/services/smart_reminder_service.dart';
 import '../../../../core/services/auth_api_service.dart';
+import '../../../../core/services/persistent_step_counter_service.dart';
 import 'legal_screen.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/widgets/skeleton.dart';
@@ -31,6 +33,8 @@ class _SettingsScreenState extends State<SettingsScreen>
     with TickerProviderStateMixin {
   static const String _settingsCacheKey = 'settings_cache_v1';
   static const String _settingsCacheTimeKey = 'settings_cache_time_v1';
+  static const String _backgroundStepTrackingKey =
+      'background_step_tracking_enabled';
   String _selectedBackend = ApiConfig.localUrl;
   late final SettingsApiService _settingsService;
   late final SharedPreferences _prefs;
@@ -45,6 +49,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _streakReminders = true;
   bool _smartReminders = false;
   String? _smartReminderTime;
+  bool _backgroundStepTracking = false;
   bool _darkMode = false;
   String _language = 'English';
   bool _isInitialLoading = true;
@@ -66,6 +71,8 @@ class _SettingsScreenState extends State<SettingsScreen>
     _trackingService = di.getIt<TrackingApiService>();
     _smartReminderService = di.getIt<SmartReminderService>();
     _authApiService = di.getIt<AuthApiService>();
+    _backgroundStepTracking =
+        _prefs.getBool(_backgroundStepTrackingKey) ?? false;
     _smartReminderService.initialize();
     _floatController = AnimationController(
       duration: const Duration(seconds: 3),
@@ -187,6 +194,95 @@ class _SettingsScreenState extends State<SettingsScreen>
       return;
     }
     await _refreshSmartReminderTime();
+  }
+
+  Future<void> _togglePushNotifications(bool value) async {
+    if (value) {
+      final status = await Permission.notification.request();
+      if (!status.isGranted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Enable notifications to receive alerts.'),
+            ),
+          );
+        }
+        return;
+      }
+    }
+    await _updateSetting('pushNotifications', value);
+  }
+
+  Future<void> _toggleBackgroundStepTracking(bool value) async {
+    if (value == _backgroundStepTracking) return;
+    if (value) {
+      final confirmed = await _confirmBackgroundTracking();
+      if (confirmed != true) {
+        return;
+      }
+      await PersistentStepCounterService.initialize();
+      final started =
+          await PersistentStepCounterService.startBackgroundService();
+      if (!started) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content:
+                  Text('Enable notifications to keep step tracking in background.'),
+            ),
+          );
+        }
+        return;
+      }
+    } else {
+      await PersistentStepCounterService.stopBackgroundService();
+    }
+
+    await _prefs.setBool(_backgroundStepTrackingKey, value);
+    if (mounted) {
+      setState(() => _backgroundStepTracking = value);
+    }
+  }
+
+  Future<bool?> _confirmBackgroundTracking() {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        title: Text(
+          'Enable background step tracking?',
+          style: GoogleFonts.spaceGrotesk(
+            color: AppTheme.textPrimary,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        content: Text(
+          'This keeps counting steps when the app is closed. '
+          'We will request notification access and may ask to exempt '
+          'Plurihive from battery optimizations for reliable tracking.',
+          style: GoogleFonts.dmSans(
+            color: AppTheme.textSecondary,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryColor,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Enable'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _refreshSmartReminderTime() async {
@@ -568,6 +664,14 @@ class _SettingsScreenState extends State<SettingsScreen>
           ),
           const SizedBox(height: 12),
           _buildSwitchTile(
+            icon: Icons.directions_walk_outlined,
+            title: 'Background step tracking',
+            subtitle: 'Keep counting steps when the app is closed',
+            value: _backgroundStepTracking,
+            onChanged: (value) => _toggleBackgroundStepTracking(value),
+          ),
+          const SizedBox(height: 12),
+          _buildSwitchTile(
             icon: Icons.vibration,
             title: 'Haptic feedback',
             subtitle: 'Tactile cues during tracking',
@@ -589,7 +693,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             title: 'Push notifications',
             subtitle: 'Session summaries and milestones',
             value: _pushNotifications,
-            onChanged: (value) => _updateSetting('pushNotifications', value),
+            onChanged: (value) => _togglePushNotifications(value),
           ),
           const SizedBox(height: 12),
           _buildSwitchTile(

@@ -6,9 +6,6 @@ class WebSocketService {
   factory WebSocketService() => _instance;
   WebSocketService._internal();
 
-  static const String _fallbackSocketBase = 'https://plurihub.sylicaai.com:443';
-  static const String _fallbackSocketHost = 'plurihub.sylicaai.com';
-
   IO.Socket? _socket;
   String? _userId;
   final List<Function(dynamic)> _pendingUserStatsListeners = [];
@@ -38,16 +35,10 @@ class WebSocketService {
     }
 
     final socketOptions = _buildSocketOptions(token);
-    final socketUri = _fallbackSocketBase;
-    socketOptions['hostname'] = _fallbackSocketHost;
-    socketOptions['secure'] = true;
-    socketOptions['port'] = 443;
+    final socketUri = ApiConfig.wsUrl;
     socketOptions['path'] = '/socket.io';
-    print(
-      '[WS] connect override uri=$socketUri host=${socketOptions['hostname']} port=${socketOptions['port']} secure=${socketOptions['secure']}',
-    );
+    print('[WS] connect uri=$socketUri');
 
-    // Use an explicit URI so socket_io_client cannot infer port=0
     _socket = IO.io(socketUri, socketOptions);
 
     _socket!.onConnect((_) {
@@ -126,10 +117,6 @@ class WebSocketService {
         .setExtraHeaders({'Authorization': 'Bearer $token'})
         .build();
 
-    // Explicitly set connection details (avoid Uri.port=0)
-    options['hostname'] = host;
-    options['secure'] = isSecure;
-    options['port'] = port;
     options['path'] = '/socket.io';
     return options;
   }

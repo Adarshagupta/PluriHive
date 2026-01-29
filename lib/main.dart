@@ -9,6 +9,7 @@ import 'core/services/update_service.dart';
 import 'core/services/code_push_service.dart';
 import 'core/navigation/app_route_observer.dart';
 import 'core/services/home_widget_service.dart';
+import 'core/services/mapbox_config.dart';
 import 'features/tracking/data/datasources/activity_local_data_source.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/auth/presentation/pages/splash_screen.dart';
@@ -21,6 +22,9 @@ void main() async {
   
   // Initialize API configuration
   await ApiConfig.initialize();
+
+  // Initialize Mapbox (optional)
+  await MapboxConfig.initialize();
   
   // Initialize Hive
   await Hive.initFlutter();

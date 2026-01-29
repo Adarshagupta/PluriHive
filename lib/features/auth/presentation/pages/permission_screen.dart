@@ -6,8 +6,6 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/patterned_background.dart';
 import '../../../../core/services/strict_permission_service.dart';
 import '../../../../core/services/pip_service.dart';
-import '../../../../core/di/injection_container.dart' as di;
-import '../../../../core/services/territory_prefetch_service.dart';
 import '../bloc/auth_bloc.dart';
 import 'profile_setup_screen.dart';
 import 'signup_screen.dart';
@@ -22,8 +20,6 @@ class PermissionScreen extends StatefulWidget {
 class _PermissionScreenState extends State<PermissionScreen> {
   final _permissionService = StrictPermissionService();
   final _pipService = PipService();
-  final TerritoryPrefetchService _territoryPrefetchService =
-      di.getIt<TerritoryPrefetchService>();
   bool _locationGranted = false;
   bool _activityRecognitionGranted = false;
   bool _notificationGranted = false;
@@ -93,25 +89,18 @@ class _PermissionScreenState extends State<PermissionScreen> {
   Future<void> _requestAllPermissions() async {
     setState(() => _isChecking = true);
 
-    await _permissionService.requestAllPermissions(context);
+    await _permissionService.requestAllPermissions();
 
     // Check again after request
     await _checkAllPermissions();
 
     setState(() => _isChecking = false);
 
-    if (_allPermissionsGranted) {
-      _navigateToNextScreen();
-    } else {
-      _showPermissionDialog();
-    }
+    _navigateToNextScreen();
   }
 
   void _navigateToNextScreen() {
     if (!mounted) return;
-
-    // Prefetch nearby territories as soon as permissions are granted.
-    _territoryPrefetchService.prefetchAroundUser();
 
     final authState = context.read<AuthBloc>().state;
 
@@ -129,49 +118,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
   }
 
   bool get _allPermissionsGranted =>
-      _locationGranted && _activityRecognitionGranted && _notificationGranted;
-
-  void _showPermissionDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false, // Cannot dismiss
-      builder: (context) => PopScope(
-        canPop: false, // Cannot go back
-        child: AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber, color: Colors.red),
-              SizedBox(width: 8),
-              Text('Permissions Required'),
-            ],
-          ),
-          content: const Text(
-            '⚠️ This app REQUIRES all permissions to function:\n\n'
-            '• Location: Track your movement and capture territories\n'
-            '• Physical Activity: Count steps and detect motion\n'
-            '• Notifications: Keep you updated on progress\n\n'
-            '❌ Without these permissions, the app CANNOT work.\n\n'
-            'Please grant ALL permissions to continue.',
-            style: TextStyle(fontSize: 12),
-          ),
-          actions: [
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-                _permissionService.openSettings();
-              },
-              icon: const Icon(Icons.settings),
-              label: const Text('Open Settings'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+      _locationGranted && _activityRecognitionGranted;
 
   @override
   Widget build(BuildContext context) {
@@ -221,7 +168,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
                   const SizedBox(height: 16),
 
                   const Text(
-                    'We need your permission to make the app work properly',
+                    'Permissions unlock tracking and fitness features',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 16,
@@ -235,7 +182,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
                   _buildPermissionItem(
                     icon: Icons.location_on,
                     title: 'Location',
-                    description: 'Track your movement and capture territories',
+                    description: 'Precise location is required; approximate won’t work on the map',
                     isGranted: _locationGranted,
                   ),
 
@@ -253,7 +200,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
                   _buildPermissionItem(
                     icon: Icons.notifications,
                     title: 'Notifications',
-                    description: 'Keep you updated on progress',
+                    description: 'Optional alerts and reminders',
                     isGranted: _notificationGranted,
                   ),
 
@@ -266,9 +213,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
                     child: ElevatedButton(
                       onPressed: _isChecking
                           ? null
-                          : (_allPermissionsGranted
-                              ? _navigateToNextScreen
-                              : _requestAllPermissions),
+                          : _requestAllPermissions,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _allPermissionsGranted
                             ? Colors.green
@@ -291,7 +236,7 @@ class _PermissionScreenState extends State<PermissionScreen> {
                           : Text(
                               _allPermissionsGranted
                                   ? 'Continue'
-                                  : 'Grant Permissions',
+                                  : 'Enable permissions',
                               style: const TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w600,
@@ -300,7 +245,13 @@ class _PermissionScreenState extends State<PermissionScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: _isChecking ? null : _navigateToNextScreen,
+                    child: const Text('Skip for now'),
+                  ),
+
+                  const SizedBox(height: 16),
                 ],
               ),
             ),

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
@@ -25,11 +24,8 @@ class StrictPermissionService {
   static const List<ph.Permission> _requiredPermissions = [
     ph.Permission.locationWhenInUse,
     ph.Permission.activityRecognition,
-    ph.Permission.notification,
   ];
 
-  // Additional permission for background tracking
-  static const ph.Permission _backgroundLocationPermission = ph.Permission.locationAlways;
 
   /// Start monitoring permissions - Call this after initial permission grant
   void startMonitoring(VoidCallback onRevoked) {
@@ -109,7 +105,7 @@ class StrictPermissionService {
   }
 
   /// Request all required permissions
-  Future<AppPermissionStatus> requestAllPermissions(BuildContext context) async {
+  Future<AppPermissionStatus> requestAllPermissions() async {
     try {
       // Request location permission first
       LocationPermission locationPermission = await Geolocator.checkPermission();
@@ -133,14 +129,6 @@ class StrictPermissionService {
         return AppPermissionStatus.denied;
       }
 
-      // Optionally request background location (for Android 10+)
-      if (Platform.isAndroid) {
-        final backgroundStatus = await _backgroundLocationPermission.status;
-        if (!backgroundStatus.isGranted) {
-          await _showBackgroundLocationDialog(context);
-        }
-      }
-
       return AppPermissionStatus.granted;
     } catch (e) {
       debugPrint('🔒 Error requesting permissions: $e');
@@ -148,32 +136,7 @@ class StrictPermissionService {
     }
   }
 
-  Future<void> _showBackgroundLocationDialog(BuildContext context) async {
-    return showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('Background Location'),
-        content: const Text(
-          'To track your territory even when the app is closed, we need "Allow all the time" permission.\n\n'
-          'This helps you capture more territory and earn more points!',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Skip'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _backgroundLocationPermission.request();
-            },
-            child: const Text('Grant'),
-          ),
-        ],
-      ),
-    );
-  }
+  // Background location is not required for foreground tracking sessions.
 
   /// Get detailed permission status
   Future<Map<String, bool>> getPermissionDetails() async {
@@ -192,6 +155,9 @@ class StrictPermissionService {
       final status = await permission.status;
       details[permission.toString()] = status.isGranted;
     }
+
+    final notificationStatus = await ph.Permission.notification.status;
+    details['Permission.notification'] = notificationStatus.isGranted;
 
     return details;
   }

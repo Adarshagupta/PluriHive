@@ -3,7 +3,6 @@
     <!-- Allow cleartext traffic for local development and production -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">10.1.80.51</domain>
-        <domain includeSubdomains="true">34.131.229.201</domain>
         <domain includeSubdomains="true">localhost</domain>
     </domain-config>
 </network-security-config>

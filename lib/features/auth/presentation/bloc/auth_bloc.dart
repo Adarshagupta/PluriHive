@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
 import '../../domain/entities/user.dart';
@@ -157,7 +158,6 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     final token = await authApiService.getToken();
     if (token != null && token.isNotEmpty) {
       await webSocketService.connect(user.id, token: token);
-      territoryPrefetchService.prefetchAroundUser();
     } else {
       print('⚠️ WebSocket token unavailable - not connecting');
     }
@@ -190,7 +190,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         if (localUser != null) {
           // Use local user data, connect WebSocket
           print('✅ CheckAuthStatus: Using local user data');
-          await _connectWebSocket(localUser);
+          unawaited(_connectWebSocket(localUser));
           emit(Authenticated(localUser));
           _kickoffOfflineSync();
           
@@ -272,7 +272,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
             print('✅ CheckAuthStatus: User fetched and saved locally');
             
             // Connect WebSocket
-            await _connectWebSocket(user);
+            unawaited(_connectWebSocket(user));
             
             emit(Authenticated(user));
             _kickoffOfflineSync();
@@ -325,8 +325,12 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       await repository.saveUser(user);
       print('✅ SignUp: User saved locally: ${user.email}');
       
+      // Prefetch territories in background after login completes
+      unawaited(territoryPrefetchService.prefetchAroundUser());
+      
+      
       // Connect WebSocket
-      await _connectWebSocket(user);
+      unawaited(_connectWebSocket(user));
       
       emit(Authenticated(user));
       _kickoffOfflineSync();
@@ -382,9 +386,13 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       await repository.saveUser(user);
       print('✅ SignIn: User saved locally: ${user.email}');
       
+      // Prefetch territories in background after login completes
+      unawaited(territoryPrefetchService.prefetchAroundUser());
+      
+      
       // Connect WebSocket
-      await _connectWebSocket(user);
-      print('✅ SignIn: WebSocket connected');
+      unawaited(_connectWebSocket(user));
+      print('✅ SignIn: WebSocket connect started');
       
       emit(Authenticated(user));
       _kickoffOfflineSync();
@@ -442,9 +450,13 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       await repository.saveUser(user);
       print('✅ Google SignIn: User saved locally: ${user.email}');
       
+      // Prefetch territories in background after login completes
+      unawaited(territoryPrefetchService.prefetchAroundUser());
+      
+      
       // Connect WebSocket
-      await _connectWebSocket(user);
-      print('✅ Google SignIn: WebSocket connected');
+      unawaited(_connectWebSocket(user));
+      print('✅ Google SignIn: WebSocket connect started');
       
       emit(Authenticated(user));
       _kickoffOfflineSync();

@@ -2,7 +2,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
   // Backend URLs
-  static const String localUrl = 'https://plurihub.sylicaai.com:443';
+  static const String localUrl = 'https://plurihub.sylicaai.com';
   static const String productionUrl = 'https://plurihub.sylicaai.com:443';
 
   static const String _backendPrefKey = 'selected_backend_url';
