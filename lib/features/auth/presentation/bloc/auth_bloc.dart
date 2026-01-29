@@ -156,7 +156,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   Future<void> _connectWebSocket(User user) async {
     final token = await authApiService.getToken();
     if (token != null && token.isNotEmpty) {
-      webSocketService.connect(user.id, token: token);
+      await webSocketService.connect(user.id, token: token);
       territoryPrefetchService.prefetchAroundUser();
     } else {
       print('⚠️ WebSocket token unavailable - not connecting');

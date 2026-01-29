@@ -1,5 +1,13 @@
-import { Controller, Get, Query, BadRequestException } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Query,
+  BadRequestException,
+  Request,
+  UseGuards,
+} from "@nestjs/common";
 import { LeaderboardService } from "./leaderboard.service";
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 
 @Controller("leaderboard")
 export class LeaderboardController {
@@ -40,6 +48,60 @@ export class LeaderboardController {
     } catch (error) {
       console.error("Monthly leaderboard error:", error);
       throw new BadRequestException("Failed to load monthly leaderboard");
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get("friends")
+  async getFriendsLeaderboard(@Request() req, @Query("limit") limit?: string) {
+    try {
+      const parsedLimit = limit ? Math.min(parseInt(limit), 100) : 50;
+      const users = await this.leaderboardService.getFriendsLeaderboard(
+        req.user.id,
+        parsedLimit,
+      );
+      return users;
+    } catch (error) {
+      console.error("Friends leaderboard error:", error);
+      throw new BadRequestException("Failed to load friends leaderboard");
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get("nearby")
+  async getNearbyLeaderboard(
+    @Request() req,
+    @Query("lat") lat?: string,
+    @Query("lng") lng?: string,
+    @Query("radiusKm") radiusKm?: string,
+    @Query("limit") limit?: string,
+  ) {
+    if (!lat || !lng) {
+      throw new BadRequestException("lat and lng are required");
+    }
+
+    const parsedLat = parseFloat(lat);
+    const parsedLng = parseFloat(lng);
+    if (Number.isNaN(parsedLat) || Number.isNaN(parsedLng)) {
+      throw new BadRequestException("Invalid lat/lng");
+    }
+
+    try {
+      const parsedRadius = radiusKm
+        ? Math.min(Math.max(parseFloat(radiusKm), 0.2), 50)
+        : 5;
+      const parsedLimit = limit ? Math.min(parseInt(limit), 100) : 50;
+      const users = await this.leaderboardService.getNearbyLeaderboard(
+        parsedLat,
+        parsedLng,
+        parsedRadius,
+        parsedLimit,
+        req.user?.id,
+      );
+      return users;
+    } catch (error) {
+      console.error("Nearby leaderboard error:", error);
+      throw new BadRequestException("Failed to load nearby leaderboard");
     }
   }
 

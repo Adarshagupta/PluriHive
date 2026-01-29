@@ -6,8 +6,10 @@ import '../../../../core/services/google_signin_service.dart';
 import '../../../../core/widgets/auth_backdrop.dart';
 import '../bloc/auth_bloc.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
-import 'profile_setup_screen.dart';
+import 'onboarding_screen.dart';
 import 'signin_screen.dart';
+import '../../domain/entities/user.dart';
+import '../../../dashboard/presentation/pages/main_dashboard.dart';
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -87,6 +89,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
     }
   }
 
+  void _routeAfterAuth(User user) {
+    final target = user.hasCompletedOnboarding
+        ? const DashboardScreen()
+        : const OnboardingScreen();
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => target),
+      (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return BlocListener<AuthBloc, AuthState>(
@@ -97,10 +109,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
           }
           // Reload game data from backend after successful signup
           context.read<GameBloc>().add(LoadGameData());
-          
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (_) => const ProfileSetupScreen()),
-          );
+
+          _routeAfterAuth(state.user);
         } else if (state is AuthError) {
           if (mounted) {
             setState(() => _isLoading = false);

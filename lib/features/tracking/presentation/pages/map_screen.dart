@@ -26,6 +26,9 @@ import '../../../../core/services/websocket_service.dart';
 import '../../../../core/services/user_profile_api_service.dart';
 import '../../../../core/services/home_widget_service.dart';
 import '../../../../core/services/avatar_preset_service.dart';
+import '../../../../core/services/map_drop_service.dart';
+import '../../../../core/services/poi_mission_service.dart';
+import '../../../../core/services/rewards_shop_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/utils/picture_in_picture.dart';
 import '../../../../core/algorithms/geospatial_algorithms.dart';
@@ -47,6 +50,8 @@ import 'workout_summary_screen.dart';
 import 'activity_history_sheet.dart';
 import 'activity_detail_drawer.dart';
 import 'sync_status_screen.dart';
+import '../../../engagement/presentation/pages/poi_missions_sheet.dart';
+import '../../../engagement/presentation/pages/rewards_shop_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class MapScreen extends StatefulWidget {
@@ -72,6 +77,9 @@ class _MapScreenState extends State<MapScreen>
   late final SharedPreferences _prefs;
   late final TerritoryCacheDataSource _territoryCacheDataSource;
   late final WebSocketService _webSocketService;
+  late final MapDropService _mapDropService;
+  late final PoiMissionService _poiMissionService;
+  late final RewardsShopService _rewardsShopService;
   late final UserProfileApiService _userProfileApiService;
   late final AuthApiService _authApiService;
   late final http.Client _httpClient;
@@ -91,6 +99,15 @@ class _MapScreenState extends State<MapScreen>
   final Set<Polygon> _polygons = {};
   final Set<Polyline> _polylines = {};
   final Set<Marker> _territoryMarkers = {};
+  Set<Marker> _dropMarkers = {};
+  Set<Circle> _dropCircles = {};
+  Set<Marker> _poiMarkers = {};
+  Set<Circle> _poiCircles = {};
+  PoiMission? _activePoiMission;
+  MapDropBoost? _activeDropBoost;
+  DateTime? _lastEngagementUpdateAt;
+  Timer? _boostTicker;
+  Color _markerRingColor = Colors.white;
   final Map<String, Map<String, dynamic>> _activityData =
       {}; // Store activity data by polylineId
   Timer? _territoryFetchDebounce;
@@ -248,6 +265,9 @@ class _MapScreenState extends State<MapScreen>
     _prefs = di.getIt<SharedPreferences>();
     _territoryCacheDataSource = TerritoryCacheDataSource(_prefs);
     _webSocketService = di.getIt<WebSocketService>();
+    _mapDropService = di.getIt<MapDropService>();
+    _poiMissionService = di.getIt<PoiMissionService>();
+    _rewardsShopService = di.getIt<RewardsShopService>();
     _userProfileApiService = di.getIt<UserProfileApiService>();
     _authApiService = di.getIt<AuthApiService>();
     _httpClient = di.getIt<http.Client>();
@@ -272,6 +292,8 @@ class _MapScreenState extends State<MapScreen>
     // Initialize step counter (fallback)
     _initStepCounter();
 
+    _initEngagementSystems();
+
     // Load captured areas from activity history to show on map
     _loadSavedCapturedAreas();
 
@@ -287,6 +309,7 @@ class _MapScreenState extends State<MapScreen>
     _webSocketService.onUserLocation(_handleUserLocation);
     _webSocketService.onTerritoryCaptured(_handleTerritoryCaptured);
     _webSocketService.onTerritorySnapshot(_handleTerritorySnapshot);
+    _webSocketService.onDropBoostUpdate(_handleBoostUpdate);
     _ensureWebSocketConnected();
     _locationBroadcastTimer = Timer.periodic(
       const Duration(seconds: 6),
@@ -346,7 +369,7 @@ class _MapScreenState extends State<MapScreen>
       final userId = await _authApiService.getUserId();
       final token = await _authApiService.getToken();
       if (userId != null && token != null && token.isNotEmpty) {
-        _webSocketService.connect(userId, token: token);
+        await _webSocketService.connect(userId, token: token);
       }
     } catch (e) {
       print('Failed to ensure WebSocket connection: $e');
@@ -541,11 +564,11 @@ class _MapScreenState extends State<MapScreen>
         );
         _polygons.add(
           Polygon(
-          polygonId: PolygonId(polygonId),
+            polygonId: PolygonId(polygonId),
             points: polygonPoints,
-            fillColor: territoryColor.withOpacity(0.25),
-            strokeColor: territoryColor,
-            strokeWidth: polygonPoints.length >= 3 ? 3 : 2,
+            fillColor: territoryColor.withOpacity(0.12),
+            strokeColor: territoryColor.withOpacity(0.7),
+            strokeWidth: polygonPoints.length >= 3 ? 2 : 1,
           ),
         );
 
@@ -1322,6 +1345,36 @@ class _MapScreenState extends State<MapScreen>
     return null;
   }
 
+  String _captureKeyForActivity(
+    List<LatLng> routePoints,
+    dynamic capturedHexIds,
+  ) {
+    if (capturedHexIds is List && capturedHexIds.isNotEmpty) {
+      final ids = capturedHexIds
+          .map((id) => id?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toList();
+      if (ids.isNotEmpty) {
+        ids.sort();
+        return 'hex:${ids.join('|')}';
+      }
+    }
+
+    double minLat = routePoints.first.latitude;
+    double maxLat = routePoints.first.latitude;
+    double minLng = routePoints.first.longitude;
+    double maxLng = routePoints.first.longitude;
+    for (final point in routePoints.skip(1)) {
+      if (point.latitude < minLat) minLat = point.latitude;
+      if (point.latitude > maxLat) maxLat = point.latitude;
+      if (point.longitude < minLng) minLng = point.longitude;
+      if (point.longitude > maxLng) maxLng = point.longitude;
+    }
+    final centerLat = ((minLat + maxLat) / 2).toStringAsFixed(4);
+    final centerLng = ((minLng + maxLng) / 2).toStringAsFixed(4);
+    return 'route:$centerLat,$centerLng,${routePoints.length}';
+  }
+
   double? _toDoubleSafe(dynamic value) {
     if (value == null) return null;
     if (value is num) return value.toDouble();
@@ -1385,6 +1438,7 @@ class _MapScreenState extends State<MapScreen>
 
       int loadedCount = 0;
       final pendingAvatarMarkers = <Map<String, dynamic>>[];
+      final seenCaptureKeys = <String>{};
       setState(() {
         // Remove only activity polygons and polylines, keep territory polygons
         _polygons.removeWhere(
@@ -1447,7 +1501,18 @@ class _MapScreenState extends State<MapScreen>
             continue;
           }
 
-          if (hasCapturedArea && routePoints.length >= 3) {
+          final captureKey = hasCapturedArea
+              ? _captureKeyForActivity(routePoints, capturedHexIds)
+              : null;
+          final isDuplicateCapture =
+              captureKey != null && seenCaptureKeys.contains(captureKey);
+          if (captureKey != null && !isDuplicateCapture) {
+            seenCaptureKeys.add(captureKey);
+          }
+
+          if (hasCapturedArea &&
+              routePoints.length >= 3 &&
+              !isDuplicateCapture) {
             // Add filled area polygon matching the walked path
             final polygonId = 'saved_area_${activityData['id']}';
             _activityData[polygonId] = activityData;
@@ -1455,12 +1520,19 @@ class _MapScreenState extends State<MapScreen>
               Polygon(
                 polygonId: PolygonId(polygonId),
                 points: routePoints,
-                fillColor: Color(
-                  0xFF4CAF50,
-                ).withOpacity(0.3), // Green for captured territory
-                strokeColor: Color(0xFF2E7D32),
+                fillColor: const Color(0xFF4CAF50).withOpacity(0.15),
+                strokeColor: const Color(0xFF2E7D32).withOpacity(0.7),
                 strokeWidth: 2,
                 consumeTapEvents: true,
+                onTap: () {
+                  showModalBottomSheet(
+                    context: context,
+                    backgroundColor: Colors.transparent,
+                    isScrollControlled: true,
+                    builder: (context) =>
+                        ActivityDetailDrawer(activity: activityData),
+                  );
+                },
               ),
             );
           }
@@ -1475,7 +1547,7 @@ class _MapScreenState extends State<MapScreen>
               color: hasCapturedArea
                   ? Color(0xFF2196F3) // Brighter blue
                   : Colors.blueGrey.withOpacity(0.7),
-              width: hasCapturedArea ? 10 : 6,
+              width: hasCapturedArea ? 6 : 4,
               consumeTapEvents: true,
               onTap: () {
                 print('Polyline tapped: $polylineId');
@@ -1485,7 +1557,7 @@ class _MapScreenState extends State<MapScreen>
           );
 
           // Add marker at center with username (captured areas only)
-          if (hasCapturedArea && routePoints.isNotEmpty) {
+          if (hasCapturedArea && routePoints.isNotEmpty && !isDuplicateCapture) {
             double sumLat = 0, sumLng = 0;
             for (final point in routePoints) {
               sumLat += point.latitude;
@@ -1647,6 +1719,282 @@ class _MapScreenState extends State<MapScreen>
     }
   }
 
+  Future<void> _initEngagementSystems() async {
+    await _mapDropService.initialize();
+    await _poiMissionService.initialize();
+    await _rewardsShopService.initialize();
+    _refreshMarkerCosmetics();
+    _refreshDropMarkers();
+    _refreshPoiMarkers();
+  }
+
+  Future<void> _handleEngagementUpdate(LatLng position) async {
+    final now = DateTime.now();
+    if (_lastEngagementUpdateAt != null &&
+        now.difference(_lastEngagementUpdateAt!) < const Duration(seconds: 3)) {
+      return;
+    }
+    _lastEngagementUpdateAt = now;
+
+    try {
+      final pickup = await _mapDropService.syncDrops(position);
+      if (pickup.pickedDrops.isNotEmpty) {
+        _showDropPickupSnack();
+      }
+      _activeDropBoost = _mapDropService.activeBoost;
+      _refreshDropMarkers();
+      _syncBoostTicker();
+
+      final mission = await _poiMissionService.ensureMission(position);
+      final missionChanged = _activePoiMission?.id != mission.id ||
+          _activePoiMission?.visited.length != mission.visited.length;
+      _activePoiMission = mission;
+      if (missionChanged) {
+        _refreshPoiMarkers();
+      }
+
+      final progress = await _poiMissionService.updateProgress(position);
+      if (progress != null) {
+        if (progress.newlyVisited.isNotEmpty) {
+          _showPoiProgressSnack(progress.newlyVisited);
+          _activePoiMission = progress.mission;
+          _refreshPoiMarkers();
+        }
+        if (progress.rewardGrantedNow) {
+          context
+              .read<GameBloc>()
+              .add(AddPoints(progress.mission.rewardPoints));
+          _showPoiCompleteSnack(progress.mission.rewardPoints);
+        }
+      }
+    } catch (e) {
+      print('[engagement] update failed: $e');
+    }
+  }
+
+  void _syncBoostTicker() {
+    if (_activeDropBoost == null || !_activeDropBoost!.isActive) {
+      _boostTicker?.cancel();
+      _boostTicker = null;
+      return;
+    }
+    _boostTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      final boost = _mapDropService.activeBoost;
+      if (boost == null || !boost.isActive) {
+        _boostTicker?.cancel();
+        _boostTicker = null;
+      }
+      setState(() {
+        _activeDropBoost = boost;
+      });
+    });
+  }
+
+  void _refreshDropMarkers() {
+    final drops = _mapDropService.activeDrops;
+    final markers = <Marker>{};
+    final circles = <Circle>{};
+    for (final drop in drops) {
+      markers.add(
+        Marker(
+          markerId: MarkerId('drop_${drop.id}'),
+          position: drop.position,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueYellow,
+          ),
+          onTap: _showDropInfoSheet,
+        ),
+      );
+      circles.add(
+        Circle(
+          circleId: CircleId('drop_circle_${drop.id}'),
+          center: drop.position,
+          radius: drop.radiusMeters,
+          fillColor: const Color(0xFFFACC15).withOpacity(0.12),
+          strokeColor: const Color(0xFFF59E0B).withOpacity(0.6),
+          strokeWidth: 1,
+        ),
+      );
+    }
+    if (mounted) {
+      setState(() {
+        _dropMarkers = markers;
+        _dropCircles = circles;
+      });
+    } else {
+      _dropMarkers = markers;
+      _dropCircles = circles;
+    }
+  }
+
+  void _refreshPoiMarkers() {
+    final mission = _activePoiMission;
+    if (mission == null) return;
+
+    final markers = <Marker>{};
+    final circles = <Circle>{};
+    for (final poi in mission.pois) {
+      final visited = mission.visited.contains(poi.id);
+      markers.add(
+        Marker(
+          markerId: MarkerId('poi_${poi.id}'),
+          position: poi.position,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            visited
+                ? BitmapDescriptor.hueGreen
+                : BitmapDescriptor.hueViolet,
+          ),
+          onTap: _openPoiMissionSheet,
+        ),
+      );
+      circles.add(
+        Circle(
+          circleId: CircleId('poi_circle_${poi.id}'),
+          center: poi.position,
+          radius: _poiMissionService.visitRadiusMeters,
+          fillColor: visited
+              ? const Color(0xFF22C55E).withOpacity(0.12)
+              : const Color(0xFF8B5CF6).withOpacity(0.10),
+          strokeColor: visited
+              ? const Color(0xFF16A34A).withOpacity(0.6)
+              : const Color(0xFF7C3AED).withOpacity(0.6),
+          strokeWidth: 1,
+        ),
+      );
+    }
+
+    if (mounted) {
+      setState(() {
+        _poiMarkers = markers;
+        _poiCircles = circles;
+      });
+    } else {
+      _poiMarkers = markers;
+      _poiCircles = circles;
+    }
+  }
+
+  void _showDropPickupSnack() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('⚡ Power drop collected! 2x points for 2 minutes'),
+        backgroundColor: const Color(0xFFF59E0B),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _showPoiProgressSnack(List<Poi> newlyVisited) {
+    if (!mounted) return;
+    final name = newlyVisited.first.name;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('📍 Visited $name'),
+        backgroundColor: const Color(0xFF16A34A),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _showPoiCompleteSnack(int rewardPoints) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('🏁 Mission complete! +$rewardPoints pts'),
+        backgroundColor: const Color(0xFF16A34A),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  void _showDropInfoSheet() {
+    if (!mounted) return;
+    final boost = _mapDropService.activeBoost;
+    final remaining = boost?.remaining ?? Duration.zero;
+    final minutes = remaining.inMinutes;
+    final seconds = remaining.inSeconds % 60;
+    final hasBoost = boost != null && boost.isActive;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(22),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.bolt, color: Color(0xFFF59E0B), size: 32),
+                const SizedBox(height: 8),
+                Text(
+                  hasBoost ? 'Power Drop Active' : 'Power Drop',
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF0F172A),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  hasBoost
+                      ? '2x points for $minutes:${seconds.toString().padLeft(2, '0')}'
+                      : 'Walk into the ring to activate 2x points for 2 minutes.',
+                  style: GoogleFonts.dmSans(
+                    fontSize: 13,
+                    color: const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openPoiMissionSheet() {
+    final mission = _activePoiMission;
+    if (mission == null || !mounted) return;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => PoiMissionsSheet(mission: mission),
+    );
+  }
+
+  Future<void> _openRewardsShop() async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RewardsShopScreen(shopService: _rewardsShopService),
+      ),
+    );
+    _refreshMarkerCosmetics();
+  }
+
+  void _refreshMarkerCosmetics() {
+    final selected = _rewardsShopService.selectedMarkerColor;
+    _markerRingColor = selected ?? Colors.white;
+    _userAvatarIconCache.clear();
+    _userAvatarUrlCache.clear();
+    if (mounted) {
+      setState(() {});
+    }
+    if (_lastKnownLocation != null) {
+      _updateCurrentUserMarker(_lastKnownLocation!);
+    }
+  }
+
   void _onStepCount(StepCount event) {
     if (mounted) {
       setState(() {
@@ -1678,9 +2026,11 @@ class _MapScreenState extends State<MapScreen>
     _locationBroadcastTimer?.cancel();
     _liveUserCleanupTimer?.cancel();
     _territoryFetchDebounce?.cancel();
+    _boostTicker?.cancel();
     _webSocketService.offUserLocation(_handleUserLocation);
     _webSocketService.offTerritoryCaptured(_handleTerritoryCaptured);
     _webSocketService.offTerritorySnapshot(_handleTerritorySnapshot);
+    _webSocketService.offDropBoostUpdate(_handleBoostUpdate);
     BackgroundTrackingService.stopTracking();
     super.dispose();
   }
@@ -1719,6 +2069,7 @@ class _MapScreenState extends State<MapScreen>
                 _checkSplitUpdate(state);
                 _refreshRoutePreviewFromLocation(_lastKnownLocation);
                 _updateCurrentUserMarker(_lastKnownLocation!);
+                _handleEngagementUpdate(_lastKnownLocation!);
 
                 // Camera follows user smoothly when tracking is active
                 _updateCameraFollow(state);
@@ -1730,6 +2081,7 @@ class _MapScreenState extends State<MapScreen>
                 _scheduleTerritoryFetch(_lastKnownLocation!);
                 _refreshRoutePreviewFromLocation(_lastKnownLocation);
                 _updateCurrentUserMarker(_lastKnownLocation!);
+                _handleEngagementUpdate(_lastKnownLocation!);
               }
             },
           ),
@@ -1795,6 +2147,8 @@ class _MapScreenState extends State<MapScreen>
                         polylines: _polylines,
                         markers: {
                           ..._territoryMarkers,
+                          ..._dropMarkers,
+                          ..._poiMarkers,
                           ..._userMarkersById.values,
                           if (_currentUserMarker != null) _currentUserMarker!,
                         },
@@ -2246,103 +2600,102 @@ class _MapScreenState extends State<MapScreen>
             final distance = isTracking
                 ? locationState.totalDistance / 1000
                 : gameState.stats.totalDistanceKm;
+            final statusChips = _buildInlineStatusChips();
 
             return Container(
-              margin: EdgeInsets.all(16),
-              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              decoration: BoxDecoration(
-                color: isTracking ? Color(0xFF2196F3) : Colors.white,
-                borderRadius: BorderRadius.circular(30),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 10,
-                    offset: Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
+              margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+              padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (isTracking)
-                    Row(
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                    decoration: BoxDecoration(
+                      color: isTracking
+                          ? const Color(0xFF0F172A).withOpacity(0.88)
+                          : Colors.white.withOpacity(0.95),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(
+                        color: isTracking
+                            ? Colors.white.withOpacity(0.12)
+                            : Colors.white.withOpacity(0.6),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.16),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    child: Row(
                       children: [
+                      if (isTracking)
                         Container(
-                          width: 8,
-                          height: 8,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
                           decoration: BoxDecoration(
-                            color: Colors.red,
-                            shape: BoxShape.circle,
+                            color: const Color(0xFFEF4444),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            children: const [
+                              Icon(Icons.circle, size: 6, color: Colors.white),
+                              SizedBox(width: 6),
+                              Text(
+                                'LIVE',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        SizedBox(width: 8),
-                        Text(
+                      if (isTracking) const SizedBox(width: 10),
+                      Expanded(
+                        child: _buildStatItem(
                           '${distance.toStringAsFixed(2)} km',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w900,
-                            color: Colors.white,
-                          ),
+                          'Distance',
+                          isTracking,
+                          isPrimary: true,
                         ),
+                      ),
+                      _buildHudDivider(isTracking),
+                      Expanded(
+                        child: _buildStatItem(
+                          '${gameState.stats.territoriesCaptured}',
+                          'Territories',
+                          isTracking,
+                        ),
+                      ),
+                      _buildHudDivider(isTracking),
+                      Expanded(
+                        child: _buildStatItem(
+                          '${gameState.stats.totalPoints}',
+                          'Points',
+                          isTracking,
+                        ),
+                      ),
+                      _buildHudDivider(isTracking),
+                      Expanded(
+                        child: _buildStatItem(
+                          '${gameState.stats.currentStreak}d',
+                          'Streak',
+                          isTracking,
+                        ),
+                      ),
                       ],
                     ),
-                  if (!isTracking)
-                    _buildStatItem(
-                      '${distance.toStringAsFixed(1)} km',
-                      'Distance',
-                      isTracking,
-                    ),
-                  if (isTracking && _advancedSteps > 0) ...[
-                    Container(width: 1, height: 30, color: Colors.white30),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.directions_walk_rounded,
-                          color: Colors.white,
-                          size: 16,
-                        ),
-                        SizedBox(width: 4),
-                        Text(
-                          '$_advancedSteps',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w900,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
+                  ),
+                  if (statusChips is! SizedBox) ...[
+                    const SizedBox(height: 8),
+                    statusChips,
                   ],
-                  Container(
-                    width: 1,
-                    height: 30,
-                    color: isTracking ? Colors.white30 : Colors.grey.shade300,
-                  ),
-                  _buildStatItem(
-                    '${gameState.stats.territoriesCaptured}',
-                    'Territories',
-                    isTracking,
-                  ),
-                  Container(
-                    width: 1,
-                    height: 30,
-                    color: isTracking ? Colors.white30 : Colors.grey.shade300,
-                  ),
-                  _buildStatItem(
-                    '${gameState.stats.totalPoints}',
-                    'Points',
-                    isTracking,
-                  ),
-                  Container(
-                    width: 1,
-                    height: 30,
-                    color: isTracking ? Colors.white30 : Colors.grey.shade300,
-                  ),
-                  _buildStatItem(
-                    '${gameState.stats.currentStreak}d',
-                    'Streak',
-                    isTracking,
-                  ),
                 ],
               ),
             );
@@ -2356,15 +2709,50 @@ class _MapScreenState extends State<MapScreen>
     return SafeArea(
       child: FadeTransition(
         opacity: _animController,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildMinimalStatsBar(),
-            _buildSyncStatusChip(),
-            _buildQualityChip(),
-            _buildSplitChip(),
-            _buildStreakChip(),
-          ],
+        child: _buildMinimalStatsBar(),
+      ),
+    );
+  }
+
+  Widget _buildInlineStatusChips() {
+    final chips = <Widget>[
+      _buildSyncStatusChip(),
+      _buildQualityChip(),
+      _buildSplitChip(),
+      _buildStreakChip(),
+      _buildDropBoostChip(),
+      _buildMissionChip(),
+      _buildBadgeChip(),
+    ];
+
+    final visibleChips = chips.where((chip) {
+      if (chip is SizedBox) {
+        final width = chip.width ?? 0;
+        final height = chip.height ?? 0;
+        return width != 0 || height != 0 || chip.child != null;
+      }
+      return true;
+    }).toList();
+
+    if (visibleChips.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final rowChildren = <Widget>[];
+    for (final chip in visibleChips) {
+      if (rowChildren.isNotEmpty) {
+        rowChildren.add(const SizedBox(width: 6));
+      }
+      rowChildren.add(chip);
+    }
+
+    return Container(
+      width: double.infinity,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(
+          children: rowChildren,
         ),
       ),
     );
@@ -2385,7 +2773,6 @@ class _MapScreenState extends State<MapScreen>
         _isSyncing ? const Color(0xFF1E3A8A) : const Color(0xFF9A3412);
 
     return Container(
-      margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
         color: bgColor.withOpacity(0.9),
@@ -2426,28 +2813,44 @@ class _MapScreenState extends State<MapScreen>
     );
   }
 
-  Widget _buildStatItem(String value, String label, bool isTracking) {
+  Widget _buildStatItem(
+    String value,
+    String label,
+    bool isTracking, {
+    bool isPrimary = false,
+  }) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
           value,
           style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w900,
-            color: isTracking ? Colors.white : Colors.black87,
+            fontSize: isPrimary ? 16 : 14,
+            fontWeight: isPrimary ? FontWeight.w900 : FontWeight.w800,
+            color: isTracking
+                ? Colors.white
+                : (isPrimary ? const Color(0xFF0F172A) : Colors.black87),
           ),
         ),
-        SizedBox(height: 2),
+        const SizedBox(height: 2),
         Text(
           label,
           style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
             color: isTracking ? Colors.white70 : Colors.grey.shade600,
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildHudDivider(bool isTracking) {
+    return Container(
+      width: 1,
+      height: 28,
+      margin: const EdgeInsets.symmetric(horizontal: 10),
+      color: isTracking ? Colors.white12 : Colors.grey.shade300,
     );
   }
 
@@ -2570,7 +2973,6 @@ class _MapScreenState extends State<MapScreen>
                 : const Color(0xFFDC2626);
 
     return Container(
-      margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: color.withOpacity(0.9),
@@ -2611,7 +3013,6 @@ class _MapScreenState extends State<MapScreen>
         : '--:--';
 
     return Container(
-      margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: const Color(0xFF111827).withOpacity(0.9),
@@ -2648,7 +3049,6 @@ class _MapScreenState extends State<MapScreen>
     }
 
     return Container(
-      margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A).withOpacity(0.85),
@@ -2875,12 +3275,12 @@ class _MapScreenState extends State<MapScreen>
 
         if (isOwnTerritory) {
           // Your territory - green
-          fillColor = Color(0xFF4CAF50).withOpacity(0.25);
-          strokeColor = Color(0xFF4CAF50);
+          fillColor = Color(0xFF4CAF50).withOpacity(0.12);
+          strokeColor = Color(0xFF4CAF50).withOpacity(0.7);
         } else {
           // Other player's territory - red
-          fillColor = Color(0xFFE53935).withOpacity(0.25);
-          strokeColor = Color(0xFFE53935);
+          fillColor = Color(0xFFE53935).withOpacity(0.12);
+          strokeColor = Color(0xFFE53935).withOpacity(0.7);
         }
 
         // Calculate center for marker
@@ -3208,8 +3608,9 @@ class _MapScreenState extends State<MapScreen>
       print('📊 Updating GameBloc: +${distanceDelta.toStringAsFixed(3)} km');
       context.read<GameBloc>().add(UpdateDistance(distanceDelta));
 
-      // Award points based on distance (100 points per km)
-      final pointsDelta = (distanceDelta * 100).round();
+      // Award points based on distance (100 points per km, boosted by drops)
+      final boostMultiplier = _mapDropService.activeBoost?.multiplier ?? 1;
+      final pointsDelta = (distanceDelta * 100 * boostMultiplier).round();
       if (pointsDelta > 0) {
         context.read<GameBloc>().add(AddPoints(pointsDelta));
       }
@@ -3595,11 +3996,24 @@ class _MapScreenState extends State<MapScreen>
         Polygon(
           polygonId: PolygonId('captured_area_$areaId'),
           points: routePoints,
-          fillColor: Color(
-            0xFF4CAF50,
-          ).withOpacity(0.25), // Transparent green fill
-          strokeColor: Color(0xFF4CAF50),
+          fillColor: const Color(0xFF4CAF50).withOpacity(0.12),
+          strokeColor: const Color(0xFF4CAF50).withOpacity(0.7),
           strokeWidth: 2,
+          consumeTapEvents: true,
+          onTap: () {
+            final authState = context.read<AuthBloc>().state;
+            final ownerName =
+                authState is Authenticated ? authState.user.name : 'You';
+            final areaSqMeters = _calculatePolygonAreaSqMeters(routePoints);
+            _showTerritoryInfo(
+              ownerName: ownerName,
+              captureCount: 1,
+              isOwn: true,
+              capturedAt: DateTime.now(),
+              areaSqMeters: areaSqMeters,
+              avatarSource: _currentUserAvatarSource(),
+            );
+          },
         ),
       );
 
@@ -3791,6 +4205,20 @@ class _MapScreenState extends State<MapScreen>
               label: 'Heat',
               isActive: _showHeatmap,
               onTap: _toggleHeatmap,
+            ),
+            _buildCompactControlButton(
+              icon: Icons.flag,
+              label: 'Missions',
+              isActive: _activePoiMission != null &&
+                  _activePoiMission!.visited.length <
+                      _activePoiMission!.pois.length,
+              onTap: _openPoiMissionSheet,
+            ),
+            _buildCompactControlButton(
+              icon: Icons.storefront,
+              label: 'Shop',
+              isActive: false,
+              onTap: _openRewardsShop,
             ),
             _buildCompactControlButton(
               icon: Icons.flag,
@@ -5077,8 +5505,8 @@ class _MapScreenState extends State<MapScreen>
           Polygon(
             polygonId: PolygonId('boss_$hexId'),
             points: polygonPoints,
-            fillColor: bossColor.withOpacity(0.2),
-            strokeColor: bossColor,
+            fillColor: bossColor.withOpacity(0.12),
+            strokeColor: bossColor.withOpacity(0.7),
             strokeWidth: 3,
           ),
         );
@@ -5396,7 +5824,11 @@ class _MapScreenState extends State<MapScreen>
 
     BitmapDescriptor? icon;
     if (avatarSource.isNotEmpty) {
-      icon = await _getAvatarMarkerIcon(user.id, avatarSource);
+      icon = await _getAvatarMarkerIcon(
+        user.id,
+        avatarSource,
+        ringColor: _markerRingColor,
+      );
     }
     if (!mounted) return;
 
@@ -5415,19 +5847,24 @@ class _MapScreenState extends State<MapScreen>
 
   Future<BitmapDescriptor?> _getAvatarMarkerIcon(
     String userId,
-    String avatarUrl,
-  ) async {
+    String avatarUrl, {
+    Color? ringColor,
+  }) async {
     final resolvedUrl = _resolveAvatarImageUrl(avatarUrl);
+    final cacheKey = '$resolvedUrl|${ringColor?.value ?? 0}';
     final cached = _userAvatarIconCache[userId];
-    if (cached != null && _userAvatarUrlCache[userId] == resolvedUrl) {
+    if (cached != null && _userAvatarUrlCache[userId] == cacheKey) {
       return cached;
     }
     try {
       final bytes = await _loadAvatarBytes(resolvedUrl);
       if (bytes == null) return null;
-      final icon = await _createCircularAvatarMarker(bytes);
+      final icon = await _createCircularAvatarMarker(
+        bytes,
+        ringColor: ringColor,
+      );
       _userAvatarIconCache[userId] = icon;
-      _userAvatarUrlCache[userId] = resolvedUrl;
+      _userAvatarUrlCache[userId] = cacheKey;
       return icon;
     } catch (e) {
       print('Failed to load avatar icon: $e');
@@ -5457,6 +5894,7 @@ class _MapScreenState extends State<MapScreen>
   Future<BitmapDescriptor> _createCircularAvatarMarker(
     Uint8List bytes, {
     int size = 96,
+    Color? ringColor,
   }) async {
     final codec = await ui.instantiateImageCodec(
       bytes,
@@ -5482,7 +5920,7 @@ class _MapScreenState extends State<MapScreen>
     );
 
     final borderPaint = Paint()
-      ..color = Colors.white
+      ..color = ringColor ?? Colors.white
       ..style = PaintingStyle.stroke
       ..strokeWidth = 4;
     canvas.drawCircle(ui.Offset(radius, radius), radius - 2, borderPaint);
@@ -5509,6 +5947,39 @@ class _MapScreenState extends State<MapScreen>
         _userLastSeen.remove(userId);
       }
     });
+  }
+
+  void _handleBoostUpdate(dynamic payload) {
+    if (payload == null) return;
+    try {
+      final map = payload is Map
+          ? Map<String, dynamic>.from(payload)
+          : <String, dynamic>{};
+      final boostRaw = map['boost'] ?? map;
+      if (boostRaw == null || boostRaw.isEmpty) {
+        _mapDropService.applyBoostFromServer(null);
+        if (mounted) {
+          setState(() {
+            _activeDropBoost = null;
+          });
+        } else {
+          _activeDropBoost = null;
+        }
+        return;
+      }
+      final boost = MapDropBoost.fromJson(Map<String, dynamic>.from(boostRaw));
+      _mapDropService.applyBoostFromServer(boost);
+      if (mounted) {
+        setState(() {
+          _activeDropBoost = boost;
+        });
+      } else {
+        _activeDropBoost = boost;
+      }
+      _syncBoostTicker();
+    } catch (e) {
+      print('[boost] update failed: $e');
+    }
   }
 
   void _toggleHeatmap() {
@@ -5639,7 +6110,135 @@ class _MapScreenState extends State<MapScreen>
     if (_showHeatmap) {
       circles.addAll(_heatmapCircles);
     }
+    circles.addAll(_dropCircles);
+    circles.addAll(_poiCircles);
     return circles;
+  }
+
+  Widget _buildDropBoostChip() {
+    final boost = _activeDropBoost ?? _mapDropService.activeBoost;
+    if (boost == null || !boost.isActive) {
+      return const SizedBox.shrink();
+    }
+    final remaining = boost.remaining;
+    final minutes = remaining.inMinutes;
+    final seconds = remaining.inSeconds % 60;
+    final label = 'Boost 2x ${minutes}:${seconds.toString().padLeft(2, '0')}';
+
+    return GestureDetector(
+      onTap: _showDropInfoSheet,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF59E0B).withOpacity(0.9),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.bolt, size: 16, color: Colors.white),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMissionChip() {
+    final mission = _activePoiMission;
+    if (mission == null || mission.pois.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final label =
+        'Mission ${mission.visited.length}/${mission.pois.length}';
+
+    return GestureDetector(
+      onTap: _openPoiMissionSheet,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0EA5E9).withOpacity(0.9),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.flag, size: 16, color: Colors.white),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBadgeChip() {
+    final badge = _rewardsShopService.selectedBadgeItem;
+    if (badge == null) {
+      return const SizedBox.shrink();
+    }
+
+    return GestureDetector(
+      onTap: _openRewardsShop,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: badge.color.withOpacity(0.9),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(badge.icon, size: 16, color: Colors.white),
+            const SizedBox(width: 6),
+            Text(
+              badge.name,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // Simulation toggle button
@@ -6118,159 +6717,11 @@ class _MapScreenState extends State<MapScreen>
     required int captureCount,
     String? territoryId,
   }) {
-    final territoryIdText = territoryId?.trim();
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) => Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              blurRadius: 10,
-              offset: Offset(0, -5),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Handle
-            Container(
-              margin: const EdgeInsets.only(top: 12, bottom: 8),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Color(0xFFE5E7EB),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-
-            // Header
-            Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: (isOwn ? Colors.green : Colors.orange)
-                              .withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Icon(
-                          isOwn ? Icons.check_circle : Icons.flag,
-                          color: isOwn ? Colors.green : Colors.orange,
-                          size: 32,
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              isOwn ? 'Your Territory' : 'Territory',
-                              style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w700,
-                                color: Color(0xFF111827),
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Owned by $ownerName',
-                              style: TextStyle(
-                                fontSize: 15,
-                                color: Color(0xFF6B7280),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Color(0xFFF9FAFB),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Color(0xFFE5E7EB), width: 1),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.emoji_events, color: Colors.amber, size: 24),
-                        const SizedBox(width: 12),
-                        Text(
-                          'Captured ',
-                          style: TextStyle(
-                            fontSize: 15,
-                            color: Color(0xFF6B7280),
-                          ),
-                        ),
-                        Text(
-                          '$captureCount',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF111827),
-                          ),
-                        ),
-                        Text(
-                          ' ${captureCount == 1 ? "time" : "times"}',
-                          style: TextStyle(
-                            fontSize: 15,
-                            color: Color(0xFF6B7280),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (territoryIdText != null && territoryIdText.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Color(0xFFF9FAFB),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Color(0xFFE5E7EB), width: 1),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Territory ID',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF6B7280),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          SelectableText(
-                            territoryIdText,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF111827),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+    _showTerritoryInfo(
+      ownerName: ownerName,
+      captureCount: captureCount,
+      isOwn: isOwn,
+      territoryId: territoryId,
     );
   }
 
@@ -7547,6 +7998,3 @@ class SavedRoute {
     );
   }
 }
-
-
-

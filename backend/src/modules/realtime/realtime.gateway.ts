@@ -168,6 +168,14 @@ export class RealtimeGateway
     }
   }
 
+  emitBoostUpdated(userId: string, payload: any) {
+    for (const [socketId, uid] of this.connectedUsers.entries()) {
+      if (uid === userId) {
+        this.server.to(socketId).emit("engagement:boost:update", payload);
+      }
+    }
+  }
+
   emitTerritoriesCaptured(territories: any[]) {
     if (!territories || territories.length === 0) return;
     for (const territory of territories) {

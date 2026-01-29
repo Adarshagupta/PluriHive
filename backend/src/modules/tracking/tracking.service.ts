@@ -4,11 +4,12 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { Between, Repository } from "typeorm";
 import { Activity } from "./activity.entity";
 import { UserService } from "../user/user.service";
 import { CreateActivityDto } from "./dto/activity.dto";
 import { RedisService } from "../redis/redis.service";
+import { MapDrop } from "../engagement/entities/map-drop.entity";
 
 @Injectable()
 export class TrackingService {
@@ -18,6 +19,8 @@ export class TrackingService {
   constructor(
     @InjectRepository(Activity)
     private activityRepository: Repository<Activity>,
+    @InjectRepository(MapDrop)
+    private mapDropRepository: Repository<MapDrop>,
     private userService: UserService,
     private redisService: RedisService,
   ) {}
@@ -99,10 +102,14 @@ export class TrackingService {
       }
     }
 
-    // Derive points from distance (1 point per 100m)
+    // Derive points from distance (1 point per 100m) + apply map drop boosts
     if (normalizedData.distanceMeters) {
-      normalizedData.pointsEarned = Math.round(
-        normalizedData.distanceMeters / 100,
+      normalizedData.pointsEarned = await this.calculateBoostedPoints(
+        userId,
+        normalizedData.routePoints,
+        normalizedData.startTime,
+        normalizedData.endTime,
+        normalizedData.distanceMeters,
       );
     }
 
@@ -113,6 +120,21 @@ export class TrackingService {
     });
 
     const savedActivity = await this.activityRepository.save(activity);
+
+    const lastPoint =
+      normalizedData.routePoints?.[normalizedData.routePoints.length - 1];
+    if (
+      lastPoint &&
+      typeof lastPoint.latitude === "number" &&
+      typeof lastPoint.longitude === "number"
+    ) {
+      await this.userService.updateLastLocation(
+        userId,
+        lastPoint.latitude,
+        lastPoint.longitude,
+        normalizedData.endTime ?? new Date(),
+      );
+    }
 
     // Update user stats
     await this.userService.updateStats(
@@ -325,5 +347,105 @@ export class TrackingService {
         Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
+  }
+
+  private async calculateBoostedPoints(
+    userId: string,
+    routePoints: Array<{
+      latitude: number;
+      longitude: number;
+      timestamp?: Date;
+    }>,
+    startTime?: Date,
+    endTime?: Date,
+    distanceMeters?: number,
+  ): Promise<number> {
+    const basePoints = Math.round((distanceMeters || 0) / 100);
+    if (!routePoints || routePoints.length < 2) return basePoints;
+    if (!startTime || !endTime) return basePoints;
+
+    const lookbackMs = 2 * 60 * 1000;
+    const lookbackStart = new Date(startTime.getTime() - lookbackMs);
+
+    const pickedDrops = await this.mapDropRepository.find({
+      where: {
+        userId,
+        pickedAt: Between(lookbackStart, endTime),
+      },
+      order: { pickedAt: "ASC" },
+    });
+
+    if (pickedDrops.length === 0) return basePoints;
+
+    const boostWindows = this.buildBoostWindows(pickedDrops);
+    if (boostWindows.length === 0) return basePoints;
+
+    let bonusPoints = 0;
+    for (let i = 1; i < routePoints.length; i++) {
+      const prev = routePoints[i - 1];
+      const cur = routePoints[i];
+      if (!prev || !cur) continue;
+      if (!(prev.timestamp instanceof Date) || !(cur.timestamp instanceof Date)) {
+        continue;
+      }
+      const segmentDistance = this.haversineDistanceMeters(
+        prev.latitude,
+        prev.longitude,
+        cur.latitude,
+        cur.longitude,
+      );
+      if (segmentDistance <= 0) continue;
+      const midpoint = new Date(
+        (prev.timestamp.getTime() + cur.timestamp.getTime()) / 2,
+      );
+      const window = boostWindows.find(
+        (interval) =>
+          midpoint >= interval.start && midpoint <= interval.end,
+      );
+      if (!window) continue;
+      const multiplier = Math.max(1, window.multiplier || 2);
+      bonusPoints += (segmentDistance / 100) * (multiplier - 1);
+    }
+
+    return Math.round(basePoints + bonusPoints);
+  }
+
+  private buildBoostWindows(
+    picks: MapDrop[],
+  ): Array<{ start: Date; end: Date; multiplier: number }> {
+    const windows: Array<{ start: Date; end: Date; multiplier: number }> = [];
+    let currentStart: Date | null = null;
+    let currentEnd: Date | null = null;
+    let currentMultiplier = 2;
+
+    for (const pick of picks) {
+      if (!pick.pickedAt) continue;
+      const durationMs = (pick.boostSeconds || 120) * 1000;
+      const start = pick.pickedAt;
+      if (currentEnd && start <= currentEnd) {
+        currentEnd = new Date(currentEnd.getTime() + durationMs);
+      } else {
+        if (currentStart && currentEnd) {
+          windows.push({
+            start: currentStart,
+            end: currentEnd,
+            multiplier: currentMultiplier,
+          });
+        }
+        currentStart = start;
+        currentEnd = new Date(start.getTime() + durationMs);
+        currentMultiplier = pick.boostMultiplier || 2;
+      }
+    }
+
+    if (currentStart && currentEnd) {
+      windows.push({
+        start: currentStart,
+        end: currentEnd,
+        multiplier: currentMultiplier,
+      });
+    }
+
+    return windows;
   }
 }

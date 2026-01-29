@@ -10,6 +10,8 @@ import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
 import { AchievementModule } from './modules/achievement/achievement.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { RoutesModule } from './modules/routes/routes.module';
+import { AppModule as AppUpdateModule } from './modules/app/app.module';
+import { EngagementModule } from './modules/engagement/engagement.module';
 
 @Module({
   imports: [
@@ -71,6 +73,8 @@ import { RoutesModule } from './modules/routes/routes.module';
     AchievementModule,
     RealtimeModule,
     RoutesModule,
+    AppUpdateModule,
+    EngagementModule,
   ],
 })
 export class AppModule {}

@@ -5,14 +5,16 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'api_config.dart';
 
 class UpdateService {
   static final UpdateService _instance = UpdateService._internal();
   factory UpdateService() => _instance;
   UpdateService._internal();
 
-  // Configuration - Update these with your backend URL
-  static const String updateCheckUrl = 'https://your-backend.com/api/app-version';
+  static const String _lastCheckKey = 'last_update_check';
+  static const Duration _minCheckInterval = Duration(hours: 6);
   
   Future<void> checkForUpdate(BuildContext context, {bool showNoUpdateDialog = false}) async {
     try {
@@ -79,14 +81,33 @@ class UpdateService {
     await _checkCustomUpdate(context, showNoUpdateDialog);
   }
 
+  Future<void> checkForUpdateIfNeeded(BuildContext context) async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastCheckMillis = prefs.getInt(_lastCheckKey) ?? 0;
+    final lastCheck = DateTime.fromMillisecondsSinceEpoch(lastCheckMillis);
+    if (DateTime.now().difference(lastCheck) < _minCheckInterval) {
+      return;
+    }
+    await checkForUpdate(context, showNoUpdateDialog: false);
+    await prefs.setInt(_lastCheckKey, DateTime.now().millisecondsSinceEpoch);
+  }
+
   // Custom update check against your backend
   Future<void> _checkCustomUpdate(BuildContext context, bool showNoUpdateDialog) async {
     try {
       final packageInfo = await PackageInfo.fromPlatform();
       final currentVersion = packageInfo.version;
-      
+      final buildNumber = packageInfo.buildNumber;
+      final platform = Platform.isAndroid ? 'android' : 'ios';
+
       final response = await http.get(
-        Uri.parse(updateCheckUrl),
+        Uri.parse('${ApiConfig.baseUrl}/app/version').replace(
+          queryParameters: {
+            'platform': platform,
+            'currentVersion': currentVersion,
+            'buildNumber': buildNumber,
+          },
+        ),
         headers: {'Content-Type': 'application/json'},
       ).timeout(const Duration(seconds: 10));
 
@@ -94,8 +115,11 @@ class UpdateService {
         final data = json.decode(response.body);
         final latestVersion = data['version'] as String;
         final downloadUrl = data['download_url'] as String?;
-        final isForceUpdate = data['force_update'] as bool? ?? false;
+        final minVersion = data['min_version'] as String?;
         final releaseNotes = data['release_notes'] as String? ?? '';
+        final isForceUpdate =
+            data['force_update'] as bool? ??
+            (minVersion != null && _isUpdateAvailable(currentVersion, minVersion));
 
         if (_isUpdateAvailable(currentVersion, latestVersion)) {
           if (context.mounted) {
@@ -241,7 +265,7 @@ class UpdateService {
     // Check for updates 3 seconds after app starts
     await Future.delayed(const Duration(seconds: 3));
     if (context.mounted) {
-      await checkForUpdate(context, showNoUpdateDialog: false);
+      await checkForUpdateIfNeeded(context);
     }
   }
 }

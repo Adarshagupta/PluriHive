@@ -89,6 +89,25 @@ export class User {
   @Column({ default: 0 })
   totalWorkouts: number;
 
+  @Column({ default: 0 })
+  rewardPointsSpent: number;
+
+  @Column({ nullable: true, length: 64 })
+  selectedMarkerId: string;
+
+  @Column({ nullable: true, length: 64 })
+  selectedBadgeId: string;
+
+  // Last known location (used for nearby leaderboard)
+  @Column({ type: "decimal", precision: 10, scale: 7, nullable: true })
+  lastLatitude: number;
+
+  @Column({ type: "decimal", precision: 10, scale: 7, nullable: true })
+  lastLongitude: number;
+
+  @Column({ type: "timestamp", nullable: true })
+  lastLocationAt: Date;
+
   // Streaks
   @Column({ default: 0 })
   currentStreak: number;
@@ -114,6 +133,11 @@ export class User {
     pushNotifications?: boolean;
     emailNotifications?: boolean;
     streakReminders?: boolean;
+    smartReminders?: boolean;
+    smartReminderTime?: string;
+    leaderboardUpdates?: boolean;
+    territoryAlerts?: boolean;
+    achievementAlerts?: boolean;
     darkMode?: boolean;
     language?: string;
   };

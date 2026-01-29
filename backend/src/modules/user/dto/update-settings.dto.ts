@@ -27,6 +27,27 @@ export class UpdateSettingsDto {
 
   @IsOptional()
   @IsBoolean()
+  smartReminders?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  smartReminderTime?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  leaderboardUpdates?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  territoryAlerts?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  achievementAlerts?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   darkMode?: boolean;
 
   @IsOptional()

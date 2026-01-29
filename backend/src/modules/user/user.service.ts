@@ -124,6 +124,20 @@ export class UserService {
     return saved;
   }
 
+  async updateLastLocation(
+    userId: string,
+    latitude: number,
+    longitude: number,
+    occurredAt?: Date,
+  ): Promise<void> {
+    await this.userRepository.update(userId, {
+      lastLatitude: latitude,
+      lastLongitude: longitude,
+      lastLocationAt: occurredAt ?? new Date(),
+    });
+    await this.bumpUserCacheVersion(userId);
+  }
+
   async updateStreak(
     userId: string,
     activityDate: Date,

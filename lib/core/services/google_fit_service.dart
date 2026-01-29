@@ -208,6 +208,11 @@ class GoogleFitService {
     }
   }
 
+  Future<bool> _ensureReadAccess() async {
+    if (hasReadAccess) return true;
+    return await checkReadAuthorization();
+  }
+
   /// Check if heart rate read permission is granted
   Future<bool> checkHeartRateAccess() async {
     try {
@@ -225,8 +230,8 @@ class GoogleFitService {
 
   /// Get steps for today
   Future<int> getTodaySteps() async {
-    if (!_isAuthorized) {
-      print('⚠️ Google Fit not authorized');
+    if (!await _ensureReadAccess()) {
+      print('⚠️ Health Connect read access not granted');
       return 0;
     }
 
@@ -234,21 +239,31 @@ class GoogleFitService {
       final now = DateTime.now();
       final startOfDay = DateTime(now.year, now.month, now.day);
 
+      final stepsFromInterval = await _health.getTotalStepsInInterval(
+        startOfDay,
+        now,
+      );
+      if (stepsFromInterval != null) {
+        print('📊 Today\'s steps from Health Connect: $stepsFromInterval');
+        return stepsFromInterval;
+      }
+
       final healthData = await _health.getHealthDataFromTypes(
         types: [HealthDataType.STEPS],
         startTime: startOfDay,
         endTime: now,
       );
 
-      int totalSteps = 0;
+      int totalStepsFallback = 0;
       for (var data in healthData) {
         if (data.value is NumericHealthValue) {
-          totalSteps += (data.value as NumericHealthValue).numericValue.toInt();
+          totalStepsFallback +=
+              (data.value as NumericHealthValue).numericValue.toInt();
         }
       }
 
-      print('📊 Today\'s steps from Google Fit: $totalSteps');
-      return totalSteps;
+      print('📊 Today\'s steps from Google Fit: $totalStepsFallback');
+      return totalStepsFallback;
     } catch (e) {
       print('❌ Error getting steps from Google Fit: $e');
       return 0;
@@ -257,8 +272,8 @@ class GoogleFitService {
 
   /// Get distance for today (in meters)
   Future<double> getTodayDistance() async {
-    if (!_isAuthorized) {
-      print('⚠️ Google Fit not authorized');
+    if (!await _ensureReadAccess()) {
+      print('⚠️ Health Connect read access not granted');
       return 0.0;
     }
 
@@ -289,8 +304,8 @@ class GoogleFitService {
 
   /// Get calories burned for today
   Future<double> getTodayCalories() async {
-    if (!_isAuthorized) {
-      print('⚠️ Google Fit not authorized');
+    if (!await _ensureReadAccess()) {
+      print('⚠️ Health Connect read access not granted');
       return 0.0;
     }
 
@@ -321,8 +336,13 @@ class GoogleFitService {
 
   /// Get heart rate data for today
   Future<List<int>> getTodayHeartRate() async {
-    if (!_isAuthorized) {
-      print('⚠️ Google Fit not authorized');
+    if (!await _ensureReadAccess()) {
+      print('⚠️ Health Connect read access not granted');
+      return [];
+    }
+
+    if (!await checkHeartRateAccess()) {
+      print('⚠️ Health Connect heart rate permission not granted');
       return [];
     }
 

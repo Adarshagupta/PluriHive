@@ -28,6 +28,7 @@ class UserDataCleanupService {
     // UI caches
     'profile_stats_cache_v1',
     'leaderboard_cache_v1',
+    'leaderboard_cache_v2',
     'settings_cache_v1',
 
     // Route caches
@@ -68,6 +69,9 @@ class UserDataCleanupService {
       final keys = prefs.getKeys();
       for (final key in keys) {
         if (key.startsWith('routes_popular_cache_v1_')) {
+          await prefs.remove(key);
+        }
+        if (key.startsWith('leaderboard_cache_v2:')) {
           await prefs.remove(key);
         }
       }

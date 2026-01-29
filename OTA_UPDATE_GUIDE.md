@@ -36,6 +36,17 @@ cd C:\Users\adasg\OneDrive\Pictures\Rugged
 flutter pub get
 ```
 
+### Step 1.5: Authenticate Shorebird (Code Push)
+Shorebird code push requires the CLI to be authenticated. Run this once on your dev machine:
+```bash
+shorebird login
+```
+
+For CI, generate a token and store it as `SHOREBIRD_TOKEN` in your CI secrets:
+```bash
+shorebird login:ci
+```
+
 ### Step 2: Configure Backend URL
 Update the URL in `lib/core/services/update_service.dart`:
 ```dart

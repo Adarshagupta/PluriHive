@@ -6,8 +6,10 @@ import 'core/di/injection_container.dart';
 import 'core/theme/app_theme.dart';
 import 'core/services/api_config.dart';
 import 'core/services/update_service.dart';
+import 'core/services/code_push_service.dart';
 import 'core/navigation/app_route_observer.dart';
 import 'core/services/home_widget_service.dart';
+import 'features/tracking/data/datasources/activity_local_data_source.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/auth/presentation/pages/splash_screen.dart';
 import 'features/tracking/presentation/bloc/location_bloc.dart';
@@ -28,6 +30,27 @@ void main() async {
 
   // Warm home widget data from cache on launch
   await HomeWidgetService.syncFromCache();
+
+  // Seed widget with last activity if available
+  try {
+    final activitySource = ActivityLocalDataSourceImpl();
+    final activities = await activitySource.getAllActivities();
+    if (activities.isNotEmpty) {
+      final latest = activities.first;
+      final distanceKm = latest.distanceMeters / 1000;
+      final steps = latest.steps;
+      final progressPercent =
+          ((distanceKm / 5.0) * 100).round().clamp(0, 100);
+      await HomeWidgetService.updateStats(
+        distanceKm: distanceKm,
+        steps: steps,
+        progressPercent: progressPercent.toInt(),
+      );
+      if (latest.routeMapSnapshot != null) {
+        await HomeWidgetService.updateMapSnapshot(latest.routeMapSnapshot);
+      }
+    }
+  } catch (_) {}
   
   runApp(const TerritoryFitnessApp());
 }
@@ -39,15 +62,32 @@ class TerritoryFitnessApp extends StatefulWidget {
   State<TerritoryFitnessApp> createState() => _TerritoryFitnessAppState();
 }
 
-class _TerritoryFitnessAppState extends State<TerritoryFitnessApp> {
+class _TerritoryFitnessAppState extends State<TerritoryFitnessApp>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     
     // Check for updates on app start
     WidgetsBinding.instance.addPostFrameCallback((_) {
       UpdateService().checkForUpdateOnStart(context);
+      CodePushService().checkForUpdateOnStart(context);
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      UpdateService().checkForUpdateIfNeeded(context);
+      CodePushService().checkForUpdateIfNeeded(context);
+    }
   }
 
   @override

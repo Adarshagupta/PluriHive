@@ -7,8 +7,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/pages/signin_screen.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../core/services/api_config.dart';
 import '../../../../core/services/settings_api_service.dart';
+import '../../../../core/services/update_service.dart';
+import '../../../../core/services/code_push_service.dart';
+import '../../../../core/services/tracking_api_service.dart';
+import '../../../../core/services/smart_reminder_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/widgets/skeleton.dart';
 import '../../../profile/presentation/pages/personal_info_screen.dart';
@@ -35,18 +40,26 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _pushNotifications = true;
   bool _emailNotifications = false;
   bool _streakReminders = true;
+  bool _smartReminders = false;
+  String? _smartReminderTime;
   bool _darkMode = false;
   String _language = 'English';
   bool _isLoading = true;
 
   late AnimationController _floatController;
   late final Future<PackageInfo> _packageInfoFuture;
+  late final TrackingApiService _trackingService;
+  late final SmartReminderService _smartReminderService;
+  bool _isSmartReminderUpdating = false;
 
   @override
   void initState() {
     super.initState();
     _settingsService = di.getIt<SettingsApiService>();
     _prefs = di.getIt<SharedPreferences>();
+    _trackingService = di.getIt<TrackingApiService>();
+    _smartReminderService = di.getIt<SmartReminderService>();
+    _smartReminderService.initialize();
     _floatController = AnimationController(
       duration: const Duration(seconds: 3),
       vsync: this,
@@ -96,18 +109,27 @@ class _SettingsScreenState extends State<SettingsScreen>
       _pushNotifications = settings['pushNotifications'] ?? true;
       _emailNotifications = settings['emailNotifications'] ?? false;
       _streakReminders = settings['streakReminders'] ?? true;
+      _smartReminders = settings['smartReminders'] ?? false;
+      _smartReminderTime = settings['smartReminderTime'];
       _darkMode = settings['darkMode'] ?? false;
       _language = settings['language'] ?? 'English';
       _isLoading = false;
     });
+    _scheduleSmartReminderIfNeeded();
   }
 
   Future<void> _persistSettingsCache(Map<String, dynamic> settings) async {
     await _prefs.setString(_settingsCacheKey, jsonEncode(settings));
   }
 
-  Future<void> _updateSetting(String key, dynamic value) async {
-    setState(() => _isLoading = true);
+  Future<void> _updateSetting(
+    String key,
+    dynamic value, {
+    bool showLoading = true,
+  }) async {
+    if (showLoading) {
+      setState(() => _isLoading = true);
+    }
     try {
       await _settingsService.updateSettings({key: value});
       final current = jsonDecode(_prefs.getString(_settingsCacheKey) ?? '{}');
@@ -122,7 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         );
       }
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted && showLoading) setState(() => _isLoading = false);
     }
   }
 
@@ -135,6 +157,59 @@ class _SettingsScreenState extends State<SettingsScreen>
   Future<void> _changeBackend(String url) async {
     setState(() => _selectedBackend = url);
     await ApiConfig.setBaseUrl(url);
+  }
+
+  Future<void> _toggleSmartReminders(bool value) async {
+    await _updateSetting('smartReminders', value, showLoading: false);
+    if (!value) {
+      await _smartReminderService.cancelDailyReminder();
+      return;
+    }
+    await _refreshSmartReminderTime();
+  }
+
+  Future<void> _refreshSmartReminderTime() async {
+    if (_isSmartReminderUpdating) return;
+    _isSmartReminderUpdating = true;
+    try {
+      final activities = await _trackingService.getUserActivities(limit: 30);
+      final times = <DateTime>[];
+      for (final activity in activities) {
+        final raw = activity['startTime'] ?? activity['createdAt'];
+        if (raw is String) {
+          final parsed = DateTime.tryParse(raw);
+          if (parsed != null) {
+            times.add(parsed.toLocal());
+          }
+        }
+      }
+      final computed = _smartReminderService.computeTypicalTime(times);
+      final formatted = _smartReminderService.formatTime(computed);
+      await _updateSetting('smartReminderTime', formatted, showLoading: false);
+      if (mounted) {
+        setState(() => _smartReminderTime = formatted);
+      }
+      await _smartReminderService.scheduleDaily(computed);
+    } catch (e) {
+      print('Failed to refresh smart reminder time: $e');
+    } finally {
+      _isSmartReminderUpdating = false;
+    }
+  }
+
+  void _scheduleSmartReminderIfNeeded() {
+    if (!_smartReminders) return;
+    final time = _smartReminderService.parseTime(_smartReminderTime) ??
+        const TimeOfDay(hour: 19, minute: 0);
+    _smartReminderService.scheduleDaily(time);
+  }
+
+  String _smartReminderSubtitle() {
+    final time = _smartReminderService.parseTime(_smartReminderTime);
+    if (_smartReminders && time != null) {
+      return 'We will remind you around ${time.format(context)}.';
+    }
+    return 'We learn your usual activity time and remind you.';
   }
 
   @override
@@ -155,53 +230,39 @@ class _SettingsScreenState extends State<SettingsScreen>
         }
       },
       child: Scaffold(
-        backgroundColor: Colors.transparent,
-        extendBodyBehindAppBar: true,
-        body: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFF1a1a2e),
-                Color(0xFF16213e),
-                Color(0xFF0f3460),
-              ],
-            ),
-          ),
-          child: SafeArea(
-            child: _isLoading
-                ? _buildSettingsSkeleton()
-                : CustomScrollView(
-                    physics: const BouncingScrollPhysics(),
-                    slivers: [
-                      _buildHeader(),
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const SizedBox(height: 20),
-                              _buildProfileSection(),
-                              const SizedBox(height: 32),
-                              _buildActivitySection(),
-                              const SizedBox(height: 32),
-                              _buildNotificationSection(),
-                              const SizedBox(height: 32),
-                              _buildPreferencesSection(),
-                              const SizedBox(height: 32),
-                              _buildAboutSection(),
-                              const SizedBox(height: 40),
-                              _buildLogoutButton(),
-                              const SizedBox(height: 60),
-                            ],
-                          ),
+        backgroundColor: const Color(0xFFF7F7F2),
+        body: SafeArea(
+          child: _isLoading
+              ? _buildSettingsSkeleton()
+              : CustomScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  slivers: [
+                    _buildHeader(),
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 20),
+                            _buildProfileSection(),
+                            const SizedBox(height: 32),
+                            _buildActivitySection(),
+                            const SizedBox(height: 32),
+                            _buildNotificationSection(),
+                            const SizedBox(height: 32),
+                            _buildPreferencesSection(),
+                            const SizedBox(height: 32),
+                            _buildAboutSection(),
+                            const SizedBox(height: 40),
+                            _buildLogoutButton(),
+                            const SizedBox(height: 60),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
-          ),
+                    ),
+                  ],
+                ),
         ),
       ),
     );
@@ -251,9 +312,9 @@ class _SettingsScreenState extends State<SettingsScreen>
     return SliverAppBar(
       expandedHeight: 170,
       pinned: true,
-      backgroundColor: Colors.transparent,
+      backgroundColor: const Color(0xFFF7F7F2),
       elevation: 0,
-      systemOverlayStyle: SystemUiOverlayStyle.light,
+      systemOverlayStyle: SystemUiOverlayStyle.dark,
       flexibleSpace: FlexibleSpaceBar(
         collapseMode: CollapseMode.pin,
         background: Stack(
@@ -274,7 +335,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   width: 140,
                   height: 140,
                   decoration: BoxDecoration(
-                    color: const Color(0xFF7FE87A).withOpacity(0.18),
+                    color: AppTheme.primaryColor.withOpacity(0.18),
                     shape: BoxShape.circle,
                   ),
                 ),
@@ -287,7 +348,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 width: 120,
                 height: 120,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1F8EF1).withOpacity(0.15),
+                  color: const Color(0xFFBFD9FF).withOpacity(0.4),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -303,7 +364,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                       style: GoogleFonts.spaceGrotesk(
                         fontSize: 28,
                         fontWeight: FontWeight.w700,
-                        color: Colors.white,
+                        color: AppTheme.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 6),
@@ -312,7 +373,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                       style: GoogleFonts.dmSans(
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
-                        color: Colors.white.withOpacity(0.7),
+                        color: AppTheme.textSecondary,
                       ),
                     ),
                   ],
@@ -348,12 +409,12 @@ class _SettingsScreenState extends State<SettingsScreen>
                 children: [
                   CircleAvatar(
                     radius: 24,
-                    backgroundColor: Colors.white.withOpacity(0.15),
+                    backgroundColor: AppTheme.primaryColor.withOpacity(0.15),
                     child: Text(
                       user.name.isNotEmpty ? user.name[0].toUpperCase() : 'U',
                       style: GoogleFonts.spaceGrotesk(
                         fontWeight: FontWeight.w700,
-                        color: Colors.white,
+                        color: AppTheme.textPrimary,
                       ),
                     ),
                   ),
@@ -367,7 +428,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                           style: GoogleFonts.spaceGrotesk(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
-                            color: Colors.white,
+                            color: AppTheme.textPrimary,
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -375,7 +436,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                           user.email,
                           style: GoogleFonts.dmSans(
                             fontSize: 13,
-                            color: Colors.white.withOpacity(0.7),
+                            color: AppTheme.textSecondary,
                           ),
                         ),
                       ],
@@ -423,7 +484,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   icon: const Icon(Icons.edit_outlined, size: 18),
                   label: const Text('Edit profile'),
                   style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF7FE87A),
+                    foregroundColor: AppTheme.accentColor,
                   ),
                 ),
               ),
@@ -508,6 +569,14 @@ class _SettingsScreenState extends State<SettingsScreen>
             value: _streakReminders,
             onChanged: (value) => _updateSetting('streakReminders', value),
           ),
+          const SizedBox(height: 12),
+          _buildSwitchTile(
+            icon: Icons.schedule_outlined,
+            title: 'Smart reminders',
+            subtitle: _smartReminderSubtitle(),
+            value: _smartReminders,
+            onChanged: (value) => _toggleSmartReminders(value),
+          ),
         ],
       ),
     );
@@ -569,6 +638,29 @@ class _SettingsScreenState extends State<SettingsScreen>
                 label: 'Support',
                 value: 'help@territory.fitness',
               ),
+              const SizedBox(height: 16),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () async {
+                    await CodePushService().checkForUpdate(
+                      context: context,
+                      showNoUpdate: true,
+                    );
+                    if (context.mounted) {
+                      UpdateService().checkForUpdate(
+                        context,
+                        showNoUpdateDialog: true,
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.system_update_alt),
+                  label: const Text('Check for updates'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppTheme.accentColor,
+                  ),
+                ),
+              ),
             ],
           );
         },
@@ -583,11 +675,11 @@ class _SettingsScreenState extends State<SettingsScreen>
       child: ElevatedButton(
         onPressed: _confirmLogout,
         style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFFEF4444),
-          foregroundColor: Colors.white,
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
+        backgroundColor: const Color(0xFFEF4444),
+        foregroundColor: Colors.white,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
           ),
         ),
         child: Text(
@@ -605,21 +697,21 @@ class _SettingsScreenState extends State<SettingsScreen>
     final shouldLogout = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF111827),
+        backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
         ),
         title: Text(
           'Sign out?',
           style: GoogleFonts.spaceGrotesk(
-            color: Colors.white,
+            color: AppTheme.textPrimary,
             fontWeight: FontWeight.w600,
           ),
         ),
         content: Text(
           'You will need to sign in again to continue tracking.',
           style: GoogleFonts.dmSans(
-            color: Colors.white70,
+            color: AppTheme.textSecondary,
           ),
         ),
         actions: [
@@ -651,16 +743,16 @@ class _SettingsScreenState extends State<SettingsScreen>
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withOpacity(0.7),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: const Color(0xFF1F2A44),
+          color: const Color(0xFFE5E7EB),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 16,
+            offset: const Offset(0, 10),
           ),
         ],
       ),
@@ -672,7 +764,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             style: GoogleFonts.spaceGrotesk(
               fontSize: 16,
               fontWeight: FontWeight.w600,
-              color: Colors.white,
+              color: AppTheme.textPrimary,
             ),
           ),
           const SizedBox(height: 12),
@@ -702,7 +794,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: Colors.white,
+                  color: AppTheme.textPrimary,
                 ),
               ),
               const SizedBox(height: 4),
@@ -710,7 +802,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 subtitle,
                 style: GoogleFonts.dmSans(
                   fontSize: 12,
-                  color: Colors.white.withOpacity(0.65),
+                  color: AppTheme.textSecondary,
                 ),
               ),
             ],
@@ -719,7 +811,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         Switch.adaptive(
           value: value,
           onChanged: onChanged,
-          activeColor: const Color(0xFF7FE87A),
+          activeColor: AppTheme.primaryColor,
         ),
       ],
     );
@@ -739,9 +831,9 @@ class _SettingsScreenState extends State<SettingsScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.06),
+        color: const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF23324A)),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
       ),
       child: Row(
         children: [
@@ -756,7 +848,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   style: GoogleFonts.spaceGrotesk(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
-                    color: Colors.white,
+                    color: AppTheme.textPrimary,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -764,7 +856,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   subtitle,
                   style: GoogleFonts.dmSans(
                     fontSize: 12,
-                    color: Colors.white.withOpacity(0.65),
+                    color: AppTheme.textSecondary,
                   ),
                 ),
               ],
@@ -773,10 +865,10 @@ class _SettingsScreenState extends State<SettingsScreen>
           DropdownButtonHideUnderline(
             child: DropdownButton<String>(
               value: safeValue,
-              dropdownColor: const Color(0xFF111827),
-              iconEnabledColor: Colors.white,
+              dropdownColor: Colors.white,
+              iconEnabledColor: AppTheme.textPrimary,
               style: GoogleFonts.dmSans(
-                color: Colors.white,
+                color: AppTheme.textPrimary,
                 fontWeight: FontWeight.w600,
               ),
               items: options
@@ -803,9 +895,9 @@ class _SettingsScreenState extends State<SettingsScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.06),
+        color: const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF23324A)),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -815,7 +907,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             style: GoogleFonts.spaceGrotesk(
               fontSize: 14,
               fontWeight: FontWeight.w600,
-              color: Colors.white,
+              color: AppTheme.textPrimary,
             ),
           ),
           const SizedBox(height: 4),
@@ -823,7 +915,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             'Switch between environments instantly.',
             style: GoogleFonts.dmSans(
               fontSize: 12,
-              color: Colors.white.withOpacity(0.65),
+              color: AppTheme.textSecondary,
             ),
           ),
           const SizedBox(height: 12),
@@ -839,7 +931,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             _selectedBackend,
             style: GoogleFonts.dmSans(
               fontSize: 11,
-              color: Colors.white.withOpacity(0.5),
+              color: AppTheme.textTertiary,
             ),
           ),
         ],
@@ -853,10 +945,10 @@ class _SettingsScreenState extends State<SettingsScreen>
       label: Text(label),
       selected: isSelected,
       onSelected: (_) => _changeBackend(value),
-      selectedColor: const Color(0xFF7FE87A),
-      backgroundColor: Colors.white.withOpacity(0.08),
+      selectedColor: AppTheme.primaryColor,
+      backgroundColor: Colors.white,
       labelStyle: GoogleFonts.dmSans(
-        color: isSelected ? const Color(0xFF0B1C12) : Colors.white,
+        color: isSelected ? const Color(0xFF0B1C12) : AppTheme.textPrimary,
         fontWeight: FontWeight.w600,
       ),
     );
@@ -881,7 +973,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
-                  color: Colors.white,
+                  color: AppTheme.textPrimary,
                 ),
               ),
               const SizedBox(height: 4),
@@ -889,7 +981,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 value,
                 style: GoogleFonts.dmSans(
                   fontSize: 12,
-                  color: Colors.white.withOpacity(0.65),
+                  color: AppTheme.textSecondary,
                 ),
               ),
             ],
@@ -904,10 +996,10 @@ class _SettingsScreenState extends State<SettingsScreen>
       width: 36,
       height: 36,
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
+        color: const Color(0xFFF1F5F9),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Icon(icon, size: 18, color: Colors.white),
+      child: Icon(icon, size: 18, color: AppTheme.accentColor),
     );
   }
 
@@ -918,21 +1010,21 @@ class _SettingsScreenState extends State<SettingsScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
+        color: const Color(0xFFF1F5F9),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF23324A)),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: Colors.white),
+          Icon(icon, size: 14, color: AppTheme.accentColor),
           const SizedBox(width: 6),
           Text(
             label,
             style: GoogleFonts.dmSans(
               fontSize: 11,
               fontWeight: FontWeight.w600,
-              color: Colors.white,
+              color: AppTheme.textPrimary,
             ),
           ),
         ],
@@ -955,7 +1047,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           style: GoogleFonts.spaceGrotesk(
             fontSize: 14,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: AppTheme.textPrimary,
           ),
         ),
         const SizedBox(height: 6),
@@ -963,7 +1055,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           subtitle,
           style: GoogleFonts.dmSans(
             fontSize: 12,
-            color: Colors.white.withOpacity(0.65),
+            color: AppTheme.textSecondary,
           ),
         ),
       ],

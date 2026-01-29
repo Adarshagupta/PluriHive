@@ -1,4 +1,5 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:equatable/equatable.dart';
 import '../../domain/entities/user_stats.dart';
 import '../../domain/usecases/calculate_points.dart';
@@ -6,6 +7,7 @@ import '../../domain/usecases/get_user_stats.dart';
 import '../../domain/repositories/game_repository.dart';
 import '../../../../core/services/auth_api_service.dart';
 import '../../../../core/services/websocket_service.dart';
+import '../../../../core/services/home_widget_service.dart';
 
 // Events
 abstract class GameEvent extends Equatable {
@@ -148,6 +150,7 @@ class GameBloc extends Bloc<GameEvent, GameState> {
       print(
           '📥 GameBloc LoadGameData: Loaded from backend - distance = ${stats.totalDistanceKm} km, points = ${stats.totalPoints}');
       emit(GameLoaded(stats));
+        await _updateHomeWidget(stats);
     } catch (e) {
       print('⚠️ Error loading game data from backend: $e');
       // Fallback to local data
@@ -156,10 +159,29 @@ class GameBloc extends Bloc<GameEvent, GameState> {
         print(
             '📥 GameBloc LoadGameData: Loaded from local - distance = ${stats.totalDistanceKm} km');
         emit(GameLoaded(stats));
+        await _updateHomeWidget(stats);
       } catch (localError) {
         emit(GameError(localError.toString()));
       }
     }
+  }
+
+
+  Future<void> _updateHomeWidget(UserStats stats) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final steps = prefs.getInt('daily_steps') ??
+          int.tryParse(prefs.getString('widget_steps') ?? '') ??
+          0;
+      final progressPercent =
+          ((stats.totalDistanceKm / 5.0) * 100).round().clamp(0, 100);
+
+      await HomeWidgetService.updateStats(
+        distanceKm: stats.totalDistanceKm,
+        steps: steps,
+        progressPercent: progressPercent.toInt(),
+      );
+    } catch (_) {}
   }
 
   Future<void> _onAddPoints(

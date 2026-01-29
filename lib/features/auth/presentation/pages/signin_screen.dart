@@ -10,6 +10,7 @@ import '../../../game/presentation/bloc/game_bloc.dart';
 import 'signup_screen.dart';
 import 'onboarding_screen.dart';
 import '../../../dashboard/presentation/pages/main_dashboard.dart';
+import '../../domain/entities/user.dart';
 
 class SignInScreen extends StatefulWidget {
   const SignInScreen({super.key});
@@ -84,6 +85,16 @@ class _SignInScreenState extends State<SignInScreen> {
     }
   }
 
+  void _routeAfterAuth(User user) {
+    final target = user.hasCompletedOnboarding
+        ? const DashboardScreen()
+        : const OnboardingScreen();
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => target),
+      (route) => false,
+    );
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -95,17 +106,8 @@ class _SignInScreenState extends State<SignInScreen> {
           }
           // Reload game data from backend after successful login
           context.read<GameBloc>().add(LoadGameData());
-          
-          if (state.user.hasCompletedOnboarding) {
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(builder: (_) => const DashboardScreen()),
-            );
-          } else {
-            // If onboarding not completed (first time user), go to onboarding
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(builder: (_) => const OnboardingScreen()),
-            );
-          }
+
+          _routeAfterAuth(state.user);
         } else if (state is AuthError) {
           if (mounted) {
             setState(() => _isLoading = false);

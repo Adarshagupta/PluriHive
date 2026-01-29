@@ -6,14 +6,18 @@ class WebSocketService {
   factory WebSocketService() => _instance;
   WebSocketService._internal();
 
+  static const String _fallbackSocketBase = 'https://plurihub.sylicaai.com:443';
+  static const String _fallbackSocketHost = 'plurihub.sylicaai.com';
+
   IO.Socket? _socket;
   String? _userId;
   final List<Function(dynamic)> _pendingUserStatsListeners = [];
   final List<Function(dynamic)> _pendingTerritorySnapshotListeners = [];
+  final List<Function(dynamic)> _pendingBoostListeners = [];
   int? _lastTerritoryEventAt;
 
   // Initialize and connect
-  void connect(String userId, {String? token}) {
+  Future<void> connect(String userId, {String? token}) async {
     if (token == null || token.isEmpty) {
       print('⚠️ WebSocket token missing - skipping connect');
       return;
@@ -21,29 +25,30 @@ class WebSocketService {
 
     _userId = userId;
 
+    // Ensure baseUrl is sanitized and persisted before building socket options.
+    try {
+      final resolvedBase = await ApiConfig.getBaseUrl();
+      ApiConfig.baseUrl = resolvedBase;
+    } catch (_) {}
+
     if (_socket != null) {
-      if (_socket!.connected && _userId == userId) {
-        print('⚠️ WebSocket already connected');
-        return;
-      }
+      _socket!.disconnect();
       _socket!.dispose();
       _socket = null;
     }
 
-    _socket = IO.io(
-      ApiConfig.wsUrl,
-      IO.OptionBuilder()
-          .setTransports(['websocket'])
-          .disableAutoConnect()
-          .enableReconnection()
-          .setReconnectionAttempts(10)
-          .setReconnectionDelay(500)
-          .setReconnectionDelayMax(2000)
-          .setTimeout(8000)
-          .setAuth({'token': token})
-          .setExtraHeaders({'Authorization': 'Bearer $token'})
-          .build(),
+    final socketOptions = _buildSocketOptions(token);
+    final socketUri = _fallbackSocketBase;
+    socketOptions['hostname'] = _fallbackSocketHost;
+    socketOptions['secure'] = true;
+    socketOptions['port'] = 443;
+    socketOptions['path'] = '/socket.io';
+    print(
+      '[WS] connect override uri=$socketUri host=${socketOptions['hostname']} port=${socketOptions['port']} secure=${socketOptions['secure']}',
     );
+
+    // Use an explicit URI so socket_io_client cannot infer port=0
+    _socket = IO.io(socketUri, socketOptions);
 
     _socket!.onConnect((_) {
       print('✅ WebSocket connected');
@@ -56,6 +61,10 @@ class WebSocketService {
       _socket!.off('territory:snapshot');
       for (final listener in _pendingTerritorySnapshotListeners) {
         _socket!.on('territory:snapshot', listener);
+      }
+      _socket!.off('engagement:boost:update');
+      for (final listener in _pendingBoostListeners) {
+        _socket!.on('engagement:boost:update', listener);
       }
       if (_lastTerritoryEventAt != null) {
         _socket!.emit('territory:replay', {'since': _lastTerritoryEventAt});
@@ -79,6 +88,74 @@ class WebSocketService {
     });
 
     _socket!.connect();
+  }
+
+  Map<String, dynamic> _buildSocketOptions(String token) {
+    final rawBase = ApiConfig.baseUrl.trim();
+    final fixedBase = rawBase.replaceFirst(
+      RegExp(r':0(?=/|$)', caseSensitive: false),
+      '',
+    );
+    if (fixedBase != rawBase) {
+      ApiConfig.baseUrl = fixedBase;
+    }
+
+    Uri uri;
+    try {
+      uri = Uri.parse(fixedBase);
+    } catch (_) {
+      uri = Uri.parse('https://plurihub.sylicaai.com');
+    }
+
+    final isSecure = uri.scheme == 'https';
+    final host = uri.host.isNotEmpty ? uri.host : 'plurihub.sylicaai.com';
+    final port = (uri.hasPort && uri.port != 0)
+        ? uri.port
+        : (isSecure ? 443 : 80);
+
+    final options = IO.OptionBuilder()
+        .enableForceNew()
+        .setTransports(['websocket'])
+        .disableAutoConnect()
+        .enableReconnection()
+        .setReconnectionAttempts(10)
+        .setReconnectionDelay(500)
+        .setReconnectionDelayMax(2000)
+        .setTimeout(8000)
+        .setAuth({'token': token})
+        .setExtraHeaders({'Authorization': 'Bearer $token'})
+        .build();
+
+    // Explicitly set connection details (avoid Uri.port=0)
+    options['hostname'] = host;
+    options['secure'] = isSecure;
+    options['port'] = port;
+    options['path'] = '/socket.io';
+    return options;
+  }
+
+  String _buildSocketUri() {
+    final rawBase = ApiConfig.baseUrl.trim();
+    final fixedBase = rawBase.replaceFirst(
+      RegExp(r':0(?=/|$)', caseSensitive: false),
+      '',
+    );
+
+    Uri uri;
+    try {
+      uri = Uri.parse(fixedBase);
+    } catch (_) {
+      uri = Uri.parse('https://plurihub.sylicaai.com');
+    }
+
+    final scheme = (uri.scheme.isNotEmpty) ? uri.scheme : 'https';
+    final isSecure = scheme == 'https' || scheme == 'wss';
+    final host = uri.host.isNotEmpty ? uri.host : 'plurihub.sylicaai.com';
+    final port =
+        (uri.hasPort && uri.port != 0) ? uri.port : (isSecure ? 443 : 80);
+
+    final httpScheme = isSecure ? 'https' : 'http';
+    return '$httpScheme://$host:$port';
   }
 
   // Disconnect
@@ -201,6 +278,20 @@ class WebSocketService {
     _pendingUserStatsListeners.remove(callback);
   }
 
+  // Listen for map drop boost updates
+  void onDropBoostUpdate(Function(dynamic) callback) {
+    if (_socket != null) {
+      _socket!.on('engagement:boost:update', callback);
+    } else {
+      _pendingBoostListeners.add(callback);
+    }
+  }
+
+  void offDropBoostUpdate(Function(dynamic) callback) {
+    _socket?.off('engagement:boost:update', callback);
+    _pendingBoostListeners.remove(callback);
+  }
+
   // Remove all listeners
   void removeAllListeners() {
     _socket?.off('territory:contested');
@@ -210,6 +301,7 @@ class WebSocketService {
     _socket?.off('leaderboard:update');
     _socket?.off('achievement:unlocked');
     _socket?.off('user:stats:update');
+    _socket?.off('engagement:boost:update');
   }
 
   // Request territory snapshot around a location

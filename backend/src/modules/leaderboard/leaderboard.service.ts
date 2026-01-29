@@ -1,14 +1,17 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import { User } from "../user/user.entity";
 import { RedisService } from "../redis/redis.service";
+import { Friendship } from "./friendship.entity";
 
 @Injectable()
 export class LeaderboardService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    @InjectRepository(Friendship)
+    private friendshipRepository: Repository<Friendship>,
     private redisService: RedisService,
   ) {}
 
@@ -22,6 +25,80 @@ export class LeaderboardService {
 
   async getMonthlyLeaderboard(limit: number = 75): Promise<User[]> {
     return this.getLeaderboardWithCache("monthly", limit);
+  }
+
+  async getFriendsLeaderboard(
+    userId: string,
+    limit: number = 50,
+  ): Promise<User[]> {
+    const friendIds = await this.getFriendIds(userId);
+    if (friendIds.length === 0) {
+      return [];
+    }
+
+    return this.userRepository.find({
+      where: { id: In(friendIds) },
+      order: { totalPoints: "DESC" },
+      take: limit,
+      select: [
+        "id",
+        "name",
+        "totalPoints",
+        "level",
+        "totalDistanceKm",
+        "totalSteps",
+        "totalTerritoriesCaptured",
+        "totalWorkouts",
+      ],
+    });
+  }
+
+  async getNearbyLeaderboard(
+    latitude: number,
+    longitude: number,
+    radiusKm: number = 5,
+    limit: number = 50,
+    excludeUserId?: string,
+  ): Promise<User[]> {
+    const latDelta = radiusKm / 111;
+    const lngDelta =
+      radiusKm / (111 * Math.max(Math.cos((latitude * Math.PI) / 180), 0.2));
+
+    const minLat = latitude - latDelta;
+    const maxLat = latitude + latDelta;
+    const minLng = longitude - lngDelta;
+    const maxLng = longitude + lngDelta;
+
+    const query = this.userRepository
+      .createQueryBuilder("user")
+      .where("user.lastLatitude IS NOT NULL")
+      .andWhere("user.lastLongitude IS NOT NULL")
+      .andWhere("user.lastLatitude BETWEEN :minLat AND :maxLat", {
+        minLat,
+        maxLat,
+      })
+      .andWhere("user.lastLongitude BETWEEN :minLng AND :maxLng", {
+        minLng,
+        maxLng,
+      })
+      .orderBy("user.totalPoints", "DESC")
+      .limit(limit)
+      .select([
+        "user.id",
+        "user.name",
+        "user.totalPoints",
+        "user.level",
+        "user.totalDistanceKm",
+        "user.totalSteps",
+        "user.totalTerritoriesCaptured",
+        "user.totalWorkouts",
+      ]);
+
+    if (excludeUserId) {
+      query.andWhere("user.id != :excludeUserId", { excludeUserId });
+    }
+
+    return query.getMany();
   }
 
   async getUserRank(
@@ -364,5 +441,26 @@ export class LeaderboardService {
         // Ignore errors
       }
     }
+  }
+
+  private async getFriendIds(userId: string): Promise<string[]> {
+    const friendships = await this.friendshipRepository.find({
+      where: [
+        { userId, status: "accepted" },
+        { friendId: userId, status: "accepted" },
+      ],
+    });
+
+    const ids = new Set<string>();
+    for (const friendship of friendships) {
+      const otherId =
+        friendship.userId === userId
+          ? friendship.friendId
+          : friendship.userId;
+      if (otherId && otherId !== userId) {
+        ids.add(otherId);
+      }
+    }
+    return Array.from(ids);
   }
 }

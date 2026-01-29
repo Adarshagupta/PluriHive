@@ -45,6 +45,11 @@ import '../services/user_stats_api_service.dart';
 import '../services/offline_sync_service.dart';
 import '../services/user_profile_api_service.dart';
 import '../services/territory_prefetch_service.dart';
+import '../services/map_drop_service.dart';
+import '../services/poi_mission_service.dart';
+import '../services/rewards_shop_service.dart';
+import '../services/engagement_api_service.dart';
+import '../services/smart_reminder_service.dart';
 
 final getIt = GetIt.instance;
 
@@ -86,7 +91,10 @@ Future<void> initializeDependencies() async {
   );
 
   getIt.registerLazySingleton<LeaderboardApiService>(
-    () => LeaderboardApiService(client: getIt()),
+    () => LeaderboardApiService(
+      client: getIt(),
+      authService: getIt(),
+    ),
   );
 
   getIt.registerLazySingleton<SettingsApiService>(
@@ -110,7 +118,29 @@ Future<void> initializeDependencies() async {
     ),
   );
 
+  getIt.registerLazySingleton<EngagementApiService>(
+    () => EngagementApiService(
+      authService: getIt(),
+      client: getIt(),
+    ),
+  );
+
   getIt.registerSingleton<WebSocketService>(WebSocketService());
+
+  getIt.registerLazySingleton<SmartReminderService>(
+    () => SmartReminderService(),
+  );
+
+  // Engagement Services
+  getIt.registerLazySingleton<MapDropService>(
+    () => MapDropService(apiService: getIt()),
+  );
+  getIt.registerLazySingleton<PoiMissionService>(
+    () => PoiMissionService(apiService: getIt()),
+  );
+  getIt.registerLazySingleton<RewardsShopService>(
+    () => RewardsShopService(apiService: getIt()),
+  );
 
   // Google Fit Service
   getIt.registerLazySingleton<GoogleFitService>(() => GoogleFitService());

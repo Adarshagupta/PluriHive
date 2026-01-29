@@ -63,7 +63,7 @@ class TerritoryPrefetchService {
       );
 
       _ensureSnapshotListener();
-      _webSocketService.connect(userId, token: token);
+      await _webSocketService.connect(userId, token: token);
       _lastSnapshotAt = null;
 
       final connected = await _waitForWebSocketConnected();

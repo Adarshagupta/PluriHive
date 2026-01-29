@@ -2,12 +2,29 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'api_config.dart';
+import 'auth_api_service.dart';
 
 class LeaderboardApiService {
   final http.Client _client;
+  final AuthApiService? _authService;
 
-  LeaderboardApiService({http.Client? client})
-      : _client = client ?? http.Client();
+  LeaderboardApiService({http.Client? client, AuthApiService? authService})
+      : _client = client ?? http.Client(),
+        _authService = authService;
+
+  Future<Map<String, String>> _headers({bool requireAuth = false}) async {
+    String? token;
+    if (_authService != null) {
+      token = await _authService!.getToken();
+    }
+    if (requireAuth && token == null) {
+      throw Exception('Not authenticated');
+    }
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+  }
 
   /// Get global leaderboard
   Future<List<Map<String, dynamic>>> getGlobalLeaderboard(
@@ -17,9 +34,9 @@ class LeaderboardApiService {
           Uri.parse('${ApiConfig.baseUrl}${ApiConfig.leaderboardEndpoint}')
               .replace(queryParameters: {'limit': limit.toString()});
 
-      final response = await _client.get(uri, headers: {
-        'Content-Type': 'application/json'
-      }).timeout(Duration(seconds: 15));
+      final response = await _client
+          .get(uri, headers: await _headers())
+          .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
@@ -39,9 +56,9 @@ class LeaderboardApiService {
       final uri = Uri.parse('${ApiConfig.baseUrl}/leaderboard/weekly')
           .replace(queryParameters: {'limit': limit.toString()});
 
-      final response = await _client.get(uri, headers: {
-        'Content-Type': 'application/json'
-      }).timeout(Duration(seconds: 15));
+      final response = await _client
+          .get(uri, headers: await _headers())
+          .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
@@ -62,9 +79,9 @@ class LeaderboardApiService {
       final uri = Uri.parse('${ApiConfig.baseUrl}/leaderboard/monthly')
           .replace(queryParameters: {'limit': limit.toString()});
 
-      final response = await _client.get(uri, headers: {
-        'Content-Type': 'application/json'
-      }).timeout(Duration(seconds: 15));
+      final response = await _client
+          .get(uri, headers: await _headers())
+          .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
@@ -84,9 +101,9 @@ class LeaderboardApiService {
       final uri = Uri.parse('${ApiConfig.baseUrl}/leaderboard/rank')
           .replace(queryParameters: {'userId': userId});
 
-      final response = await _client.get(uri, headers: {
-        'Content-Type': 'application/json'
-      }).timeout(Duration(seconds: 10));
+      final response = await _client
+          .get(uri, headers: await _headers())
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
@@ -108,9 +125,9 @@ class LeaderboardApiService {
         'limit': limit.toString(),
       });
 
-      final response = await _client.get(uri, headers: {
-        'Content-Type': 'application/json'
-      }).timeout(Duration(seconds: 10));
+      final response = await _client
+          .get(uri, headers: await _headers())
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
@@ -128,9 +145,9 @@ class LeaderboardApiService {
     try {
       final uri = Uri.parse('${ApiConfig.baseUrl}/leaderboard/stats');
 
-      final response = await _client.get(uri, headers: {
-        'Content-Type': 'application/json'
-      }).timeout(Duration(seconds: 10));
+      final response = await _client
+          .get(uri, headers: await _headers())
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
@@ -139,6 +156,61 @@ class LeaderboardApiService {
       }
     } catch (e) {
       throw Exception('Stats API error: $e');
+    }
+  }
+
+  /// Get friends leaderboard
+  Future<List<Map<String, dynamic>>> getFriendsLeaderboard(
+      {int limit = 50}) async {
+    try {
+      final uri = Uri.parse('${ApiConfig.baseUrl}/leaderboard/friends')
+          .replace(queryParameters: {'limit': limit.toString()});
+
+      final response = await _client
+          .get(uri, headers: await _headers(requireAuth: true))
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      } else {
+        throw Exception(
+            'Failed to load friends leaderboard: ${response.statusCode}');
+      }
+    } catch (e) {
+      throw Exception('Friends leaderboard API error: $e');
+    }
+  }
+
+  /// Get nearby leaderboard
+  Future<List<Map<String, dynamic>>> getNearbyLeaderboard({
+    required double latitude,
+    required double longitude,
+    double radiusKm = 5,
+    int limit = 50,
+  }) async {
+    try {
+      final uri = Uri.parse('${ApiConfig.baseUrl}/leaderboard/nearby')
+          .replace(queryParameters: {
+        'lat': latitude.toString(),
+        'lng': longitude.toString(),
+        'radiusKm': radiusKm.toString(),
+        'limit': limit.toString(),
+      });
+
+      final response = await _client
+          .get(uri, headers: await _headers(requireAuth: true))
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      } else {
+        throw Exception(
+            'Failed to load nearby leaderboard: ${response.statusCode}');
+      }
+    } catch (e) {
+      throw Exception('Nearby leaderboard API error: $e');
     }
   }
 }
