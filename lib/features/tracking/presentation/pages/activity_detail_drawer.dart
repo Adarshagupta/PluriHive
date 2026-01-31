@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import '../../../../core/theme/app_theme.dart';
 
 class ActivityDetailDrawer extends StatelessWidget {
   final Map<String, dynamic> activity;
@@ -282,7 +283,7 @@ class ActivityDetailDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final accent = const Color(0xFF16A34A);
+    final accent = AppTheme.primaryColor;
     final user = activity['user'] as Map<String, dynamic>?;
     String ownerName = 'Unknown User';
     if (user != null) {

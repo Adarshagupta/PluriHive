@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Privacy Policy - Plurihive</title>
+    <link rel="stylesheet" href="styles.css" />
     <style>
       :root {
         color-scheme: light;
@@ -69,11 +70,24 @@
     </style>
   </head>
   <body>
-    <header>
-      <h1>Privacy Policy</h1>
-      <div class="badge">Last updated: January 29, 2026</div>
-    </header>
-    <main>
+    <nav class="nav">
+      <div class="nav-container">
+        <a href="index.html" class="nav-logo">Plurihive</a>
+        <div class="nav-links">
+          <a href="index.html" class="nav-link">Home</a>
+          <a href="territories.html" class="nav-link">Territories</a>
+          <a href="privacy.html" class="nav-link active">Privacy</a>
+          <a href="terms.html" class="nav-link">Terms</a>
+        </div>
+      </div>
+    </nav>
+
+    <main class="container">
+      <header class="page-header">
+        <h1>Privacy Policy</h1>
+        <p>Your privacy matters to us. Here's how we handle your data.</p>
+        <span class="badge">Last updated: January 29, 2026</span>
+      </header>
       <div class="card">
         <p>
           This Privacy Policy explains how Plurihive ("we", "us", or "our")
@@ -82,37 +96,20 @@
         </p>
       </div>
 
-      <h2>Information we collect</h2>
+      <h2 class="section-title">Information We Collect</h2>
       <div class="card">
-        <ul>
-          <li>
-            <strong>Account data</strong> such as name, email address, and
-            authentication identifiers.
-          </li>
-          <li>
-            <strong>Location data</strong> (precise, and in the background when
-            tracking is active) to draw routes, capture territories, and show
-            nearby activity.
-          </li>
-          <li>
-            <strong>Health and fitness data</strong> such as steps, distance,
-            calories, and heart rate from Health Connect or Google Fit if you
-            grant access.
-          </li>
-          <li>
-            <strong>Activity data</strong> including route points, timestamps,
-            workouts, territories captured, and game progress.
-          </li>
-          <li>
-            <strong>Device and app data</strong> like device model, OS version,
-            app version, and diagnostic logs to improve stability.
-          </li>
+        <ul class="feature-list">
+          <li><strong>Account data</strong> such as name, email address, and authentication identifiers.</li>
+          <li><strong>Location data</strong> (precise, in the background when tracking) to draw routes, capture territories, and show nearby activity.</li>
+          <li><strong>Health and fitness data</strong> such as steps, distance, calories, and heart rate from Health Connect or Google Fit if you grant access.</li>
+          <li><strong>Activity data</strong> including route points, timestamps, workouts, territories captured, and game progress.</li>
+          <li><strong>Device and app data</strong> like device model, OS version, app version, and diagnostic logs to improve stability.</li>
         </ul>
       </div>
 
-      <h2>How we use information</h2>
+      <h2 class="section-title">How We Use Information</h2>
       <div class="card">
-        <ul>
+        <ul class="feature-list">
           <li>Provide core gameplay and tracking features.</li>
           <li>Calculate stats, leaderboards, and rewards.</li>
           <li>Sync data across devices and restore progress.</li>
@@ -121,52 +118,48 @@
         </ul>
       </div>
 
-      <h2>Sharing</h2>
+      <h2 class="section-title">Data Sharing</h2>
       <div class="card">
-        <p>
-          We do not sell your personal or health data. We only share data with
-          service providers that help operate the app (for example, hosting and
-          analytics), and only as required to deliver the service.
+        <p class="card-text">
+          We do not sell your personal or health data. We only share data with service providers that help operate the app (hosting and analytics), and only as required to deliver the service.
         </p>
       </div>
 
-      <h2>Data retention and deletion</h2>
+      <h2 class="section-title">Data Retention & Deletion</h2>
       <div class="card">
-        <p>
-          You can delete your account in the app. When you request deletion, we
-          remove your account and associated activity data, unless retention is
-          required for security, fraud prevention, or legal compliance.
+        <p class="card-text">
+          You can delete your account in the app. When you request deletion, we remove your account and associated activity data, unless retention is required for security, fraud prevention, or legal compliance.
         </p>
       </div>
 
-      <h2>Security</h2>
+      <h2 class="section-title">Security</h2>
       <div class="card">
-        <p>
-          We use encryption in transit and standard security practices to help
-          protect your data. No method of transmission or storage is 100%
-          secure, but we work to safeguard your information.
+        <p class="card-text">
+          We use encryption in transit and standard security practices to help protect your data. No method of transmission or storage is 100% secure, but we work to safeguard your information.
         </p>
       </div>
 
-      <h2>Your choices</h2>
+      <h2 class="section-title">Your Choices</h2>
       <div class="card">
-        <ul>
+        <ul class="feature-list">
           <li>Control permissions in device settings.</li>
           <li>Turn notifications on or off in the app.</li>
-          <li>Request account deletion in Settings.</li>
+          <li><a href="delete-account.html">Request account deletion</a> in Settings.</li>
         </ul>
       </div>
 
-      <h2>Contact</h2>
+      <h2 class="section-title">Contact</h2>
       <div class="card">
-        <p>
-          For questions or requests, contact us at
-          <a href="mailto:support@territoryfitness.com">support@territoryfitness.com</a>.
+        <p class="card-text">
+          For questions or requests, contact us at <a href="mailto:support@territoryfitness.com">support@territoryfitness.com</a>.
         </p>
       </div>
 
-      <footer>
-        This policy applies to the Plurihive app and related services.
+      <footer class="page-footer">
+        <a href="index.html">Home</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="terms.html">Terms</a>
+        <p style="margin-top: 12px;">2026 Plurihive. All rights reserved.</p>
       </footer>
     </main>
   </body>

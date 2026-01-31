@@ -1,7 +1,18 @@
-import { Controller, Post, Get, Body, UseGuards, Request, Param, Query } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Patch,
+  Body,
+  UseGuards,
+  Request,
+  Param,
+  Query,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TerritoryService } from './territory.service';
 import { CaptureTerritoryDto } from './dto/capture-territory.dto';
+import { UpdateTerritoryNameDto } from './dto/update-territory-name.dto';
 
 @Controller('territories')
 export class TerritoryController {
@@ -50,5 +61,19 @@ export class TerritoryController {
   async getBossTerritories(@Query('limit') limit?: number) {
     const parsedLimit = limit ? Math.min(Number(limit), 10) : 3;
     return this.territoryService.getBossTerritories(parsedLimit);
+  }
+
+  @Patch(':id/name')
+  @UseGuards(JwtAuthGuard)
+  async updateTerritoryName(
+    @Request() req,
+    @Param('id') id: string,
+    @Body() body: UpdateTerritoryNameDto,
+  ) {
+    return this.territoryService.updateTerritoryName(
+      req.user.id,
+      id,
+      body.name,
+    );
   }
 }

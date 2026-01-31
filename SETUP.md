@@ -1,43 +1,25 @@
-# Setup Instructions
+﻿# Setup Instructions
 
 ## Quick Start
 
-### 1. Get Google Maps API Key
+### 1. Get Mapbox Tokens
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing one
-3. Enable **Maps SDK for Android** and **Maps SDK for iOS**
-4. Create credentials → API Key
-5. Copy your API key
+1. Go to [Mapbox](https://account.mapbox.com/)
+2. Create an **access token** for runtime maps
+3. Create a **downloads token** for Android SDK artifacts
 
-### 2. Configure API Keys
+### 2. Configure Mapbox
 
-**For Android:**
-Edit `android/app/src/main/AndroidManifest.xml` and replace:
-```xml
-android:value="YOUR_GOOGLE_MAPS_API_KEY_HERE"
+**Android (downloads token):**
+Edit `android/gradle.properties` and set:
+```properties
+MAPBOX_DOWNLOADS_TOKEN=YOUR_MAPBOX_DOWNLOADS_TOKEN
 ```
-with your actual API key.
 
-**For iOS:**
-1. Create `ios/Runner/AppDelegate.swift` if it doesn't exist
-2. Add this code:
-```swift
-import UIKit
-import Flutter
-import GoogleMaps
-
-@UIApplicationMain
-@objc class AppDelegate: FlutterAppDelegate {
-  override func application(
-    _ application: UIApplication,
-    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-  ) -> Bool {
-    GMSServices.provideAPIKey("YOUR_GOOGLE_MAPS_API_KEY_HERE")
-    GeneratedPluginRegistrant.register(with: self)
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-  }
-}
+**Runtime access token (all platforms):**
+Pass this when running/building:
+```bash
+flutter run --dart-define=MAPBOX_ACCESS_TOKEN=YOUR_MAPBOX_ACCESS_TOKEN
 ```
 
 ### 3. Run the App
@@ -56,8 +38,8 @@ flutter run -d <device-id>
 ### 4. Test Location Services
 
 **On Emulator:**
-- Android Studio: Use "Extended Controls" → Location to set GPS coordinates
-- Xcode Simulator: Features → Location → Custom Location
+- Android Studio: Use "Extended Controls" â†’ Location to set GPS coordinates
+- Xcode Simulator: Features â†’ Location â†’ Custom Location
 
 **On Physical Device:**
 - Make sure location services are enabled
@@ -91,9 +73,9 @@ flutter run -d <device-id>
 - iOS: Check Info.plist location usage descriptions
 
 ### Map Not Loading
-- Verify Google Maps API key is correct
-- Check billing is enabled on Google Cloud Console
-- Ensure Maps SDK is enabled
+- Verify `MAPBOX_ACCESS_TOKEN` is provided via `--dart-define`
+- Verify `MAPBOX_DOWNLOADS_TOKEN` is set in `android/gradle.properties` (Android)
+- Ensure your Mapbox token has the required scopes
 
 ### Build Errors
 ```bash
@@ -153,7 +135,7 @@ Add breakpoints in VS Code and use F5 to debug.
 
 - [Flutter Documentation](https://docs.flutter.dev/)
 - [BLoC Pattern](https://bloclibrary.dev/)
-- [Google Maps Flutter](https://pub.dev/packages/google_maps_flutter)
+- [Mapbox Maps Flutter](https://pub.dev/packages/mapbox_maps_flutter)
 - [Geolocator](https://pub.dev/packages/geolocator)
 
 ## Support
@@ -162,3 +144,5 @@ For issues or questions, check:
 - Flutter GitHub issues
 - Stack Overflow with #flutter tag
 - Flutter Discord community
+
+

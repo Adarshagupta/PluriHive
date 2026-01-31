@@ -2,18 +2,21 @@ import 'auth_api_service.dart';
 import 'tracking_api_service.dart';
 import 'territory_api_service.dart';
 import '../../features/tracking/data/datasources/pending_sync_data_source.dart';
+import '../../features/tracking/data/datasources/activity_local_data_source.dart';
 
 class OfflineSyncService {
   final TrackingApiService trackingApiService;
   final TerritoryApiService territoryApiService;
   final PendingSyncDataSource pendingSyncDataSource;
   final AuthApiService authApiService;
+  final ActivityLocalDataSource? activityLocalDataSource;
 
   OfflineSyncService({
     required this.trackingApiService,
     required this.territoryApiService,
     required this.pendingSyncDataSource,
     required this.authApiService,
+    this.activityLocalDataSource,
   });
 
   Future<void> queueActivityPayload(Map<String, dynamic> payload) async {
@@ -41,6 +44,10 @@ class OfflineSyncService {
       try {
         if (item.type == 'activity') {
           await trackingApiService.saveActivityPayload(item.payload);
+          final clientId = item.payload['clientId']?.toString();
+          if (clientId != null && clientId.isNotEmpty) {
+            await activityLocalDataSource?.deleteByClientId(clientId);
+          }
         } else if (item.type == 'territory') {
           await territoryApiService.captureTerritoriesPayload(item.payload);
         } else {

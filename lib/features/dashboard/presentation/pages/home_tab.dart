@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:http/http.dart' as http;
@@ -10,12 +9,12 @@ import '../../../../core/widgets/patterned_background.dart';
 import '../../../../core/widgets/skeleton.dart';
 import '../../../../core/services/google_fit_service.dart';
 import '../../../../core/services/websocket_service.dart';
+import '../../../../core/theme/app_theme.dart';
 import 'package:health/health.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../tracking/presentation/bloc/location_bloc.dart';
 import '../../../tracking/domain/entities/activity.dart';
-import '../../../tracking/data/datasources/activity_local_data_source.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import 'dart:async';
@@ -32,11 +31,8 @@ class HomeTab extends StatefulWidget {
 }
 
 class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
-  GoogleMapController? _mapController;
   late AnimationController _animController;
   late TrackingApiService _trackingApiService;
-  final ActivityLocalDataSource _activityLocalDataSource =
-      ActivityLocalDataSourceImpl();
   late GoogleFitService _googleFitService;
   late WebSocketService _webSocketService;
   late final void Function(dynamic) _statsUpdateListener;
@@ -46,10 +42,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   String _greeting = 'Good morning';
   List<Activity> _recentActivities = [];
   bool _isLoadingActivities = false;
-  bool _hasLocalRecentActivities = false;
   bool _isRefreshingRecentActivities = false;
   bool _isLoadingHealth = false;
   bool _healthConnected = false;
+  bool _hasShownHealthSheet = false;
   HealthConnectSdkStatus? _healthConnectStatus;
   Map<String, dynamic>? _healthSummary;
   List<HeartRateSample> _heartRateSamples = [];
@@ -94,7 +90,6 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   @override
   void dispose() {
     _animController.dispose();
-    _mapController?.dispose();
     _webSocketService.offUserStatsUpdate(_statsUpdateListener);
     super.dispose();
   }
@@ -226,26 +221,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   Future<void> _loadRecentActivities() async {
-    await _loadRecentActivitiesFromLocal();
-    _refreshRecentActivitiesFromBackend();
-  }
-
-  Future<void> _loadRecentActivitiesFromLocal() async {
-    try {
-      final localActivities = await _activityLocalDataSource.getAllActivities();
-      localActivities.sort((a, b) => b.startTime.compareTo(a.startTime));
-      if (!mounted) return;
-      setState(() {
-        _recentActivities = localActivities.take(3).toList();
-        _isLoadingActivities = _recentActivities.isEmpty;
-      });
-      _hasLocalRecentActivities = _recentActivities.isNotEmpty;
-    } catch (e) {
-      print('Error loading local activities: $e');
-      if (mounted) {
-        setState(() => _isLoadingActivities = true);
-      }
-    }
+    setState(() => _isLoadingActivities = true);
+    await _refreshRecentActivitiesFromBackend();
   }
 
   Future<void> _refreshRecentActivitiesFromBackend() async {
@@ -256,21 +233,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           await _trackingApiService.getUserActivities(limit: 3);
       final activities =
           activitiesData.map((data) => Activity.fromJson(data)).toList();
-      for (final activity in activities) {
-        await _activityLocalDataSource.saveActivity(activity);
-      }
       if (!mounted) return;
-      if (activities.isNotEmpty || !_hasLocalRecentActivities) {
-        setState(() {
-          _recentActivities = activities;
-          _isLoadingActivities = false;
-        });
-      } else {
-        setState(() => _isLoadingActivities = false);
-      }
+      setState(() {
+        _recentActivities = activities;
+        _isLoadingActivities = false;
+      });
     } catch (e) {
       print('Error loading recent activities: $e');
-      if (mounted && !_hasLocalRecentActivities) {
+      if (mounted) {
         setState(() => _isLoadingActivities = false);
       }
     } finally {
@@ -381,7 +351,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                   style: TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.w500,
-                                    color: Colors.black87,
+                                    color: AppTheme.textPrimary,
                                   ),
                                 ),
                                 Text(
@@ -389,7 +359,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                   style: TextStyle(
                                     fontSize: 24,
                                     fontWeight: FontWeight.w800,
-                                    color: Colors.black,
+                                    color: AppTheme.textPrimary,
                                   ),
                                 ),
                               ],
@@ -433,7 +403,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       case 'weeklyGoal':
         return _buildWeeklyGoalSection();
       case 'health':
-        return _buildHealthConnectCard();
+        return _healthConnected ? _buildHealthConnectCard() : const SizedBox.shrink();
       case 'territory':
         return _buildTerritoryStatsSection();
       case 'recentActivity':
@@ -445,6 +415,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    // Show Health Connect sheet once if not connected
+    if (!_hasShownHealthSheet) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_healthConnected && !_isLoadingHealth && mounted) {
+          _showHealthConnectSheet();
+          _hasShownHealthSheet = true;
+        }
+      });
+    }
+
     // Build home tab UI
     return Scaffold(
       body: PatternedBackground(
@@ -465,6 +445,185 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           ),
         ),
       ),
+    );
+  }
+
+  void _showHealthConnectSheet() {
+    const tealColor = Color(0xFFB8E6E6);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      barrierColor: Colors.black54,
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(28),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.18),
+                    blurRadius: 24,
+                    offset: const Offset(0, 12),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(28),
+                child: Stack(
+                  children: [
+                    Positioned(
+                      right: -70,
+                      top: -90,
+                      child: Container(
+                        width: 200,
+                        height: 200,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: [
+                              tealColor.withOpacity(0.3),
+                              tealColor.withOpacity(0.05),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 4,
+                          margin: const EdgeInsets.only(top: 12, bottom: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE5E7EB),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 46,
+                                height: 46,
+                                decoration: BoxDecoration(
+                                  color: tealColor.withOpacity(0.3),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Icon(
+                                  Icons.favorite,
+                                  color: Colors.teal.shade700,
+                                  size: 24,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Health Connect',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF0F172A),
+                                      ),
+                                    ),
+                                    SizedBox(height: 4),
+                                    Text(
+                                      'Sync steps, distance & heart rate',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: () => Navigator.pop(context),
+                                icon: const Icon(
+                                  Icons.close,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Divider(height: 1),
+                        Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: [
+                              _buildBenefitIcon(Icons.directions_walk, 'Steps'),
+                              _buildBenefitIcon(Icons.map, 'Distance'),
+                              _buildBenefitIcon(Icons.local_fire_department, 'Calories'),
+                              _buildBenefitIcon(Icons.favorite_border, 'Heart'),
+                            ],
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                          child: SizedBox(
+                            width: double.infinity,
+                            height: 50,
+                            child: ElevatedButton(
+                              onPressed: () {
+                                Navigator.pop(context);
+                                _connectHealthConnect();
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: tealColor,
+                                foregroundColor: Colors.black87,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              child: const Text(
+                                'Connect',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildBenefitIcon(IconData icon, String label) {
+    return Column(
+      children: [
+        Icon(icon, color: Colors.teal.shade700, size: 28),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: Colors.grey,
+          ),
+        ),
+      ],
     );
   }
 
@@ -496,7 +655,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         return Container(
           padding: EdgeInsets.all(24),
           decoration: BoxDecoration(
-            color: Color(0xFFB8E6E6),
+            color: const Color(0xFFB8E6E6),
             borderRadius: BorderRadius.circular(24),
             boxShadow: [
               BoxShadow(
@@ -891,7 +1050,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   Row(
                     children: [
                       Icon(Icons.flag_outlined,
-                          color: Color(0xFF7FE87A), size: 20),
+                          color: AppTheme.primaryColor, size: 20),
                       SizedBox(width: 8),
                       Text(
                         'Weekly Goal',
@@ -921,7 +1080,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   minHeight: 12,
                   backgroundColor: Colors.grey.shade200,
                   valueColor: AlwaysStoppedAnimation<Color>(
-                    Color(0xFFB8E6E6),
+                    const Color(0xFFB8E6E6),
                   ),
                 ),
               ),
@@ -966,7 +1125,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                     icon: Icons.square_outlined,
                     value: '${state.stats.territoriesCaptured}',
                     label: 'Captured',
-                    color: Color(0xFF7FE87A),
+                    color: AppTheme.primaryColor,
                   ),
                 ),
                 SizedBox(width: 12),
@@ -1062,7 +1221,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           subtitle:
                               '${distanceKm.toStringAsFixed(1)} km • $durationMin min',
                           time: timeAgo,
-                          color: Color(0xFF7FE87A),
+                          color: AppTheme.primaryColor,
                         ),
                       );
                     }).toList(),
@@ -1348,7 +1507,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           ),
           const SizedBox(height: 12),
           SizedBox(
-            height: 40,
+            height: 46,
+            width: 120,
             child: ElevatedButton(
               onPressed: _connectHealthConnect,
               style: ElevatedButton.styleFrom(

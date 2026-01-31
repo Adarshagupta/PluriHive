@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/services/leaderboard_api_service.dart';
 import '../../../../core/widgets/skeleton.dart';
+import '../../../../core/theme/app_theme.dart';
 
 enum LeaderboardScope { global, friends, nearby }
 
@@ -279,82 +280,17 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
-        children: [
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  Color(0xFFF8F7F2),
-                  Color(0xFFE9F5EA),
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-          ),
-          Positioned(
-            right: -120,
-            top: -140,
-            child: Container(
-              width: 240,
-              height: 240,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: [
-                    Color(0xFF7FE87A),
-                    Color(0x00F8F7F2),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            left: -60,
-            bottom: -80,
-            child: Transform.rotate(
-              angle: -0.25,
-              child: Container(
-                width: 200,
-                height: 200,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(48),
-                  gradient: const LinearGradient(
-                    colors: [
-                      Color(0xFF111827),
-                      Color(0xFF1F2937),
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.12),
-                      blurRadius: 30,
-                      offset: const Offset(0, 12),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          SafeArea(
-            child: Column(
-              children: [
-                _buildHeader(),
-                const SizedBox(height: 12),
-                _buildScopeSelector(),
-                const SizedBox(height: 12),
-                _buildRangeSelector(),
-                const SizedBox(height: 12),
-                _buildMetricSelector(),
-                const SizedBox(height: 8),
-                Expanded(child: _buildContent()),
-              ],
-            ),
-          ),
-        ],
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildHeader(),
+            const SizedBox(height: 12),
+            _buildFilterSummaryBar(),
+            const SizedBox(height: 8),
+            Expanded(child: _buildContent()),
+          ],
+        ),
       ),
     );
   }
@@ -373,7 +309,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                   style: GoogleFonts.spaceGrotesk(
                     fontSize: 26,
                     fontWeight: FontWeight.w700,
-                    color: const Color(0xFF0F172A),
+                    color: AppTheme.textPrimary,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -381,7 +317,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                   _subtitleText(),
                   style: GoogleFonts.dmSans(
                     fontSize: 13,
-                    color: const Color(0xFF64748B),
+                    color: AppTheme.textSecondary,
                   ),
                 ),
               ],
@@ -394,18 +330,11 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.9),
+                color: const Color(0xFFF3FAFA),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withOpacity(0.6)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 16,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
+                border: Border.all(color: const Color(0xFFD6EEEE)),
               ),
-              child: const Icon(Icons.refresh, color: Color(0xFF111827)),
+              child: Icon(Icons.refresh, color: AppTheme.accentColor),
             ),
           ),
         ],
@@ -413,16 +342,78 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     );
   }
 
+  Widget _buildFilterSummaryBar() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: InkWell(
+        onTap: _openFiltersSheet,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF6FBFB),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFD6EEEE)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE7F7F7),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFD6EEEE)),
+                ),
+                child: Icon(Icons.tune, color: AppTheme.accentColor, size: 18),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  '${_scopeLabel()} • ${_rangeLabel()} • ${_metricLabel()}',
+                  style: GoogleFonts.dmSans(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+              Icon(Icons.chevron_right, color: AppTheme.textTertiary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   String _subtitleText() {
     switch (_scope) {
       case LeaderboardScope.friends:
-        return 'Your crew ranked by ${_getMetricLabel()}';
+        return 'Your crew ranked by ${_metricLabel().toLowerCase()}';
       case LeaderboardScope.nearby:
-        return 'Within ${_nearbyRadiusKm.toStringAsFixed(0)} km - ${_getMetricLabel()}';
+        return 'Within ${_nearbyRadiusKm.toStringAsFixed(0)} km - ${_metricLabel().toLowerCase()}';
       case LeaderboardScope.global:
       default:
-        return '${_rangeLabel()} leaders by ${_getMetricLabel()}';
+        return '${_rangeLabel()} leaders by ${_metricLabel().toLowerCase()}';
     }
+  }
+
+  String _scopeLabel() {
+    switch (_scope) {
+      case LeaderboardScope.friends:
+        return 'Friends';
+      case LeaderboardScope.nearby:
+        return 'Nearby';
+      case LeaderboardScope.global:
+      default:
+        return 'Global';
+    }
+  }
+
+  String _metricLabel() {
+    final label = _getMetricLabel();
+    if (label.isEmpty) return 'Points';
+    return '${label[0].toUpperCase()}${label.substring(1)}';
   }
 
   String _rangeLabel() {
@@ -443,9 +434,9 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       child: Container(
         padding: const EdgeInsets.all(6),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.9),
+          color: const Color(0xFFF6FBFB),
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: Colors.white.withOpacity(0.6)),
+          border: Border.all(color: const Color(0xFFD6EEEE)),
         ),
         child: Row(
           children: [
@@ -485,12 +476,12 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           duration: const Duration(milliseconds: 180),
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            color: isSelected ? const Color(0xFF111827) : Colors.transparent,
+            color: isSelected ? AppTheme.accentColor : Colors.transparent,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: isSelected
-                  ? const Color(0xFF111827)
-                  : const Color(0xFFE2E8F0),
+                  ? AppTheme.accentColor
+                  : const Color(0xFFDDEAEA),
             ),
           ),
           child: Row(
@@ -499,7 +490,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               Icon(
                 icon,
                 size: 14,
-                color: isSelected ? Colors.white : const Color(0xFF475569),
+                color: isSelected ? Colors.white : AppTheme.textSecondary,
               ),
               const SizedBox(width: 6),
               Text(
@@ -507,7 +498,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 style: GoogleFonts.dmSans(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: isSelected ? Colors.white : const Color(0xFF475569),
+                  color: isSelected ? Colors.white : AppTheme.textSecondary,
                 ),
               ),
             ],
@@ -542,13 +533,13 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
             color: isSelected
-                ? const Color(0xFF0B1C12)
-                : Colors.white.withOpacity(0.75),
+                ? AppTheme.accentColor
+                : const Color(0xFFF4FBFB),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: isSelected
-                  ? const Color(0xFF0B1C12)
-                  : const Color(0xFFE5E7EB),
+                  ? AppTheme.accentColor
+                  : const Color(0xFFDDEAEA),
             ),
           ),
           child: Text(
@@ -557,7 +548,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             style: GoogleFonts.dmSans(
               fontSize: 12,
               fontWeight: FontWeight.w600,
-              color: isSelected ? Colors.white : const Color(0xFF475569),
+              color: isSelected ? Colors.white : AppTheme.textSecondary,
             ),
           ),
         ),
@@ -571,16 +562,9 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       child: Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.9),
+          color: const Color(0xFFF6FBFB),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withOpacity(0.6)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 16,
-              offset: const Offset(0, 8),
-            ),
-          ],
+          border: Border.all(color: const Color(0xFFD6EEEE)),
         ),
         child: Row(
           children: [
@@ -610,12 +594,12 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(
-            color: isSelected ? const Color(0xFF111827) : Colors.transparent,
+            color: isSelected ? AppTheme.accentColor : Colors.transparent,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: isSelected
-                  ? const Color(0xFF111827)
-                  : const Color(0xFFE2E8F0),
+                  ? AppTheme.accentColor
+                  : const Color(0xFFDDEAEA),
             ),
           ),
           child: Row(
@@ -624,7 +608,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               Icon(
                 icon,
                 size: 14,
-                color: isSelected ? Colors.white : const Color(0xFF475569),
+                color: isSelected ? Colors.white : AppTheme.textSecondary,
               ),
               const SizedBox(width: 6),
               Text(
@@ -633,13 +617,120 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 style: GoogleFonts.dmSans(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: isSelected ? Colors.white : const Color(0xFF475569),
+                  color: isSelected ? Colors.white : AppTheme.textSecondary,
                 ),
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  void _openFiltersSheet() {
+    final media = MediaQuery.of(context);
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + media.viewInsets.bottom),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: const Color(0xFFDDEAEA)),
+              ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 44,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFD6EEEE),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Filters',
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textPrimary,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: Icon(Icons.close, color: AppTheme.textSecondary),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Scope',
+                      style: GoogleFonts.dmSans(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _buildScopeSelector(),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Range',
+                      style: GoogleFonts.dmSans(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _buildRangeSelector(),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Metric',
+                      style: GoogleFonts.dmSans(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _buildMetricSelector(),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.accentColor,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text('Done'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -661,13 +752,13 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             const SizedBox(height: 16),
             Text(
               'Failed to load leaderboard',
-              style: TextStyle(fontSize: 16, color: Colors.grey[700]),
+              style: TextStyle(fontSize: 16, color: AppTheme.textSecondary),
             ),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => _loadData(forceRefresh: true),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.grey[800],
+                backgroundColor: AppTheme.accentColor,
                 foregroundColor: Colors.white,
               ),
               child: const Text('Try Again'),
@@ -687,7 +778,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           _scope == LeaderboardScope.friends
               ? 'Add friends to see this board.'
               : 'No users found',
-          style: TextStyle(color: Colors.grey[600]),
+          style: TextStyle(color: AppTheme.textSecondary),
         ),
       );
     }
@@ -723,21 +814,14 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         child: Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.95),
+            color: const Color(0xFFF8FEFE),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: const Color(0xFFE5E7EB)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 16,
-                offset: const Offset(0, 8),
-              ),
-            ],
+            border: Border.all(color: const Color(0xFFDDEAEA)),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.place, size: 36, color: Color(0xFF0F172A)),
+              Icon(Icons.place, size: 36, color: AppTheme.textPrimary),
               const SizedBox(height: 12),
               Text(
                 _locationError ?? 'Location required',
@@ -745,7 +829,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: const Color(0xFF0F172A),
+                  color: AppTheme.textPrimary,
                 ),
               ),
               const SizedBox(height: 8),
@@ -754,7 +838,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 textAlign: TextAlign.center,
                 style: GoogleFonts.dmSans(
                   fontSize: 12,
-                  color: const Color(0xFF64748B),
+                  color: AppTheme.textSecondary,
                 ),
               ),
               const SizedBox(height: 16),
@@ -771,7 +855,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                           await _loadData(forceRefresh: true);
                         },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF111827),
+                    backgroundColor: AppTheme.accentColor,
                     foregroundColor: Colors.white,
                   ),
                   child: Text(
@@ -794,16 +878,9 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.92),
+          color: const Color(0xFFF8FEFE),
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: Colors.white.withOpacity(0.6)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.08),
-              blurRadius: 20,
-              offset: const Offset(0, 12),
-            ),
-          ],
+          border: Border.all(color: const Color(0xFFDDEAEA)),
         ),
         child: Row(
           children: [
@@ -836,13 +913,6 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             decoration: BoxDecoration(
               color: accent,
               shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: accent.withOpacity(0.4),
-                  blurRadius: 12,
-                  offset: const Offset(0, 6),
-                ),
-              ],
             ),
             child: Center(
               child: Text(
@@ -859,7 +929,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             style: GoogleFonts.spaceGrotesk(
               fontSize: 12,
               fontWeight: FontWeight.w600,
-              color: const Color(0xFF0F172A),
+              color: AppTheme.textPrimary,
             ),
           ),
           const SizedBox(height: 4),
@@ -868,14 +938,14 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             style: GoogleFonts.dmSans(
               fontSize: 12,
               fontWeight: FontWeight.w700,
-              color: const Color(0xFF0F172A),
+              color: AppTheme.textPrimary,
             ),
           ),
           Text(
             _getMetricLabel(),
             style: GoogleFonts.dmSans(
               fontSize: 10,
-              color: const Color(0xFF64748B),
+              color: AppTheme.textSecondary,
             ),
           ),
         ],
@@ -890,20 +960,13 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.92),
+        color: const Color(0xFFF8FEFE),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: isTopThree
               ? _getRankColor(rank).withOpacity(0.6)
-              : const Color(0xFFE2E8F0),
+              : const Color(0xFFDDEAEA),
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          ),
-        ],
       ),
       child: Row(
         children: [
@@ -913,7 +976,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             decoration: BoxDecoration(
               color: isTopThree
                   ? _getRankColor(rank)
-                  : const Color(0xFFF1F5F9),
+                  : const Color(0xFFEFF8F8),
               shape: BoxShape.circle,
             ),
             child: Center(
@@ -926,7 +989,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                       '$rank',
                       style: GoogleFonts.dmSans(
                         fontWeight: FontWeight.w700,
-                        color: const Color(0xFF475569),
+                        color: AppTheme.textSecondary,
                       ),
                     ),
             ),
@@ -941,7 +1004,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                   style: GoogleFonts.spaceGrotesk(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
-                    color: const Color(0xFF0F172A),
+                    color: AppTheme.textPrimary,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -949,7 +1012,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                   'Level ${user.level} - ${user.totalTerritoriesCaptured} territories',
                   style: GoogleFonts.dmSans(
                     fontSize: 12,
-                    color: const Color(0xFF64748B),
+                    color: AppTheme.textSecondary,
                   ),
                 ),
               ],
@@ -963,14 +1026,14 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
-                  color: const Color(0xFF0F172A),
+                  color: AppTheme.textPrimary,
                 ),
               ),
               Text(
                 _getMetricLabel(),
                 style: GoogleFonts.dmSans(
                   fontSize: 11,
-                  color: const Color(0xFF64748B),
+                  color: AppTheme.textSecondary,
                 ),
               ),
             ],
@@ -1017,11 +1080,11 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       case 1:
         return const Color(0xFFFBBF24);
       case 2:
-        return const Color(0xFFCBD5F5);
+        return const Color(0xFFBFD9FF);
       case 3:
-        return const Color(0xFFF59E0B);
+        return const Color(0xFF7EDBD5);
       default:
-        return const Color(0xFFE2E8F0);
+        return const Color(0xFFEFF8F8);
     }
   }
 

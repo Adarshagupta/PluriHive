@@ -1,18 +1,18 @@
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  // Lime Green Fitness App Color Palette
-  static const Color primaryColor = Color(0xFF7FE87A);
-  static const Color secondaryColor = Color(0xFF6B7280);
-  static const Color accentColor = Color(0xFF111827);
-  static const Color backgroundColor = Color(0xFFF5F5F5);
-  static const Color darkBackgroundColor = Color(0xFF111827);
-  static const Color cardColor = Color(0xFFFFFFFF);
-  static const Color textPrimary = Color(0xFF111827);
-  static const Color textSecondary = Color(0xFF6B7280);
-  static const Color textTertiary = Color(0xFF9CA3AF);
+  // Pale-cyan + white unified palette
+  static const Color primaryColor = Color(0xFF0E9FA0);
+  static const Color secondaryColor = Color(0xFF4A6A6D);
+  static const Color accentColor = Color(0xFF0B6F73);
+  static const Color backgroundColor = Color(0xFFFFFFFF);
+  static const Color darkBackgroundColor = Color(0xFF0B1C1F);
+  static const Color cardColor = Color(0xFFF8FEFE);
+  static const Color textPrimary = Color(0xFF0B2D30);
+  static const Color textSecondary = Color(0xFF4A6A6D);
+  static const Color textTertiary = Color(0xFF6B8B8E);
   static const Color errorColor = Color(0xFFEF4444);
-  static const Color successColor = Color(0xFF7FE87A);
+  static const Color successColor = Color(0xFF22C55E);
   static const Color warningColor = Color(0xFFFBBF24);
 
   static const PageTransitionsTheme _pageTransitionsTheme =
@@ -36,9 +36,9 @@ class AppTheme {
       elevation: 0,
       centerTitle: false,
       backgroundColor: Colors.transparent,
-      foregroundColor: Colors.black,
+      foregroundColor: textPrimary,
       titleTextStyle: TextStyle(
-        color: Colors.black,
+        color: textPrimary,
         fontSize: 18,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.5,
@@ -82,7 +82,7 @@ class AppTheme {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.all(Radius.circular(6)),
-        borderSide: BorderSide(color: Colors.black, width: 1.5),
+        borderSide: BorderSide(color: accentColor, width: 1.5),
       ),
     ),
   );

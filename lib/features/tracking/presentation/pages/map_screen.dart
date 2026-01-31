@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../../../../core/models/geo_types.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mapbox;
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:pedometer/pedometer.dart';
@@ -89,10 +90,13 @@ class _MapScreenState extends State<MapScreen>
   late final TerritoryPrefetchService _territoryPrefetchService;
   final Map<String, Marker> _userMarkersById = {};
   static const String _offlineSnapshotKey = 'offline_map_snapshot';
+  static const String _showRouteBordersKey = 'show_route_borders_v1';
+  static const String _mapNightModeKey = 'map_night_mode_v1';
   String? _offlineSnapshotBase64;
   bool _showOfflineSnapshot = false;
   final Map<String, BitmapDescriptor> _userAvatarIconCache = {};
   final Map<String, String> _userAvatarUrlCache = {};
+  final Map<String, String> _markerAvatarCacheKeys = {};
   final Map<String, Map<String, dynamic>> _userProfileCache = {};
   final Map<String, DateTime> _userLastSeen = {};
   final Set<String> _profileFetchInFlight = {};
@@ -106,7 +110,35 @@ class _MapScreenState extends State<MapScreen>
   Set<Marker> _dropMarkers = {};
   Set<Circle> _dropCircles = {};
   BitmapDescriptor? _dropMarkerIcon;
+  Uint8List? _dropMarkerBytes;
   bool _isDropIconLoading = false;
+  final Map<String, LatLng> _dropRoadCache = {};
+  bool _dropRoadSnapInProgress = false;
+  bool _dropRoadSnapPending = false;
+  List<String> _roadLayerIds = [];
+  bool _roadLayerIdsLoaded = false;
+  static const List<String> _roadLayerKeywords = [
+    'road',
+    'street',
+    'bridge',
+    'tunnel',
+    'path',
+    'pedestrian',
+    'trail',
+    'lane',
+    'walk',
+  ];
+  static const List<double> _roadSnapRadiiPx = [
+    6,
+    12,
+    18,
+    24,
+    32,
+    40,
+    52,
+    64,
+  ];
+  static const int _roadSnapSamplesPerRing = 8;
   Set<Marker> _poiMarkers = {};
   Set<Circle> _poiCircles = {};
   PoiMission? _activePoiMission;
@@ -126,18 +158,61 @@ class _MapScreenState extends State<MapScreen>
   bool _hasLoadedDrops = false;
   Timer? _mapStartupTimer;
   bool _mapDataStarted = false;
+  bool _heavyOverlaysInitialized = false;
   Color _markerRingColor = Colors.white;
   final Map<String, Map<String, dynamic>> _activityData =
       {}; // Store activity data by polylineId
+  static const String _territorySourceId = 'territory-source';
+  static const String _territoryCapturedFillLayerId =
+      'territory-captured-fill';
+  static const String _territoryCapturedLineLayerId =
+      'territory-captured-line';
+  static const String _territoryCapturedGlowLayerId =
+      'territory-captured-glow';
+  static const String _territoryCapturedExtrusionLayerId =
+      'territory-captured-extrusion';
+  static const String _territoryOwnFillLayerId = 'territory-own-fill';
+  static const String _territoryOwnLineLayerId = 'territory-own-line';
+  static const String _territoryOwnGlowLayerId = 'territory-own-glow';
+  static const String _territoryOwnExtrusionLayerId =
+      'territory-own-extrusion';
+  static const String _territoryOtherFillLayerId = 'territory-other-fill';
+  static const String _territoryOtherLineLayerId = 'territory-other-line';
+  static const String _territoryBossFillLayerId = 'territory-boss-fill';
+  static const String _territoryBossLineLayerId = 'territory-boss-line';
+  static const String _territoryBossGlowLayerId = 'territory-boss-glow';
+  static const String _territoryBossExtrusionLayerId =
+      'territory-boss-extrusion';
+  static const String _emptyGeoJson =
+      '{"type":"FeatureCollection","features":[]}';
+  mapbox.MapboxMap? _mapboxMap;
+  mapbox.MapboxMap? _pipMapboxMap;
+  mapbox.PointAnnotationManager? _mapboxPointManager;
+  mapbox.PolylineAnnotationManager? _mapboxPolylineManager;
+  mapbox.PolygonAnnotationManager? _mapboxPolygonManager;
+  mapbox.Cancelable? _mapboxPointTapCancelable;
+  mapbox.Cancelable? _mapboxPolylineTapCancelable;
+  Timer? _mapboxSyncDebounce;
+  bool _mapboxSyncInProgress = false;
+  bool _mapboxSyncPending = false;
+  bool _territoryLayersReady = false;
+  mapbox.GeoJsonSource? _territoryGeoJsonSource;
+  DateTime? _lastPipCameraUpdate;
+  static const Duration _pipCameraThrottle = Duration(milliseconds: 500);
+  final Map<String, DateTime> _captureAnimations = {};
+  Timer? _captureAnimationTimer;
+  final Map<String, VoidCallback> _mapboxMarkerTapHandlers = {};
+  final Map<String, Uint8List> _userAvatarBytesCache = {};
+  final Map<int, Uint8List> _markerColorBytesCache = {};
   Timer? _territoryFetchDebounce;
   LatLng? _lastTerritoryFetchCenter;
   int _territoryFetchToken = 0;
   final Map<String, DateTime> _territoryFetchTimestamps = {};
+  bool _allTerritoriesFallbackAttempted = false;
   bool _allTerritoriesLoaded = false;
   bool _allTerritoriesLoading = false;
   static const int _territoryAllPageSize = 2000;
   static const List<double> _territoryFetchRadiiKm = [
-    0.5,
     1.0,
     2.0,
     5.0,
@@ -145,7 +220,7 @@ class _MapScreenState extends State<MapScreen>
   ];
   static const String _weatherApiKey = '5031f2deb028a21f969207e55fa35755';
   static const double _territoryFillOpacity = 0.03;
-  static const double _capturedAreaFillOpacity = 0.02;
+  static const double _capturedAreaFillOpacity = 0.12;
   static const double _territoryRefetchDistanceMeters = 250.0;
   static const Duration _territoryFetchTtl = Duration(minutes: 3);
   Timer? _territoryRefreshTimer;
@@ -154,7 +229,6 @@ class _MapScreenState extends State<MapScreen>
   List<Map<String, dynamic>> _activityHistory = [];
   late AnimationController _animController;
   late AnimationController _buttonAnimController;
-  GoogleMapController? _mapController;
   MapType _currentMapType = MapType.normal;
   bool _is3DMode = true;
   double _currentSpeed = 0.0; // km/h
@@ -182,6 +256,16 @@ class _MapScreenState extends State<MapScreen>
   double _distanceToStart = double.infinity; // Distance to starting point
   DateTime? _lastNotificationUpdate; // Throttle notification updates
   TrackingState _trackingState = TrackingState.stopped;
+  bool get _isTrackingActive =>
+      _trackingState == TrackingState.started ||
+      _trackingState == TrackingState.paused;
+  bool get _hasLocationAccess =>
+      _locationServiceEnabled &&
+      _locationPermissionStatus != geo.LocationPermission.denied &&
+      _locationPermissionStatus != geo.LocationPermission.deniedForever;
+  bool get _hasPreciseLocation => _hasLocationAccess && _preciseLocationGranted;
+  bool get _shouldRenderHeavyOverlays => _hasLocationAccess;
+  bool get _is3DActive => _is3DMode && _shouldRenderHeavyOverlays;
   Duration _pausedDuration = Duration.zero;
   DateTime? _pauseStartTime;
   int _loopStartIndex = 0;
@@ -199,6 +283,8 @@ class _MapScreenState extends State<MapScreen>
       Duration(milliseconds: 240);
   static const Duration _widgetUpdateThrottle =
       Duration(seconds: 12);
+  static const Duration _mapIdleFetchWindow =
+      Duration(seconds: 2);
   DateTime? _lastWidgetUpdateAt;
 
   // Loop closure feedback
@@ -237,6 +323,7 @@ class _MapScreenState extends State<MapScreen>
   bool _isSyncing = false;
   bool _followUser = true;
   final Set<int> _activePointers = <int>{};
+  DateTime? _lastMapGestureAt;
 
   // Long press to end
   bool _isHoldingEnd = false;
@@ -246,6 +333,8 @@ class _MapScreenState extends State<MapScreen>
   bool _batterySaverEnabled = false;
   bool _showAdvancedControls = false;
   bool _isPlanningRoute = false;
+  bool _showRouteBorders = true;
+  bool _mapNightMode = false;
   List<LatLng> _plannedRoutePoints = [];
   List<LatLng> _plannedRoutePreviewPoints = [];
   List<SavedRoute> _savedRoutes = [];
@@ -295,6 +384,7 @@ class _MapScreenState extends State<MapScreen>
     _httpClient = di.getIt<http.Client>();
     _territoryPrefetchService = di.getIt<TerritoryPrefetchService>();
     _offlineSnapshotBase64 = _prefs.getString(_offlineSnapshotKey);
+    _mapNightMode = _prefs.getBool(_mapNightModeKey) ?? false;
     _animController = AnimationController(
       duration: Duration(milliseconds: 400),
       vsync: this,
@@ -314,7 +404,7 @@ class _MapScreenState extends State<MapScreen>
 
     // Initialize step counter (fallback)
     _initStepCounter();
-    _mapStartupTimer = Timer(const Duration(milliseconds: 600), () {
+    _mapStartupTimer = Timer(const Duration(milliseconds: 120), () {
       if (!mounted) return;
       _startMapDataLoadOnce();
     });
@@ -354,33 +444,9 @@ class _MapScreenState extends State<MapScreen>
     if (_mapDataStarted) return;
     _mapDataStarted = true;
     _mapStartupTimer?.cancel();
-    if (!_hasLoadedDrops) {
-      _dropsLoading = true;
-      if (mounted) {
-        setState(() {});
-      }
+    if (_shouldRenderHeavyOverlays) {
+      _enableHeavyOverlays();
     }
-
-    // Load captured areas from activity history to show on map
-    _loadSavedCapturedAreas();
-
-    // Load cached nearby territories first (fast), then full sets.
-    _loadCachedNearbyTerritories();
-    _loadTerritoriesFromBackend();
-    _loadBossTerritoriesFromBackend();
-
-    unawaited(_initEngagementSystems());
-
-    _fetchWeatherForMap();
-    _weatherTimer ??= Timer.periodic(
-      const Duration(minutes: 15),
-      (_) => _fetchWeatherForMap(),
-    );
-
-    // Prefetch nearby territories once map is live.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_territoryPrefetchService.prefetchAroundUser());
-    });
 
     // Kick off any pending offline sync in background
     _refreshSyncStatus();
@@ -409,6 +475,9 @@ class _MapScreenState extends State<MapScreen>
       const Duration(seconds: 45),
       (_) {
         if (!mounted) return;
+        if (!_shouldRenderHeavyOverlays) {
+          return;
+        }
         if (!_webSocketService.isConnected) {
           _ensureWebSocketConnected();
           _refreshRecentTerritories();
@@ -417,8 +486,43 @@ class _MapScreenState extends State<MapScreen>
     );
   }
 
+  void _enableHeavyOverlays() {
+    // Heavy overlays are only initialized once per app run.
+    final bool firstInit = !_heavyOverlaysInitialized;
+    if (firstInit) {
+      _heavyOverlaysInitialized = true;
+    }
+
+    if (!_hasLoadedDrops) {
+      _dropsLoading = true;
+      if (mounted) {
+        setState(() {});
+      }
+    }
+
+    // Load captured areas and territory data for the active run.
+    _loadSavedCapturedAreas();
+    _loadCachedNearbyTerritories();
+    _loadBossTerritoriesFromBackend();
+
+    if (firstInit) {
+      unawaited(_initEngagementSystems());
+      _fetchWeatherForMap();
+      _weatherTimer ??= Timer.periodic(
+        const Duration(minutes: 15),
+        (_) => _fetchWeatherForMap(),
+      );
+
+      // Prefetch nearby territories once map is live.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_territoryPrefetchService.prefetchAroundUser());
+      });
+    }
+  }
+
   Future<void> _checkPreciseLocationAccess({bool requestPermission = false}) async {
     if (_isCheckingLocationGate) return;
+    final hadAccess = _hasLocationAccess;
     if (mounted) {
       setState(() => _isCheckingLocationGate = true);
     } else {
@@ -428,23 +532,19 @@ class _MapScreenState extends State<MapScreen>
     try {
       final serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
       _locationServiceEnabled = serviceEnabled;
-      if (!serviceEnabled) {
-        return;
-      }
-
       var permission = await geo.Geolocator.checkPermission();
       if (permission == geo.LocationPermission.denied && requestPermission) {
         permission = await geo.Geolocator.requestPermission();
       }
       _locationPermissionStatus = permission;
 
-      if (permission == geo.LocationPermission.denied ||
-          permission == geo.LocationPermission.deniedForever) {
+      if (serviceEnabled &&
+          permission != geo.LocationPermission.denied &&
+          permission != geo.LocationPermission.deniedForever) {
+        _preciseLocationGranted = await _isPreciseLocationGranted();
+      } else {
         _preciseLocationGranted = false;
-        return;
       }
-
-      _preciseLocationGranted = await _isPreciseLocationGranted();
     } catch (e) {
       print('Failed to check location accuracy: $e');
     } finally {
@@ -454,6 +554,76 @@ class _MapScreenState extends State<MapScreen>
         _isCheckingLocationGate = false;
       }
     }
+
+    final hasAccess = _hasLocationAccess;
+    if (hasAccess && !hadAccess) {
+      _onLocationAccessGranted();
+    }
+    if (hasAccess != hadAccess) {
+      _scheduleMapboxSync();
+    }
+  }
+
+  void _onLocationAccessGranted() {
+    final hadMapData = _mapDataStarted;
+    _startMapDataLoadOnce();
+    if (hadMapData) {
+      _enableHeavyOverlays();
+    }
+    context.read<LocationBloc>().add(GetInitialLocation());
+    unawaited(_seedLocationForTerritories());
+    unawaited(_territoryPrefetchService.prefetchAroundUser());
+    _apply3DForCurrentLocation();
+  }
+
+  Future<void> _seedLocationForTerritories() async {
+    if (!_hasLocationAccess) return;
+    if (_lastKnownLocation != null) {
+      _scheduleTerritoryFetch(_lastKnownLocation!, force: true);
+      _apply3DForCurrentLocation();
+      return;
+    }
+    try {
+      final position = await geo.Geolocator.getCurrentPosition(
+        desiredAccuracy: geo.LocationAccuracy.medium,
+      ).timeout(const Duration(seconds: 6));
+      final target = LatLng(position.latitude, position.longitude);
+      if (!mounted) return;
+      setState(() {
+        _lastKnownLocation = target;
+      });
+      _updateCurrentUserMarker(target);
+      _refreshRoutePreviewFromLocation(target, force: true);
+      _scheduleTerritoryFetch(target, force: true);
+      _apply3DForCurrentLocation();
+    } catch (e) {
+      print('Seed location for territories failed: $e');
+    }
+  }
+
+  void _apply3DForCurrentLocation() {
+    if (_mapboxMap == null || !_is3DActive) return;
+    LatLng? target = _lastKnownLocation;
+    final locationState = context.read<LocationBloc>().state;
+    if (locationState is LocationTracking) {
+      target = LatLng(
+        locationState.currentPosition.latitude,
+        locationState.currentPosition.longitude,
+      );
+    } else if (locationState is LocationIdle &&
+        locationState.lastPosition != null) {
+      target = LatLng(
+        locationState.lastPosition!.latitude,
+        locationState.lastPosition!.longitude,
+      );
+    }
+    if (target == null) return;
+    _easeCameraTo(
+      target,
+      zoom: 16,
+      pitch: 45,
+      bearing: 0,
+    );
   }
 
   Future<bool> _isPreciseLocationGranted() async {
@@ -485,8 +655,10 @@ class _MapScreenState extends State<MapScreen>
         _locationPermissionStatus == geo.LocationPermission.deniedForever) {
       return true;
     }
-    return !_preciseLocationGranted;
+    return false;
   }
+
+  bool get _showTrackingGate => !_hasPreciseLocation;
 
   String _locationGateTitle() {
     if (!_locationServiceEnabled) {
@@ -555,23 +727,21 @@ class _MapScreenState extends State<MapScreen>
   }
 
   Future<void> _refreshRecentTerritories() async {
-    try {
-      final territoryApiService = di.getIt<TerritoryApiService>();
-      final authService = di.getIt<AuthApiService>();
-      final currentUserId = await authService.getUserId() ?? '';
-      final territories = await territoryApiService.getAllTerritories(
-        limit: 250,
-        offset: 0,
-      );
-      if (!mounted) return;
-      _renderTerritories(territories, currentUserId);
-    } catch (e) {
-      print('Failed to refresh recent territories: $e');
+    if (!_shouldRenderHeavyOverlays) {
+      return;
     }
+    if (_lastKnownLocation == null) {
+      await _seedLocationForTerritories();
+      return;
+    }
+    _scheduleTerritoryFetch(_lastKnownLocation!, force: true);
   }
 
   // Load every territory (public data) so all users see the full map.
   Future<void> _loadTerritoriesFromBackend({LatLng? center}) async {
+    if (!_shouldRenderHeavyOverlays) {
+      return;
+    }
     if (_allTerritoriesLoaded || _allTerritoriesLoading) return;
     _allTerritoriesLoading = true;
 
@@ -602,6 +772,9 @@ class _MapScreenState extends State<MapScreen>
   }
 
   Future<void> _loadCachedNearbyTerritories() async {
+    if (!_shouldRenderHeavyOverlays) {
+      return;
+    }
     try {
       final cached = await _territoryCacheDataSource.getNearbyTerritories();
       if (cached.isEmpty || !mounted) return;
@@ -619,8 +792,20 @@ class _MapScreenState extends State<MapScreen>
     return 'lat:$lat,lng:$lng,r:$r';
   }
 
+  void _setTerritoryLoading(bool value) {
+    if (_allTerritoriesLoading == value) return;
+    if (mounted) {
+      setState(() => _allTerritoriesLoading = value);
+    } else {
+      _allTerritoriesLoading = value;
+    }
+  }
+
   void _scheduleTerritoryFetch(LatLng center, {bool force = false}) {
-    if (_allTerritoriesLoaded || _allTerritoriesLoading) {
+    if (!_shouldRenderHeavyOverlays) {
+      return;
+    }
+    if (_allTerritoriesLoading && !force) {
       return;
     }
     _pruneTerritoryFetchKeys();
@@ -638,8 +823,9 @@ class _MapScreenState extends State<MapScreen>
     _territoryFetchToken += 1;
     final token = _territoryFetchToken;
 
+    _setTerritoryLoading(true);
     _territoryFetchDebounce?.cancel();
-    _territoryFetchDebounce = Timer(const Duration(milliseconds: 500), () {
+    _territoryFetchDebounce = Timer(const Duration(milliseconds: 160), () {
       _fetchTerritoriesProgressively(center, token);
     });
   }
@@ -648,38 +834,66 @@ class _MapScreenState extends State<MapScreen>
     LatLng center,
     int token,
   ) async {
+    if (!_shouldRenderHeavyOverlays) {
+      if (token == _territoryFetchToken) {
+        _setTerritoryLoading(false);
+      }
+      return;
+    }
     final territoryApiService = di.getIt<TerritoryApiService>();
     final authService = di.getIt<AuthApiService>();
     final currentUserId = await authService.getUserId() ?? '';
 
-    for (final radiusKm in _territoryFetchRadiiKm) {
-      if (!mounted || token != _territoryFetchToken) return;
-      final key = _territoryFetchKey(center, radiusKm);
-      final lastFetchAt = _territoryFetchTimestamps[key];
-      if (lastFetchAt != null &&
-          DateTime.now().difference(lastFetchAt) < _territoryFetchTtl) {
-        continue;
-      }
-      _territoryFetchTimestamps[key] = DateTime.now();
-      try {
-        final territories = await territoryApiService.getNearbyTerritories(
-          lat: center.latitude,
-          lng: center.longitude,
-          radius: radiusKm,
-        );
+    var totalFetched = 0;
+    try {
+      for (final radiusKm in _territoryFetchRadiiKm) {
         if (!mounted || token != _territoryFetchToken) return;
-        _renderTerritories(territories, currentUserId);
-      } catch (e) {
-        print('Failed to load nearby territories (r=$radiusKm): $e');
+        final key = _territoryFetchKey(center, radiusKm);
+        final lastFetchAt = _territoryFetchTimestamps[key];
+        if (lastFetchAt != null &&
+            DateTime.now().difference(lastFetchAt) < _territoryFetchTtl) {
+          continue;
+        }
+        _territoryFetchTimestamps[key] = DateTime.now();
+        try {
+          final territories = await territoryApiService.getNearbyTerritories(
+            lat: center.latitude,
+            lng: center.longitude,
+            radius: radiusKm,
+          );
+          if (!mounted || token != _territoryFetchToken) return;
+          totalFetched += territories.length;
+          _renderTerritories(territories, currentUserId);
+        } catch (e) {
+          print('Failed to load nearby territories (r=$radiusKm): $e');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 160));
       }
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      if (totalFetched == 0) {
+        await _maybeLoadAllTerritoriesFallback();
+      }
+    } finally {
+      if (token == _territoryFetchToken) {
+        _setTerritoryLoading(false);
+      }
     }
+  }
+
+  Future<void> _maybeLoadAllTerritoriesFallback() async {
+    if (_allTerritoriesFallbackAttempted) return;
+    if (!_shouldRenderHeavyOverlays) return;
+    if (_polygons.isNotEmpty || _territoryData.isNotEmpty) return;
+    _allTerritoriesFallbackAttempted = true;
+    await _loadTerritoriesFromBackend();
   }
 
   void _renderTerritories(
     List<Map<String, dynamic>> territories,
     String currentUserId,
   ) {
+    if (!_shouldRenderHeavyOverlays) {
+      return;
+    }
     if (!mounted) return;
     print('Current user: $currentUserId');
 
@@ -713,6 +927,7 @@ class _MapScreenState extends State<MapScreen>
         final bool isOwnTerritory = ownerId == currentUserId;
         final territoryColor =
             isOwnTerritory ? const Color(0xFF4CAF50) : const Color(0xFFFF5722);
+        final territoryName = territory['name']?.toString();
 
         final routePoints = territory['routePoints'] as List?;
         List<LatLng>? polygonPoints;
@@ -748,6 +963,7 @@ class _MapScreenState extends State<MapScreen>
         _territoryData[hexId] = {
           'polygonPoints': polygonPoints,
           'territoryId': territory['id']?.toString(),
+          'territoryName': territoryName,
           'ownerId': ownerId,
           'ownerName': territory['owner']?['name'] ?? 'Unknown',
           'captureCount': territory['captureCount'] ?? 1,
@@ -769,10 +985,11 @@ class _MapScreenState extends State<MapScreen>
       print('Total polygons on map: ${_polygons.length}');
       print('Total markers on map: ${_territoryMarkers.length}');
     }
+    _scheduleMapboxSync();
   }
 
   // Handle map tap to check if user tapped on a territory
-  void _handleMapTap(LatLng tapPosition) {
+  bool _handleMapTap(LatLng tapPosition) {
     for (final entry in _territoryData.entries) {
       final hexId = entry.key;
       final data = entry.value;
@@ -781,8 +998,15 @@ class _MapScreenState extends State<MapScreen>
       // Check if tap is inside this polygon
       if (_isPointInPolygon(tapPosition, polygonPoints)) {
         final ownerId = data['ownerId']?.toString();
+        final currentUserId = _currentUserIdFromAuth() ?? _currentUserId;
+        bool isOwn = ownerId != null &&
+            currentUserId != null &&
+            ownerId == currentUserId;
+        if (!isOwn && ownerId == null && data['isOwn'] == true) {
+          isOwn = true;
+        }
         String? avatarSource;
-        if (data['isOwn'] == true) {
+        if (isOwn) {
           avatarSource = _currentUserAvatarSource();
         }
         if ((avatarSource == null || avatarSource.isEmpty) &&
@@ -793,7 +1017,7 @@ class _MapScreenState extends State<MapScreen>
         _showTerritoryInfo(
           ownerName: data['ownerName'],
           captureCount: data['captureCount'],
-          isOwn: data['isOwn'],
+          isOwn: isOwn,
           points: data['points'],
           capturedAt: data['capturedAt'],
           lastBattleAt: data['lastBattleAt'],
@@ -802,10 +1026,12 @@ class _MapScreenState extends State<MapScreen>
           bossRewardPoints: data['bossRewardPoints'],
           avatarSource: avatarSource,
           territoryId: data['territoryId']?.toString(),
+          territoryName: data['territoryName']?.toString(),
         );
-        break;
+        return true;
       }
     }
+    return false;
   }
 
   // Check if a point is inside a polygon using ray casting algorithm
@@ -852,12 +1078,19 @@ class _MapScreenState extends State<MapScreen>
     int? bossRewardPoints,
     String? avatarSource,
     String? territoryId,
+    String? territoryName,
   }) {
     final accent = isBoss
         ? const Color(0xFFF5B700)
         : (isOwn ? const Color(0xFF2ECC71) : const Color(0xFFF39C12));
-    final headline = isOwn ? 'Your Territory' : 'Territory';
-    final subtitle = isOwn ? 'Owned by you' : 'Owned by $ownerName';
+    final cleanedName = territoryName?.trim();
+    final hasName = cleanedName != null && cleanedName.isNotEmpty;
+    final headline = hasName
+        ? cleanedName
+        : (isOwn ? 'Your Territory' : 'Territory');
+    final subtitle = hasName
+        ? (isOwn ? 'Your territory' : 'Owned by $ownerName')
+        : (isOwn ? 'Owned by you' : 'Owned by $ownerName');
     final territoryIdText = territoryId?.trim();
 
     showModalBottomSheet(
@@ -1067,7 +1300,43 @@ class _MapScreenState extends State<MapScreen>
                                       child: const Text('Close'),
                                     ),
                                   ),
-                                  if (!isOwn) ...[
+                                  if (isOwn &&
+                                      !isBoss &&
+                                      territoryIdText != null &&
+                                      territoryIdText.isNotEmpty) ...[
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: ElevatedButton.icon(
+                                        onPressed: () async {
+                                          Navigator.pop(context);
+                                          if (!mounted) return;
+                                          WidgetsBinding.instance
+                                              .addPostFrameCallback((_) {
+                                            if (!mounted) return;
+                                            _promptTerritoryRename(
+                                              territoryId: territoryIdText,
+                                              currentName: cleanedName,
+                                            );
+                                          });
+                                        },
+                                        icon: const Icon(Icons.edit),
+                                        label: Text(
+                                          hasName ? 'Rename' : 'Name it',
+                                        ),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: accent,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 14,
+                                          ),
+                                          textStyle: GoogleFonts.spaceGrotesk(
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          elevation: 0,
+                                        ),
+                                      ),
+                                    ),
+                                  ] else if (!isOwn) ...[
                                     const SizedBox(width: 12),
                                     Expanded(
                                       child: ElevatedButton.icon(
@@ -1116,6 +1385,122 @@ class _MapScreenState extends State<MapScreen>
         );
       },
     );
+  }
+
+  Future<void> _promptTerritoryRename({
+    required String territoryId,
+    String? currentName,
+  }) async {
+    final controller = TextEditingController(text: currentName ?? '');
+    bool isSaving = false;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: !isSaving,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text(
+                'Name your territory',
+                style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700),
+              ),
+              content: TextField(
+                controller: controller,
+                maxLength: 40,
+                decoration: const InputDecoration(
+                  hintText: 'e.g. Sunset Loop',
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving ? null : () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final trimmed = controller.text.trim();
+                          if (trimmed.isNotEmpty && trimmed.length < 2) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content:
+                                    Text('Name must be at least 2 characters'),
+                              ),
+                            );
+                            return;
+                          }
+                          setState(() => isSaving = true);
+                          try {
+                            final territoryApi =
+                                di.getIt<TerritoryApiService>();
+                            await territoryApi.updateTerritoryName(
+                              territoryId: territoryId,
+                              name: trimmed,
+                            );
+                            _updateLocalTerritoryName(
+                              territoryId,
+                              trimmed.isEmpty ? null : trimmed,
+                            );
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    trimmed.isEmpty
+                                        ? 'Territory name cleared'
+                                        : 'Territory name updated',
+                                  ),
+                                ),
+                              );
+                            }
+                            if (context.mounted) {
+                              Navigator.pop(context);
+                            }
+                          } catch (e) {
+                            setState(() => isSaving = false);
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Failed to update name: $e',
+                                  ),
+                                ),
+                              );
+                            }
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    Future<void>.delayed(const Duration(milliseconds: 300), () {
+      controller.dispose();
+    });
+  }
+
+  void _updateLocalTerritoryName(String territoryId, String? name) {
+    bool updated = false;
+    for (final entry in _territoryData.entries) {
+      final storedId = entry.value['territoryId']?.toString();
+      if (storedId == territoryId) {
+        entry.value['territoryName'] = name;
+        updated = true;
+      }
+    }
+    if (updated && mounted) {
+      setState(() {});
+    }
   }
 
   Widget _buildTerritoryHeader({
@@ -1421,6 +1806,38 @@ class _MapScreenState extends State<MapScreen>
     return activity;
   }
 
+  Future<void> _purgeSyncedActivitiesCache(
+    List<Map<String, dynamic>> activities,
+  ) async {
+    if (activities.isEmpty) return;
+    final ids = <String>{};
+    final clientIds = <String>{};
+
+    for (final activity in activities) {
+      final idValue = activity['id'] ?? activity['_id'];
+      final clientIdValue = activity['clientId'];
+      if (idValue != null) {
+        final id = idValue.toString();
+        if (id.isNotEmpty) {
+          ids.add(id);
+        }
+      }
+      if (clientIdValue != null) {
+        final clientId = clientIdValue.toString();
+        if (clientId.isNotEmpty) {
+          clientIds.add(clientId);
+        }
+      }
+    }
+
+    for (final id in ids) {
+      await _activityLocalDataSource.deleteActivity(id);
+    }
+    for (final clientId in clientIds) {
+      await _activityLocalDataSource.deleteByClientId(clientId);
+    }
+  }
+
   String? _extractAvatarSource(Map<String, dynamic> activityData) {
     final userData = activityData['user'];
     return _extractAvatarFromMap(userData) ?? _extractAvatarFromMap(activityData);
@@ -1451,6 +1868,59 @@ class _MapScreenState extends State<MapScreen>
     final authState = context.read<AuthBloc>().state;
     if (authState is! Authenticated) return null;
     return authState.user.id;
+  }
+
+  void _handleAuthStateChange(AuthState state) {
+    String? nextUserId;
+    if (state is Authenticated) {
+      nextUserId = state.user.id;
+    }
+    if (nextUserId == _currentUserId) return;
+    _currentUserId = nextUserId;
+    _resetTerritoryStateForUserChange();
+    _heavyOverlaysInitialized = false;
+
+    if (nextUserId != null && _shouldRenderHeavyOverlays) {
+      _enableHeavyOverlays();
+    }
+  }
+
+  void _resetTerritoryStateForUserChange() {
+    _territoryFetchDebounce?.cancel();
+    _territoryFetchDebounce = null;
+    _territoryFetchTimestamps.clear();
+    _lastTerritoryFetchCenter = null;
+    _allTerritoriesLoaded = false;
+    _allTerritoriesLoading = false;
+    _lastLoadedTerritoryCount = 0;
+    _captureAnimations.clear();
+    _capturedHexIds.clear();
+    _currentSessionTerritories = 0;
+
+    if (mounted) {
+      setState(() {
+        _territoryData.clear();
+        _polygons.removeWhere((polygon) {
+          final id = polygon.polygonId.value;
+          return id.startsWith('territory_') || id.startsWith('boss_');
+        });
+        _territoryMarkers.removeWhere((marker) {
+          final id = marker.markerId.value;
+          return id.startsWith('boss_') || id.startsWith('label_');
+        });
+      });
+    } else {
+      _territoryData.clear();
+      _polygons.removeWhere((polygon) {
+        final id = polygon.polygonId.value;
+        return id.startsWith('territory_') || id.startsWith('boss_');
+      });
+      _territoryMarkers.removeWhere((marker) {
+        final id = marker.markerId.value;
+        return id.startsWith('boss_') || id.startsWith('label_');
+      });
+    }
+    _scheduleMapboxSync();
   }
 
   void _scheduleCapturedAreaAvatarUpdate({
@@ -1492,7 +1962,9 @@ class _MapScreenState extends State<MapScreen>
           onTap: onTap,
         ),
       );
+      _markerAvatarCacheKeys[markerId] = avatarCacheKey;
     });
+    _scheduleMapboxSync();
   }
 
   LatLng? _parseRoutePoint(dynamic point) {
@@ -1575,29 +2047,23 @@ class _MapScreenState extends State<MapScreen>
 
   // Load all previously captured areas from activity history (backend-first)
   Future<void> _loadSavedCapturedAreas() async {
+    if (!_shouldRenderHeavyOverlays) {
+      return;
+    }
     try {
       print('📂 Loading saved captured areas from backend...');
       final trackingApiService = di.getIt<TrackingApiService>();
       List<Map<String, dynamic>> activitiesData = [];
       try {
         activitiesData = await trackingApiService.getUserActivities(limit: 50);
-        for (final data in activitiesData) {
-          try {
-            final activity = Activity.fromJson(data);
-            await _activityLocalDataSource.saveActivity(activity);
-          } catch (e) {
-            print('[warn] Failed to cache activity locally: $e');
-          }
-        }
+        await _purgeSyncedActivitiesCache(activitiesData);
       } catch (e) {
         print('[warn] Could not load from backend: $e');
-        final localActivities =
-            await _activityLocalDataSource.getAllActivities();
-        activitiesData =
-            localActivities.map((activity) => activity.toJson()).toList();
-        if (activitiesData.isNotEmpty) {
-          print('[cache] Using cached activities (${activitiesData.length})');
+        if (_activityHistory.isNotEmpty) {
+          print('[cache] Keeping in-memory activities (no local storage).');
+          return;
         }
+        activitiesData = [];
       }
 
       print('[info] Loaded ${activitiesData.length} activities');
@@ -1823,6 +2289,7 @@ class _MapScreenState extends State<MapScreen>
           loadedCount++;
         }
       });
+      _scheduleMapboxSync();
 
       for (final pending in pendingAvatarMarkers) {
         _scheduleCapturedAreaAvatarUpdate(
@@ -1961,6 +2428,9 @@ class _MapScreenState extends State<MapScreen>
   }
 
   Future<void> _handleEngagementUpdate(LatLng position) async {
+    if (!_shouldRenderHeavyOverlays) {
+      return;
+    }
     final now = DateTime.now();
     if (_lastEngagementUpdateAt != null &&
         now.difference(_lastEngagementUpdateAt!) < const Duration(seconds: 3)) {
@@ -2042,18 +2512,41 @@ class _MapScreenState extends State<MapScreen>
     });
   }
 
-  void _refreshDropMarkers() {
+  void _refreshDropMarkers({bool allowSnap = true}) {
     if (_dropMarkerIcon == null && !_isDropIconLoading) {
       unawaited(_ensureDropMarkerIcon());
     }
+    if (_mapboxMap == null || !_isMapReady) {
+      if (mounted) {
+        setState(() {
+          _dropMarkers = {};
+          _dropCircles = {};
+        });
+      } else {
+        _dropMarkers = {};
+        _dropCircles = {};
+      }
+      return;
+    }
+
     final drops = _mapDropService.activeDrops;
+    final activeIds = drops.map((drop) => drop.id).toSet();
+    _dropRoadCache.removeWhere((id, _) => !activeIds.contains(id));
+
     final markers = <Marker>{};
     final circles = <Circle>{};
+    final pendingSnaps = <MapDrop>[];
+
     for (final drop in drops) {
+      final snappedPosition = _dropRoadCache[drop.id];
+      final displayPosition = snappedPosition ?? drop.position;
+      if (snappedPosition == null) {
+        pendingSnaps.add(drop);
+      }
       markers.add(
         Marker(
           markerId: MarkerId('drop_${drop.id}'),
-          position: drop.position,
+          position: displayPosition,
           icon: _dropMarkerIcon ??
               BitmapDescriptor.defaultMarkerWithHue(
                 BitmapDescriptor.hueYellow,
@@ -2068,7 +2561,7 @@ class _MapScreenState extends State<MapScreen>
       circles.add(
         Circle(
           circleId: CircleId('drop_circle_${drop.id}'),
-          center: drop.position,
+          center: displayPosition,
           radius: drop.radiusMeters,
           fillColor: const Color(0xFFFACC15).withOpacity(0.12),
           strokeColor: const Color(0xFFF59E0B).withOpacity(0.6),
@@ -2076,6 +2569,7 @@ class _MapScreenState extends State<MapScreen>
         ),
       );
     }
+
     if (mounted) {
       setState(() {
         _dropMarkers = markers;
@@ -2085,13 +2579,106 @@ class _MapScreenState extends State<MapScreen>
       _dropMarkers = markers;
       _dropCircles = circles;
     }
+    _scheduleMapboxSync();
+
+    if (allowSnap && pendingSnaps.isNotEmpty) {
+      unawaited(_snapDropsToRoads(pendingSnaps));
+    }
+  }
+
+  Future<void> _snapDropsToRoads(List<MapDrop> drops) async {
+    if (_mapboxMap == null || !_isMapReady) return;
+    if (_dropRoadSnapInProgress) {
+      _dropRoadSnapPending = true;
+      return;
+    }
+
+    _dropRoadSnapInProgress = true;
+    var updated = false;
+    try {
+      await _ensureRoadLayerIds();
+      if (_roadLayerIds.isEmpty) return;
+
+      for (final drop in drops) {
+        if (_dropRoadCache.containsKey(drop.id)) continue;
+        final snapped = await _snapDropToNearestRoad(drop.position);
+        if (snapped != null) {
+          _dropRoadCache[drop.id] = snapped;
+          updated = true;
+        }
+      }
+    } catch (e) {
+      print('Drop road snap failed: $e');
+    } finally {
+      _dropRoadSnapInProgress = false;
+    }
+
+    if (updated) {
+      _refreshDropMarkers(allowSnap: false);
+    }
+
+    if (_dropRoadSnapPending) {
+      _dropRoadSnapPending = false;
+      final activeDrops = _mapDropService.activeDrops;
+      if (activeDrops.isNotEmpty) {
+        unawaited(_snapDropsToRoads(activeDrops));
+      }
+    }
+  }
+
+  Future<LatLng?> _snapDropToNearestRoad(LatLng position) async {
+    if (_mapboxMap == null) return null;
+    await _ensureRoadLayerIds();
+    if (_roadLayerIds.isEmpty) return null;
+
+    final origin =
+        await _mapboxMap!.pixelForCoordinate(_pointFromLatLng(position));
+    if (await _hasRoadAtScreenCoordinate(origin)) {
+      return position;
+    }
+
+    for (final radius in _roadSnapRadiiPx) {
+      for (int i = 0; i < _roadSnapSamplesPerRing; i++) {
+        final angle = (2 * pi * i) / _roadSnapSamplesPerRing;
+        final candidate = mapbox.ScreenCoordinate(
+          x: origin.x + cos(angle) * radius,
+          y: origin.y + sin(angle) * radius,
+        );
+        if (await _hasRoadAtScreenCoordinate(candidate)) {
+          final snappedPoint =
+              await _mapboxMap!.coordinateForPixel(candidate);
+          return _latLngFromPoint(snappedPoint);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  Future<bool> _hasRoadAtScreenCoordinate(
+    mapbox.ScreenCoordinate coordinate,
+  ) async {
+    if (_mapboxMap == null || _roadLayerIds.isEmpty) return false;
+    final features = await _mapboxMap!.queryRenderedFeatures(
+      mapbox.RenderedQueryGeometry.fromScreenCoordinate(coordinate),
+      mapbox.RenderedQueryOptions(layerIds: _roadLayerIds),
+    );
+    for (final feature in features) {
+      if (feature != null) return true;
+    }
+    return false;
   }
 
   Future<void> _ensureDropMarkerIcon() async {
-    if (_dropMarkerIcon != null || _isDropIconLoading) return;
+    if ((_dropMarkerIcon != null && _dropMarkerBytes != null) ||
+        _isDropIconLoading) {
+      return;
+    }
     _isDropIconLoading = true;
     try {
-      _dropMarkerIcon = await _createPowerDropMarker();
+      final bytes = await _createPowerDropMarkerBytes();
+      _dropMarkerBytes = bytes;
+      _dropMarkerIcon = BitmapDescriptor.fromBytes(bytes);
     } catch (e) {
       print('Failed to build power drop icon: $e');
     } finally {
@@ -2099,10 +2686,11 @@ class _MapScreenState extends State<MapScreen>
       if (mounted) {
         setState(() {});
       }
+      _scheduleMapboxSync();
     }
   }
 
-  Future<BitmapDescriptor> _createPowerDropMarker({int size = 96}) async {
+  Future<Uint8List> _createPowerDropMarkerBytes({int size = 96}) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
     final center = ui.Offset(size / 2, size / 2);
@@ -2141,7 +2729,12 @@ class _MapScreenState extends State<MapScreen>
     final image = await picture.toImage(size, size);
     final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
 
-    return BitmapDescriptor.fromBytes(byteData!.buffer.asUint8List());
+    return byteData!.buffer.asUint8List();
+  }
+
+  Future<BitmapDescriptor> _createPowerDropMarker({int size = 96}) async {
+    final bytes = await _createPowerDropMarkerBytes(size: size);
+    return BitmapDescriptor.fromBytes(bytes);
   }
 
   void _refreshPoiMarkers() {
@@ -2189,6 +2782,7 @@ class _MapScreenState extends State<MapScreen>
       _poiMarkers = markers;
       _poiCircles = circles;
     }
+    _scheduleMapboxSync();
   }
 
   void _showDropPickupSnack() {
@@ -2303,12 +2897,15 @@ class _MapScreenState extends State<MapScreen>
     _markerRingColor = selected ?? Colors.white;
     _userAvatarIconCache.clear();
     _userAvatarUrlCache.clear();
+    _userAvatarBytesCache.clear();
+    _markerAvatarCacheKeys.clear();
     if (mounted) {
       setState(() {});
     }
     if (_lastKnownLocation != null) {
       _updateCurrentUserMarker(_lastKnownLocation!);
     }
+    _scheduleMapboxSync();
   }
 
   void _onStepCount(StepCount event) {
@@ -2333,7 +2930,11 @@ class _MapScreenState extends State<MapScreen>
     _motionDetection.stopDetection(); // Stop advanced motion detection
     _animController.dispose();
     _buttonAnimController.dispose();
-    _mapController?.dispose();
+    _mapboxPointTapCancelable?.cancel();
+    _mapboxPolylineTapCancelable?.cancel();
+    _mapboxSyncDebounce?.cancel();
+    _pipMapboxMap = null;
+    _captureAnimationTimer?.cancel();
     _audioPlayer.dispose();
     _holdTimer?.cancel();
     _endTimer?.cancel();
@@ -2369,6 +2970,9 @@ class _MapScreenState extends State<MapScreen>
     return Scaffold(
       body: MultiBlocListener(
         listeners: [
+          BlocListener<AuthBloc, AuthState>(
+            listener: (context, state) => _handleAuthStateChange(state),
+          ),
           BlocListener<LocationBloc, LocationState>(
             listener: (context, state) {
               if (state is LocationTracking) {
@@ -2408,30 +3012,35 @@ class _MapScreenState extends State<MapScreen>
           children: [
             BlocBuilder<LocationBloc, LocationState>(
               builder: (context, locationState) {
-                CameraPosition initialPosition = CameraPosition(
-                  target: const LatLng(37.7749, -122.4194), // Default: San Francisco
+                mapbox.CameraOptions initialCamera = mapbox.CameraOptions(
+                  center:
+                      _pointFromLatLng(const LatLng(37.7749, -122.4194)),
                   zoom: 15,
-                  tilt: _is3DMode ? 45 : 0,
+                  pitch: _is3DActive ? 45 : 0,
                 );
 
                 if (locationState is LocationIdle &&
                     locationState.lastPosition != null) {
-                  initialPosition = CameraPosition(
-                    target: LatLng(
-                      locationState.lastPosition!.latitude,
-                      locationState.lastPosition!.longitude,
+                  initialCamera = mapbox.CameraOptions(
+                    center: _pointFromLatLng(
+                      LatLng(
+                        locationState.lastPosition!.latitude,
+                        locationState.lastPosition!.longitude,
+                      ),
                     ),
                     zoom: 15,
-                    tilt: _is3DMode ? 45 : 0,
+                    pitch: _is3DActive ? 45 : 0,
                   );
                 } else if (locationState is LocationTracking) {
-                  initialPosition = CameraPosition(
-                    target: LatLng(
-                      locationState.currentPosition.latitude,
-                      locationState.currentPosition.longitude,
+                  initialCamera = mapbox.CameraOptions(
+                    center: _pointFromLatLng(
+                      LatLng(
+                        locationState.currentPosition.latitude,
+                        locationState.currentPosition.longitude,
+                      ),
                     ),
                     zoom: 18,
-                    tilt: _is3DMode ? 45 : 0,
+                    pitch: _is3DActive ? 45 : 0,
                   );
                   // Camera animation is handled by BlocListener - don't duplicate here
                 }
@@ -2455,60 +3064,78 @@ class _MapScreenState extends State<MapScreen>
                       onPointerCancel: _handlePointerCancel,
                       child: Stack(
                         children: [
-                          GoogleMap(
-                            initialCameraPosition: initialPosition,
-                            myLocationEnabled: false,
-                            myLocationButtonEnabled: false,
-                            mapType: _currentMapType,
-                            zoomControlsEnabled: false,
-                            tiltGesturesEnabled: true,
-                            rotateGesturesEnabled: true,
-                            polygons: _polygons,
-                            polylines: _polylines,
-                            markers: {
-                              ..._territoryMarkers,
-                              ..._dropMarkers,
-                              ..._poiMarkers,
-                              ..._userMarkersById.values,
-                              if (_currentUserMarker != null) _currentUserMarker!,
-                            },
-                            circles: _getMapCircles(),
-                            onCameraMoveStarted: () {
-                              if (_activePointers.length >= 2) {
-                                _disableFollowOnGesture();
-                              }
-                            },
-                            onMapCreated: (controller) {
-                              _mapController = controller;
+                          mapbox.MapWidget(
+                            cameraOptions: initialCamera,
+                            styleUri: _mapboxStyleForMapType(),
+                            onMapCreated: (mapbox.MapboxMap controller) async {
+                              _mapboxMap = controller;
                               if (!_isMapReady) {
                                 setState(() => _isMapReady = true);
                               }
+                              await _ensureMapboxManagers(reset: true);
+                              _territoryLayersReady = false;
+                              await _ensureRoadLayerIds();
+                              if (_shouldRenderHeavyOverlays) {
+                                await _ensureTerritoryStyleLayers();
+                                _refreshDropMarkers();
+                              } else {
+                                await _ensureTerritorySource();
+                              }
                               if (locationState is LocationIdle &&
                                   locationState.lastPosition != null) {
-                                controller.animateCamera(
-                                  CameraUpdate.newLatLng(
-                                    LatLng(
-                                      locationState.lastPosition!.latitude,
-                                      locationState.lastPosition!.longitude,
-                                    ),
+                                await _easeCameraTo(
+                                  LatLng(
+                                    locationState.lastPosition!.latitude,
+                                    locationState.lastPosition!.longitude,
                                   ),
+                                  zoom: 15,
+                                  pitch: _is3DActive ? 45 : 0,
                                 );
                               }
                               _startMapDataLoadOnce();
+                              _scheduleMapboxSync();
                             },
-                            onTap: (LatLng position) {
+                            onStyleLoadedListener: (_) {
+                              _territoryLayersReady = false;
+                              _resetRoadLayerIds();
+                              _ensureMapboxManagers(reset: true)
+                                  .then((_) => _ensureRoadLayerIds())
+                                  .then((_) async {
+                                if (_shouldRenderHeavyOverlays) {
+                                  await _ensureTerritoryStyleLayers();
+                                  _refreshDropMarkers();
+                                } else {
+                                  await _ensureTerritorySource();
+                                }
+                                _scheduleMapboxSync();
+                              });
+                            },
+                            onTapListener: (context) {
+                              final position = _latLngFromPoint(context.point);
                               if (_isPlanningRoute) {
                                 _addPlannedRoutePoint(position);
                                 return;
                               }
-                              // Check if tap is inside any activity polygon to show drawer
+                              if (_handleMapTap(position)) {
+                                return;
+                              }
                               _handleMapTapForActivities(position);
                             },
-                            onCameraMove: (position) {
-                              // Could generate visible territories here
+                            onScrollListener: (_) {
+                              _markMapGesture();
+                              if (_activePointers.isNotEmpty) {
+                                _disableFollowOnGesture();
+                              }
+                            },
+                            onZoomListener: (_) {
+                              _markMapGesture();
+                              _disableFollowOnGesture();
+                            },
+                            onMapIdleListener: (_) {
+                              _handleMapIdle();
                             },
                           ),
-                          if (_isRaining)
+                          if (_isRaining && _shouldRenderHeavyOverlays)
                             Positioned.fill(
                               child: IgnorePointer(
                                 child: RainOverlay(
@@ -3134,16 +3761,16 @@ class _MapScreenState extends State<MapScreen>
   Widget _buildInlineStatusChips() {
     final chips = <Widget>[
       if (!_isMapReady) _buildLoadingChip('Loading map'),
-      if (_allTerritoriesLoading ||
-          (_mapDataStarted && !_allTerritoriesLoaded))
+      if (_shouldRenderHeavyOverlays && _allTerritoriesLoading)
         _buildLoadingChip('Loading territories'),
-      if (_dropsLoading) _buildLoadingChip('Loading power drops'),
+      if (_shouldRenderHeavyOverlays && _dropsLoading)
+        _buildLoadingChip('Loading power drops'),
       _buildSyncStatusChip(),
       _buildQualityChip(),
       _buildSplitChip(),
       _buildStreakChip(),
-      _buildDropBoostChip(),
-      _buildMissionChip(),
+      if (_shouldRenderHeavyOverlays) _buildDropBoostChip(),
+      if (_shouldRenderHeavyOverlays) _buildMissionChip(),
       _buildBadgeChip(),
     ];
 
@@ -3383,30 +4010,45 @@ class _MapScreenState extends State<MapScreen>
       _polylines.removeWhere(
         (polyline) => !polyline.polylineId.value.startsWith('route_plan'),
       );
-      _polylines.add(
-        Polyline(
-          polylineId: const PolylineId('route_outline'),
-          points: points,
-          color: Colors.black.withOpacity(0.25),
-          width: 10,
-          geodesic: true,
-          startCap: Cap.roundCap,
-          endCap: Cap.roundCap,
-          jointType: JointType.round,
-        ),
-      );
-      _polylines.add(
-        Polyline(
-          polylineId: const PolylineId('route'),
-          points: points,
-          color: Color(0xFF00B0FF), // Smooth cyan-blue
-          width: 6,
-          geodesic: true,
-          startCap: Cap.roundCap,
-          endCap: Cap.roundCap,
-          jointType: JointType.round,
-        ),
-      );
+      if (_showRouteBorders) {
+        _polylines.add(
+          Polyline(
+            polylineId: const PolylineId('route_outline'),
+            points: points,
+            color: Colors.black.withOpacity(0.25),
+            width: 10,
+            geodesic: true,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+            jointType: JointType.round,
+          ),
+        );
+        _polylines.add(
+          Polyline(
+            polylineId: const PolylineId('route'),
+            points: points,
+            color: const Color(0xFF00B0FF), // Smooth cyan-blue
+            width: 6,
+            geodesic: true,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+            jointType: JointType.round,
+          ),
+        );
+      } else {
+        _polylines.add(
+          Polyline(
+            polylineId: const PolylineId('route'),
+            points: points,
+            color: Colors.black.withOpacity(0.25),
+            width: 4,
+            geodesic: true,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+            jointType: JointType.round,
+          ),
+        );
+      }
     });
 
     print(
@@ -3577,7 +4219,7 @@ class _MapScreenState extends State<MapScreen>
   }
 
   void _updateCameraFollow(LocationTracking state) {
-    if (_mapController == null ||
+    if (_mapboxMap == null ||
         _trackingState != TrackingState.started ||
         !_followUser) {
       return;
@@ -3597,7 +4239,7 @@ class _MapScreenState extends State<MapScreen>
 
     _smoothedCameraTarget ??= rawTarget;
     final speedFactor = (_currentSpeed / 20).clamp(0.0, 1.0);
-    final baseAlpha = _is3DMode ? 0.3 : 0.2;
+    final baseAlpha = _is3DActive ? 0.3 : 0.2;
     final alpha = (baseAlpha + (0.2 * speedFactor)).clamp(0.18, 0.5);
 
     _smoothedCameraTarget = LatLng(
@@ -3614,18 +4256,14 @@ class _MapScreenState extends State<MapScreen>
           : _lerpAngle(_smoothedCameraBearing!, bearing, 0.25);
     }
 
-    final tilt = _is3DMode ? 55.0 : 25.0;
-    final zoom = _is3DMode ? 18.5 : 17.5;
+    final tilt = _is3DActive ? 55.0 : 25.0;
+    final zoom = _is3DActive ? 18.5 : 17.5;
 
-    _mapController!.animateCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: _smoothedCameraTarget!,
-          zoom: zoom,
-          tilt: tilt,
-          bearing: _smoothedCameraBearing ?? 0.0,
-        ),
-      ),
+    _easeCameraTo(
+      _smoothedCameraTarget!,
+      zoom: zoom,
+      pitch: tilt,
+      bearing: _smoothedCameraBearing ?? 0.0,
     );
   }
 
@@ -3655,6 +4293,815 @@ class _MapScreenState extends State<MapScreen>
   }
 
   double _toRadians(double deg) => deg * pi / 180.0;
+
+  mapbox.Point _pointFromLatLng(LatLng latLng) {
+    return mapbox.Point(
+      coordinates: mapbox.Position(latLng.longitude, latLng.latitude),
+    );
+  }
+
+  LatLng _latLngFromPoint(mapbox.Point point) {
+    final coords = point.coordinates;
+    return LatLng(coords.lat.toDouble(), coords.lng.toDouble());
+  }
+
+  Future<void> _updatePipCamera(
+    LatLng target, {
+    double zoom = 16,
+    double pitch = 0,
+  }) async {
+    if (_pipMapboxMap == null) return;
+    final now = DateTime.now();
+    if (_lastPipCameraUpdate != null &&
+        now.difference(_lastPipCameraUpdate!) < _pipCameraThrottle) {
+      return;
+    }
+    _lastPipCameraUpdate = now;
+    try {
+      await _pipMapboxMap!.easeTo(
+        mapbox.CameraOptions(
+          center: _pointFromLatLng(target),
+          zoom: zoom,
+          pitch: pitch,
+        ),
+        mapbox.MapAnimationOptions(duration: 300),
+      );
+    } catch (_) {
+      // Ignore PiP camera errors (e.g. map not ready yet).
+    }
+  }
+
+  String _mapboxStyleForMapType() {
+    if (_currentMapType == MapType.hybrid) {
+      return _mapNightMode
+          ? mapbox.MapboxStyles.SATELLITE_STREETS
+          : mapbox.MapboxStyles.STANDARD_SATELLITE;
+    }
+    if (_currentMapType == MapType.satellite) {
+      return mapbox.MapboxStyles.SATELLITE;
+    }
+    if (_mapNightMode) {
+      return mapbox.MapboxStyles.DARK;
+    }
+    return mapbox.MapboxStyles.STANDARD;
+  }
+
+  void _resetRoadLayerIds() {
+    _roadLayerIds = [];
+    _roadLayerIdsLoaded = false;
+  }
+
+  Future<void> _ensureRoadLayerIds() async {
+    if (_mapboxMap == null) return;
+    if (_roadLayerIdsLoaded && _roadLayerIds.isNotEmpty) return;
+    try {
+      final layers = await _mapboxMap!.style.getStyleLayers();
+      final ids = <String>[];
+      for (final layer in layers) {
+        if (layer == null) continue;
+        if (layer.type != 'line') continue;
+        final idLower = layer.id.toLowerCase();
+        if (_roadLayerKeywords.any(idLower.contains)) {
+          ids.add(layer.id);
+        }
+      }
+      _roadLayerIds = ids;
+      _roadLayerIdsLoaded = ids.isNotEmpty;
+    } catch (e) {
+      print('Failed to resolve road layers: $e');
+      _roadLayerIdsLoaded = false;
+    }
+  }
+
+  Future<void> _ensureTerritorySource() async {
+    if (_mapboxMap == null) return;
+    final style = _mapboxMap!.style;
+
+    final sourceExists = await style.styleSourceExists(_territorySourceId);
+    if (!sourceExists) {
+      _territoryGeoJsonSource =
+          mapbox.GeoJsonSource(id: _territorySourceId, data: _emptyGeoJson);
+      await style.addSource(_territoryGeoJsonSource!);
+    } else if (_territoryGeoJsonSource == null) {
+      _territoryGeoJsonSource = mapbox.GeoJsonSource(id: _territorySourceId);
+      _territoryGeoJsonSource!.bind(style);
+    }
+  }
+
+  Future<void> _ensureTerritoryStyleLayers() async {
+    if (_mapboxMap == null) return;
+    final style = _mapboxMap!.style;
+    await _ensureTerritorySource();
+
+    Future<void> ensureLayer(String id, mapbox.Layer layer) async {
+      final exists = await style.styleLayerExists(id);
+      if (!exists) {
+        await style.addLayer(layer);
+      }
+    }
+
+    await ensureLayer(
+      _territoryCapturedFillLayerId,
+      mapbox.FillLayer(
+        id: _territoryCapturedFillLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        fillColor: const Color(0xFF4CAF50).value,
+        fillOpacity: _capturedAreaFillOpacity,
+        filter: [
+          '==',
+          ['get', 'kind'],
+          'captured',
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryCapturedLineLayerId,
+      mapbox.LineLayer(
+        id: _territoryCapturedLineLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        lineColor: const Color(0xFF2E7D32).value,
+        lineOpacity: 0.75,
+        lineWidth: 2.2,
+        filter: [
+          '==',
+          ['get', 'kind'],
+          'captured',
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryCapturedGlowLayerId,
+      mapbox.LineLayer(
+        id: _territoryCapturedGlowLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        lineColor: const Color(0xFF4CAF50).value,
+        lineOpacity: 0.35,
+        lineWidth: 6.0,
+        lineBlur: 3.5,
+        filter: [
+          '==',
+          ['get', 'kind'],
+          'captured',
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryCapturedExtrusionLayerId,
+      mapbox.FillExtrusionLayer(
+        id: _territoryCapturedExtrusionLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        fillExtrusionColor: const Color(0xFF4CAF50).value,
+        fillExtrusionOpacity: 0.65,
+        fillExtrusionHeightExpression: ['get', 'height'],
+        fillExtrusionBaseExpression: ['get', 'base'],
+        fillExtrusionVerticalGradient: true,
+        filter: [
+          '==',
+          ['get', 'kind'],
+          'captured',
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryOwnFillLayerId,
+      mapbox.FillLayer(
+        id: _territoryOwnFillLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        fillColor: const Color(0xFF4CAF50).value,
+        fillOpacity: _territoryFillOpacity,
+        filter: [
+          'all',
+          ['==', ['get', 'kind'], 'territory'],
+          ['==', ['get', 'isOwn'], true],
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryOwnLineLayerId,
+      mapbox.LineLayer(
+        id: _territoryOwnLineLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        lineColor: const Color(0xFF2E7D32).value,
+        lineOpacity: 0.6,
+        lineWidth: 2.0,
+        filter: [
+          'all',
+          ['==', ['get', 'kind'], 'territory'],
+          ['==', ['get', 'isOwn'], true],
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryOwnGlowLayerId,
+      mapbox.LineLayer(
+        id: _territoryOwnGlowLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        lineColor: const Color(0xFF4CAF50).value,
+        lineOpacity: 0.25,
+        lineWidth: 5.0,
+        lineBlur: 3.0,
+        filter: [
+          'all',
+          ['==', ['get', 'kind'], 'territory'],
+          ['==', ['get', 'isOwn'], true],
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryOwnExtrusionLayerId,
+      mapbox.FillExtrusionLayer(
+        id: _territoryOwnExtrusionLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        fillExtrusionColor: const Color(0xFF4CAF50).value,
+        fillExtrusionOpacity: 0.4,
+        fillExtrusionHeightExpression: ['get', 'height'],
+        fillExtrusionBaseExpression: ['get', 'base'],
+        fillExtrusionVerticalGradient: true,
+        filter: [
+          'all',
+          ['==', ['get', 'kind'], 'territory'],
+          ['==', ['get', 'isOwn'], true],
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryOtherFillLayerId,
+      mapbox.FillLayer(
+        id: _territoryOtherFillLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        fillColor: const Color(0xFFFF5722).value,
+        fillOpacity: _territoryFillOpacity,
+        filter: [
+          'all',
+          ['==', ['get', 'kind'], 'territory'],
+          ['==', ['get', 'isOwn'], false],
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryOtherLineLayerId,
+      mapbox.LineLayer(
+        id: _territoryOtherLineLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        lineColor: const Color(0xFFEF6C00).value,
+        lineOpacity: 0.55,
+        lineWidth: 2.0,
+        filter: [
+          'all',
+          ['==', ['get', 'kind'], 'territory'],
+          ['==', ['get', 'isOwn'], false],
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryBossFillLayerId,
+      mapbox.FillLayer(
+        id: _territoryBossFillLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        fillColor: const Color(0xFFF59E0B).value,
+        fillOpacity: _territoryFillOpacity,
+        filter: [
+          '==',
+          ['get', 'kind'],
+          'boss',
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryBossLineLayerId,
+      mapbox.LineLayer(
+        id: _territoryBossLineLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        lineColor: const Color(0xFFF59E0B).value,
+        lineOpacity: 0.7,
+        lineWidth: 2.4,
+        filter: [
+          '==',
+          ['get', 'kind'],
+          'boss',
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryBossGlowLayerId,
+      mapbox.LineLayer(
+        id: _territoryBossGlowLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        lineColor: const Color(0xFFF59E0B).value,
+        lineOpacity: 0.3,
+        lineWidth: 6.0,
+        lineBlur: 3.0,
+        filter: [
+          '==',
+          ['get', 'kind'],
+          'boss',
+        ],
+      ),
+    );
+
+    await ensureLayer(
+      _territoryBossExtrusionLayerId,
+      mapbox.FillExtrusionLayer(
+        id: _territoryBossExtrusionLayerId,
+        sourceId: _territorySourceId,
+        slot: mapbox.LayerSlot.MIDDLE,
+        fillExtrusionColor: const Color(0xFFF59E0B).value,
+        fillExtrusionOpacity: 0.35,
+        fillExtrusionHeightExpression: ['get', 'height'],
+        fillExtrusionBaseExpression: ['get', 'base'],
+        fillExtrusionVerticalGradient: true,
+        filter: [
+          '==',
+          ['get', 'kind'],
+          'boss',
+        ],
+      ),
+    );
+
+    _territoryLayersReady = true;
+  }
+
+  bool _isCapturedPolygonId(String polygonId) {
+    return polygonId.startsWith('saved_area_') ||
+        polygonId.startsWith('captured_area_');
+  }
+
+  double _baseHeightForKind(String kind, bool isOwn) {
+    if (kind == 'captured') return 22.0;
+    if (kind == 'boss') return 16.0;
+    if (kind == 'territory' && isOwn) return 12.0;
+    return 0.0;
+  }
+
+  double _heightForPolygon(String polygonId, String kind, bool isOwn,
+      List<LatLng> points) {
+    final area = _calculatePolygonAreaSqMeters(points);
+    final base = _baseHeightForKind(kind, isOwn);
+    if (base <= 0) return 0.0;
+    final scale = sqrt(area).clamp(0, 240);
+    final extra = (scale / 18).clamp(0, 10);
+    return (base + extra).clamp(6, kind == 'captured' ? 30 : 22);
+  }
+
+  void _startCaptureAnimationLoop() {
+    _captureAnimationTimer?.cancel();
+    _captureAnimationTimer = Timer.periodic(
+      const Duration(milliseconds: 120),
+      (timer) {
+        if (_captureAnimations.isEmpty) {
+          timer.cancel();
+          return;
+        }
+        _scheduleMapboxSync();
+      },
+    );
+  }
+
+  String _territoryKindForId(String polygonId) {
+    if (_isCapturedPolygonId(polygonId)) return 'captured';
+    if (polygonId.startsWith('boss_')) return 'boss';
+    if (polygonId.startsWith('territory_')) return 'territory';
+    return 'territory';
+  }
+
+  String _buildTerritoryGeoJson() {
+    final features = <Map<String, dynamic>>[];
+
+    for (final polygon in _polygons) {
+      final points = polygon.points;
+      if (points.length < 3) continue;
+      final id = polygon.polygonId.value;
+      final coords = points
+          .map((p) => [p.longitude, p.latitude])
+          .toList(growable: true);
+      if (coords.isNotEmpty &&
+          (coords.first[0] != coords.last[0] ||
+              coords.first[1] != coords.last[1])) {
+        coords.add(List<double>.from(coords.first));
+      }
+
+      final kind = _territoryKindForId(id);
+      bool isOwn = kind == 'captured';
+      if (kind != 'captured') {
+        final hexId = id.contains('_') ? id.split('_').last : id;
+        final data = _territoryData[hexId];
+        if (data != null) {
+          final ownerId = data['ownerId']?.toString();
+          final currentUserId = _currentUserIdFromAuth() ?? _currentUserId;
+          if (ownerId != null &&
+              currentUserId != null &&
+              ownerId == currentUserId) {
+            isOwn = true;
+          } else if (ownerId == null && data['isOwn'] == true) {
+            isOwn = true;
+          } else {
+            isOwn = false;
+          }
+        }
+      }
+
+      final targetHeight =
+          _is3DActive ? _heightForPolygon(id, kind, isOwn, points) : 0.0;
+      final animStart = _captureAnimations[id];
+      double height = targetHeight;
+      if (animStart != null && targetHeight > 0) {
+        final elapsed = DateTime.now().difference(animStart);
+        final progress =
+            (elapsed.inMilliseconds / 1400).clamp(0.0, 1.0);
+        final eased = 1 - pow(1 - progress, 3).toDouble();
+        height = targetHeight * eased;
+        if (progress >= 1.0) {
+          _captureAnimations.remove(id);
+        }
+      }
+
+      features.add({
+        'type': 'Feature',
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [coords],
+        },
+        'properties': {
+          'id': id,
+          'kind': kind,
+          'isOwn': isOwn,
+          'height': height,
+          'base': 0,
+        },
+      });
+    }
+
+    if (_captureAnimations.isNotEmpty) {
+      _startCaptureAnimationLoop();
+    }
+
+    return jsonEncode({
+      'type': 'FeatureCollection',
+      'features': features,
+    });
+  }
+
+  Future<void> _syncMapboxTerritoryLayers() async {
+    if (_mapboxMap == null) return;
+    if (!_shouldRenderHeavyOverlays) {
+      await _ensureTerritorySource();
+      final geoJson = _emptyGeoJson;
+      if (_territoryGeoJsonSource != null) {
+        await _territoryGeoJsonSource!.updateGeoJSON(geoJson);
+      } else {
+        await _mapboxMap!
+            .style
+            .setStyleSourceProperty(_territorySourceId, 'data', geoJson);
+      }
+      return;
+    }
+    if (!_territoryLayersReady) {
+      await _ensureTerritoryStyleLayers();
+    }
+    final geoJson = _buildTerritoryGeoJson();
+    if (_territoryGeoJsonSource != null) {
+      await _territoryGeoJsonSource!.updateGeoJSON(geoJson);
+    } else {
+      await _mapboxMap!
+          .style
+          .setStyleSourceProperty(_territorySourceId, 'data', geoJson);
+    }
+  }
+
+  Future<void> _easeCameraTo(
+    LatLng target, {
+    double? zoom,
+    double? bearing,
+    double? pitch,
+    Duration duration = const Duration(milliseconds: 420),
+  }) async {
+    if (_mapboxMap == null) return;
+    final options = mapbox.CameraOptions(
+      center: _pointFromLatLng(target),
+      zoom: zoom,
+      bearing: bearing,
+      pitch: pitch,
+    );
+    await _mapboxMap!.easeTo(
+      options,
+      mapbox.MapAnimationOptions(duration: duration.inMilliseconds),
+    );
+  }
+
+  Future<void> _fitMapboxBounds(
+    LatLngBounds bounds,
+    EdgeInsets padding,
+  ) async {
+    if (_mapboxMap == null) return;
+    final sw = mapbox.Point(
+      coordinates: mapbox.Position(
+        bounds.southwest.longitude,
+        bounds.southwest.latitude,
+      ),
+    );
+    final ne = mapbox.Point(
+      coordinates: mapbox.Position(
+        bounds.northeast.longitude,
+        bounds.northeast.latitude,
+      ),
+    );
+    final camera = await _mapboxMap!.cameraForCoordinateBounds(
+      mapbox.CoordinateBounds(
+        southwest: sw,
+        northeast: ne,
+        infiniteBounds: false,
+      ),
+      mapbox.MbxEdgeInsets(
+        top: padding.top,
+        left: padding.left,
+        bottom: padding.bottom,
+        right: padding.right,
+      ),
+      null,
+      null,
+      null,
+      null,
+    );
+    await _mapboxMap!.easeTo(
+      camera,
+      mapbox.MapAnimationOptions(duration: 500),
+    );
+  }
+
+  Future<void> _ensureMapboxManagers({bool reset = false}) async {
+    if (_mapboxMap == null) return;
+    if (reset) {
+      _mapboxPointTapCancelable?.cancel();
+      _mapboxPolylineTapCancelable?.cancel();
+      _mapboxPointManager = null;
+      _mapboxPolylineManager = null;
+      _mapboxPolygonManager = null;
+    }
+
+    if (_mapboxPointManager == null) {
+      _mapboxPointManager =
+          await _mapboxMap!.annotations.createPointAnnotationManager();
+      _mapboxPointTapCancelable = _mapboxPointManager!.tapEvents(
+        onTap: _handleMapboxMarkerTap,
+      );
+      await _mapboxPointManager!.setIconAllowOverlap(true);
+      await _mapboxPointManager!.setIconIgnorePlacement(true);
+    }
+
+    if (_mapboxPolylineManager == null) {
+      _mapboxPolylineManager =
+          await _mapboxMap!.annotations.createPolylineAnnotationManager();
+      _mapboxPolylineTapCancelable = _mapboxPolylineManager!.tapEvents(
+        onTap: _handleMapboxPolylineTap,
+      );
+    }
+
+    if (_mapboxPolygonManager == null) {
+      _mapboxPolygonManager =
+          await _mapboxMap!.annotations.createPolygonAnnotationManager();
+    }
+  }
+
+  void _handleMapboxMarkerTap(mapbox.PointAnnotation annotation) {
+    final data = annotation.customData;
+    final markerId = data != null ? data['markerId']?.toString() : null;
+    if (markerId == null) return;
+    final handler = _mapboxMarkerTapHandlers[markerId];
+    if (handler != null) {
+      handler();
+    }
+  }
+
+  void _handleMapboxPolylineTap(mapbox.PolylineAnnotation annotation) {
+    final data = annotation.customData;
+    final polylineId = data != null ? data['polylineId']?.toString() : null;
+    if (polylineId == null || polylineId.isEmpty) return;
+    _handlePolylineTap(PolylineId(polylineId));
+  }
+
+  void _scheduleMapboxSync() {
+    if (_mapboxMap == null || !_isMapReady) return;
+    _mapboxSyncDebounce?.cancel();
+    _mapboxSyncDebounce = Timer(
+      const Duration(milliseconds: 80),
+      _syncMapboxAnnotations,
+    );
+  }
+
+  Uint8List? _cachedAvatarBytesForMarker(String markerId) {
+    final key = _markerAvatarCacheKeys[markerId] ??
+        (markerId.startsWith('user_') ? markerId.substring(5) : null);
+    if (key == null) return null;
+    final cacheKey = _userAvatarUrlCache[key];
+    if (cacheKey == null) return null;
+    return _userAvatarBytesCache[cacheKey];
+  }
+
+  Future<Uint8List> _buildColoredMarkerBytes(Color color,
+      {int size = 56}) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    final center = ui.Offset(size / 2, size / 2);
+    final radius = size * 0.28;
+
+    final shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.18)
+      ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, size * 0.1);
+    canvas.drawCircle(center.translate(0, size * 0.05), radius * 1.1, shadowPaint);
+
+    final fillPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, radius, fillPaint);
+
+    final strokePaint = Paint()
+      ..color = Colors.white.withOpacity(0.9)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = size * 0.08;
+    canvas.drawCircle(center, radius, strokePaint);
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size, size);
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    return bytes!.buffer.asUint8List();
+  }
+
+  Future<Uint8List> _markerBytesForColor(Color color) async {
+    final key = color.value;
+    final cached = _markerColorBytesCache[key];
+    if (cached != null) return cached;
+    final bytes = await _buildColoredMarkerBytes(color);
+    _markerColorBytesCache[key] = bytes;
+    return bytes;
+  }
+
+  Future<void> _syncMapboxAnnotations() async {
+    if (_mapboxMap == null) return;
+    if (_mapboxSyncInProgress) {
+      _mapboxSyncPending = true;
+      return;
+    }
+
+    _mapboxSyncInProgress = true;
+    try {
+      await _syncMapboxTerritoryLayers();
+      await _ensureMapboxManagers();
+      if (_mapboxPointManager == null ||
+          _mapboxPolylineManager == null ||
+          _mapboxPolygonManager == null) {
+        return;
+      }
+
+      final bool showOverlays = _shouldRenderHeavyOverlays;
+
+      final polygonOptions = <mapbox.PolygonAnnotationOptions>[];
+      if (showOverlays) {
+        for (final circle in _getMapCircles()) {
+          final ringPoints = _generateCirclePoints(circle.center, circle.radius);
+          final ring = ringPoints.map(_pointFromLatLng).toList();
+          if (ring.isNotEmpty && ring.first != ring.last) {
+            ring.add(ring.first);
+          }
+          polygonOptions.add(
+            mapbox.PolygonAnnotationOptions(
+              geometry: mapbox.Polygon.fromPoints(points: [ring]),
+              fillColor: circle.fillColor.value,
+              fillOutlineColor: circle.strokeColor.value,
+            ),
+          );
+        }
+      }
+
+      await _mapboxPolygonManager!.deleteAll();
+      if (polygonOptions.isNotEmpty) {
+        await _mapboxPolygonManager!.createMulti(polygonOptions);
+      }
+
+      final polylineOptions = <mapbox.PolylineAnnotationOptions>[];
+      for (final polyline in _polylines) {
+        if (polyline.points.length < 2) continue;
+        if (!showOverlays) {
+          final id = polyline.polylineId.value;
+          final allowIdle = id == 'activity_route' ||
+              id.startsWith('route_plan');
+          if (!allowIdle) continue;
+        }
+        final line = polyline.points.map(_pointFromLatLng).toList();
+        polylineOptions.add(
+          mapbox.PolylineAnnotationOptions(
+            geometry: mapbox.LineString.fromPoints(points: line),
+            lineColor: polyline.color.value,
+            lineWidth: polyline.width.toDouble(),
+            customData: <String, Object>{
+              'polylineId': polyline.polylineId.value,
+            },
+          ),
+        );
+      }
+
+      await _mapboxPolylineManager!.deleteAll();
+      if (polylineOptions.isNotEmpty) {
+        await _mapboxPolylineManager!.createMulti(polylineOptions);
+      }
+
+      final markers = <Marker>[
+        if (showOverlays) ..._territoryMarkers,
+        if (showOverlays) ..._dropMarkers,
+        if (showOverlays) ..._poiMarkers,
+        if (showOverlays) ..._userMarkersById.values,
+        if (_currentUserMarker != null) _currentUserMarker!,
+      ];
+
+      _mapboxMarkerTapHandlers.clear();
+      final pointOptions = <mapbox.PointAnnotationOptions>[];
+      for (final marker in markers) {
+        final markerId = marker.markerId.value;
+        final avatarBytes = _cachedAvatarBytesForMarker(markerId);
+
+        Uint8List iconBytes;
+        double iconSize = 0.6;
+
+        if (markerId.startsWith('drop_')) {
+          iconBytes = _dropMarkerBytes ?? await _createPowerDropMarkerBytes();
+          _dropMarkerBytes ??= iconBytes;
+          iconSize = 0.7;
+        } else if (avatarBytes != null) {
+          iconBytes = avatarBytes;
+          iconSize = 0.7;
+        } else {
+          Color fallbackColor = Colors.blue;
+          if (markerId.startsWith('poi_')) {
+            final poiId = markerId.substring(4);
+            final visited =
+                _activePoiMission?.visited.contains(poiId) ?? false;
+            fallbackColor =
+                visited ? const Color(0xFF22C55E) : const Color(0xFF8B5CF6);
+          } else if (markerId.startsWith('boss_')) {
+            fallbackColor = const Color(0xFFF59E0B);
+          } else if (markerId.startsWith('username_label_')) {
+            fallbackColor = const Color(0xFF22C55E);
+          } else if (markerId.startsWith('user_') ||
+              markerId == 'current_user') {
+            fallbackColor = const Color(0xFF38BDF8);
+          }
+          iconBytes = await _markerBytesForColor(fallbackColor);
+          iconSize = 0.7;
+        }
+
+        pointOptions.add(
+          mapbox.PointAnnotationOptions(
+            geometry: _pointFromLatLng(marker.position),
+            image: iconBytes,
+            iconSize: iconSize,
+            iconAnchor: mapbox.IconAnchor.CENTER,
+            symbolSortKey: marker.zIndex,
+            customData: <String, Object>{'markerId': markerId},
+          ),
+        );
+        if (marker.onTap != null) {
+          _mapboxMarkerTapHandlers[markerId] = marker.onTap!;
+        }
+      }
+
+      await _mapboxPointManager!.deleteAll();
+      if (pointOptions.isNotEmpty) {
+        await _mapboxPointManager!.createMulti(pointOptions);
+      }
+    } catch (e) {
+      print('Mapbox sync failed: $e');
+    } finally {
+      _mapboxSyncInProgress = false;
+      if (_mapboxSyncPending) {
+        _mapboxSyncPending = false;
+        _syncMapboxAnnotations();
+      }
+    }
+  }
 
   void _updateStartPointMarker(LocationTracking state) {
     // Disabled: no start point circle.
@@ -3835,7 +5282,13 @@ class _MapScreenState extends State<MapScreen>
       final capturedAt = pending['capturedAt'] as DateTime?;
       final lastBattleAt = pending['lastBattleAt'] as DateTime?;
       final areaSqMeters = _toDoubleSafe(pending['areaSqMeters']);
-      final isOwn = pending['isOwn'] == true;
+      final currentUserId = _currentUserIdFromAuth() ?? _currentUserId;
+      bool isOwn = ownerId != null &&
+          currentUserId != null &&
+          ownerId == currentUserId;
+      if (!isOwn && ownerId == null && pending['isOwn'] == true) {
+        isOwn = true;
+      }
       final baseAvatarSource = pending['avatarSource']?.toString();
 
       void showSheet(String? avatar) {
@@ -4441,6 +5894,8 @@ class _MapScreenState extends State<MapScreen>
       sumLng / routePoints.length,
     );
 
+    final polygonId = 'captured_area_$areaId';
+
     setState(() {
       // DON'T clear existing polygons - just add the new one!
       // _polygons.clear();  // REMOVED - this was deleting previous captures
@@ -4449,7 +5904,7 @@ class _MapScreenState extends State<MapScreen>
       // Fill the area you walked with transparent green
       _polygons.add(
         Polygon(
-          polygonId: PolygonId('captured_area_$areaId'),
+          polygonId: PolygonId(polygonId),
           points: routePoints,
           fillColor:
               const Color(0xFF4CAF50).withOpacity(_capturedAreaFillOpacity),
@@ -4472,6 +5927,8 @@ class _MapScreenState extends State<MapScreen>
           },
         ),
       );
+
+      _captureAnimations[polygonId] = DateTime.now();
 
       // Show username in center of captured area
       if (routePoints.isNotEmpty) {
@@ -4617,98 +6074,254 @@ class _MapScreenState extends State<MapScreen>
 
   Widget _buildAdvancedControlsPanel({Key? key}) {
     final screenHeight = MediaQuery.of(context).size.height;
-    final maxPanelHeight = max(200.0, min(340.0, screenHeight * 0.45));
+    final maxPanelHeight = max(220.0, min(360.0, screenHeight * 0.48));
+    final controls = <Map<String, dynamic>>[
+      {
+        'icon': Icons.threed_rotation,
+        'label': '3D',
+        'active': _is3DMode,
+        'onTap': _toggle3DMode,
+      },
+      {
+        'icon': Icons.alt_route,
+        'label': 'Routes',
+        'active': _selectedRoute != null,
+        'onTap': _openRoutesSheet,
+      },
+      {
+        'icon': Icons.border_all,
+        'label': 'Borders',
+        'active': _showRouteBorders,
+        'onTap': () {
+          setState(() {
+            _showRouteBorders = !_showRouteBorders;
+          });
+          final locationState = context.read<LocationBloc>().state;
+          if (locationState is LocationTracking) {
+            _updateRoutePolyline(locationState);
+          }
+          _refreshRoutePreviewFromLocation(
+            _lastKnownLocation,
+            force: true,
+          );
+        },
+      },
+      {
+        'icon': Icons.layers,
+        'label': 'View',
+        'active': _currentMapType != MapType.normal,
+        'onTap': _toggleMapType,
+      },
+      {
+        'icon': _mapNightMode ? Icons.dark_mode : Icons.dark_mode_outlined,
+        'label': 'Night',
+        'active': _mapNightMode,
+        'onTap': _toggleMapNightMode,
+      },
+      {
+        'icon': Icons.whatshot,
+        'label': 'Heat',
+        'active': _showHeatmap,
+        'onTap': _toggleHeatmap,
+      },
+      {
+        'icon': Icons.flag,
+        'label': 'Missions',
+        'active': _activePoiMission != null &&
+            _activePoiMission!.visited.length <
+                _activePoiMission!.pois.length,
+        'onTap': _openPoiMissionSheet,
+      },
+      {
+        'icon': Icons.storefront,
+        'label': 'Shop',
+        'active': false,
+        'onTap': _openRewardsShop,
+      },
+      {
+        'icon': Icons.flag,
+        'label': 'Goal',
+        'active': _goalDistanceKm != null || _goalAreaSqMeters != null,
+        'onTap': () => _showGoalSetter(context),
+      },
+      {
+        'icon': Icons.eco,
+        'label': 'Eco',
+        'active': _batterySaverEnabled,
+        'onTap': () {
+          setState(() {
+            _batterySaverEnabled = !_batterySaverEnabled;
+          });
+        },
+      },
+      {
+        'icon': Icons.cloud_sync,
+        'label': 'Sync',
+        'active': _pendingSyncCount > 0 || _isSyncing,
+        'onTap': _openSyncStatus,
+      },
+      {
+        'icon': Icons.image,
+        'label': 'Offline',
+        'active': _showOfflineSnapshot,
+        'onTap': () {
+          setState(() {
+            _showOfflineSnapshot = !_showOfflineSnapshot;
+          });
+        },
+      },
+    ];
     return ConstrainedBox(
       key: key,
-      constraints: BoxConstraints(maxHeight: maxPanelHeight, maxWidth: 190),
-      child: Container(
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.92),
-          borderRadius: BorderRadius.circular(18),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.12),
-              blurRadius: 14,
-              offset: const Offset(0, 6),
+      constraints: BoxConstraints(maxHeight: maxPanelHeight, maxWidth: 210),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(22),
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Colors.white.withOpacity(0.97),
+                const Color(0xFFEAF7F7).withOpacity(0.96),
+                const Color(0xFFDFF1F1).withOpacity(0.96),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-          ],
-        ),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            _buildCompactControlButton(
-              icon: Icons.threed_rotation,
-              label: '3D',
-              isActive: _is3DMode,
-              onTap: _toggle3DMode,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+              color: Colors.white.withOpacity(0.8),
+              width: 1,
             ),
-            _buildCompactControlButton(
-              icon: Icons.alt_route,
-              label: 'Routes',
-              isActive: _selectedRoute != null,
-              onTap: _openRoutesSheet,
-            ),
-            _buildCompactControlButton(
-              icon: Icons.layers,
-              label: 'View',
-              isActive: _currentMapType != MapType.normal,
-              onTap: _toggleMapType,
-            ),
-            _buildCompactControlButton(
-              icon: Icons.whatshot,
-              label: 'Heat',
-              isActive: _showHeatmap,
-              onTap: _toggleHeatmap,
-            ),
-            _buildCompactControlButton(
-              icon: Icons.flag,
-              label: 'Missions',
-              isActive: _activePoiMission != null &&
-                  _activePoiMission!.visited.length <
-                      _activePoiMission!.pois.length,
-              onTap: _openPoiMissionSheet,
-            ),
-            _buildCompactControlButton(
-              icon: Icons.storefront,
-              label: 'Shop',
-              isActive: false,
-              onTap: _openRewardsShop,
-            ),
-            _buildCompactControlButton(
-              icon: Icons.flag,
-              label: 'Goal',
-              isActive: _goalDistanceKm != null || _goalAreaSqMeters != null,
-              onTap: () => _showGoalSetter(context),
-            ),
-            _buildCompactControlButton(
-              icon: Icons.eco,
-              label: 'Eco',
-              isActive: _batterySaverEnabled,
-              onTap: () {
-                setState(() {
-                  _batterySaverEnabled = !_batterySaverEnabled;
-                });
-              },
-            ),
-            _buildCompactControlButton(
-              icon: Icons.cloud_sync,
-              label: 'Sync',
-              isActive: _pendingSyncCount > 0 || _isSyncing,
-              onTap: _openSyncStatus,
-            ),
-            _buildCompactControlButton(
-              icon: Icons.image,
-              label: 'Offline',
-              isActive: _showOfflineSnapshot,
-              onTap: () {
-                setState(() {
-                  _showOfflineSnapshot = !_showOfflineSnapshot;
-                });
-              },
-            ),
-          ],
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.16),
+                blurRadius: 18,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Stack(
+            children: [
+              Positioned(
+                top: -60,
+                right: -40,
+                child: Container(
+                  width: 140,
+                  height: 140,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [
+                        AppTheme.primaryColor.withOpacity(0.18),
+                        Colors.transparent,
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                bottom: -70,
+                left: -50,
+                child: Container(
+                  width: 160,
+                  height: 160,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [
+                        AppTheme.accentColor.withOpacity(0.16),
+                        Colors.transparent,
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 34,
+                          height: 34,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              colors: [
+                                AppTheme.primaryColor,
+                                AppTheme.accentColor,
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppTheme.primaryColor.withOpacity(0.35),
+                                blurRadius: 10,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: const Icon(
+                            Icons.tune,
+                            size: 18,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Control Deck',
+                              style: GoogleFonts.spaceGrotesk(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary,
+                                letterSpacing: -0.2,
+                              ),
+                            ),
+                            Text(
+                              'Quick tools',
+                              style: GoogleFonts.dmSans(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: SingleChildScrollView(
+                        physics: const BouncingScrollPhysics(),
+                        child: Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            for (int i = 0; i < controls.length; i++)
+                              _buildCompactControlButton(
+                                icon: controls[i]['icon'] as IconData,
+                                label: controls[i]['label'] as String,
+                                isActive: controls[i]['active'] as bool,
+                                onTap: controls[i]['onTap'] as VoidCallback,
+                                index: i,
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -4719,48 +6332,104 @@ class _MapScreenState extends State<MapScreen>
     required String label,
     required bool isActive,
     required VoidCallback onTap,
+    int index = 0,
   }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 78,
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(
-          color: isActive ? Colors.black87 : Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.08),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
+    final bgGradient = isActive
+        ? LinearGradient(
+            colors: [
+              AppTheme.primaryColor,
+              AppTheme.accentColor,
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          )
+        : LinearGradient(
+            colors: [
+              Colors.white.withOpacity(0.95),
+              const Color(0xFFEFF7F7).withOpacity(0.95),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          );
+    final textColor = isActive ? Colors.white : AppTheme.textPrimary;
+    final iconColor = isActive ? Colors.white : AppTheme.textPrimary;
+    final iconBg = isActive
+        ? Colors.white.withOpacity(0.18)
+        : Colors.white.withOpacity(0.9);
+
+    return TweenAnimationBuilder<double>(
+      duration: Duration(milliseconds: 240 + index * 45),
+      curve: Curves.easeOutCubic,
+      tween: Tween(begin: 0, end: 1),
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.translate(
+            offset: Offset(0, (1 - value) * 6),
+            child: child,
+          ),
+        );
+      },
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 86,
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+          decoration: BoxDecoration(
+            gradient: bgGradient,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isActive
+                  ? AppTheme.primaryColor.withOpacity(0.55)
+                  : Colors.white.withOpacity(0.9),
+              width: 1,
             ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              color: isActive ? Colors.white : Colors.black87,
-              size: 20,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 9,
-                fontWeight: FontWeight.w700,
-                color: isActive ? Colors.white : Colors.black87,
+            boxShadow: [
+              BoxShadow(
+                color: isActive
+                    ? AppTheme.primaryColor.withOpacity(0.35)
+                    : Colors.black.withOpacity(0.08),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
               ),
-            ),
-          ],
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  icon,
+                  color: iconColor,
+                  size: 16,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.dmSans(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: textColor,
+                  height: 1.1,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   Future<void> _centerOnUser() async {
-    if (_mapController == null) return;
+    if (_mapboxMap == null) return;
 
     if (mounted) {
       setState(() {
@@ -4796,15 +6465,11 @@ class _MapScreenState extends State<MapScreen>
     }
 
     if (target != null) {
-      _mapController!.animateCamera(
-        CameraUpdate.newCameraPosition(
-          CameraPosition(
-            target: target,
-            zoom: _is3DMode ? 18 : 16,
-            tilt: _is3DMode ? 45 : 0,
-            bearing: 0,
-          ),
-        ),
+      _easeCameraTo(
+        target,
+        zoom: _is3DActive ? 18 : 16,
+        pitch: _is3DActive ? 45 : 0,
+        bearing: 0,
       );
     }
   }
@@ -4979,9 +6644,11 @@ class _MapScreenState extends State<MapScreen>
         Polyline(
           polylineId: const PolylineId('route_plan_base'),
           points: base,
-          color: Colors.blueGrey.withOpacity(0.55),
-          width: 5,
-          patterns: showDashed
+          color: _showRouteBorders
+              ? Colors.blueGrey.withOpacity(0.55)
+              : Colors.black.withOpacity(0.2),
+          width: _showRouteBorders ? 5 : 3,
+          patterns: _showRouteBorders && showDashed
               ? [PatternItem.dash(12), PatternItem.gap(8)]
               : const <PatternItem>[],
           startCap: Cap.roundCap,
@@ -5010,15 +6677,21 @@ class _MapScreenState extends State<MapScreen>
         Polyline(
           polylineId: const PolylineId('route_plan_remaining'),
           points: remaining,
-          color: Colors.blueAccent.withOpacity(0.9),
-          width: 5,
-          patterns: [PatternItem.dash(10), PatternItem.gap(6)],
+          color: _showRouteBorders
+              ? Colors.blueAccent.withOpacity(0.9)
+              : Colors.black.withOpacity(0.25),
+          width: _showRouteBorders ? 5 : 3,
+          patterns: _showRouteBorders
+              ? [PatternItem.dash(10), PatternItem.gap(6)]
+              : const <PatternItem>[],
           startCap: Cap.roundCap,
           endCap: Cap.roundCap,
           jointType: JointType.round,
         ),
       );
     }
+
+    _scheduleMapboxSync();
   }
 
   List<LatLng> _buildProgressPoints(
@@ -5879,6 +7552,9 @@ class _MapScreenState extends State<MapScreen>
   }
 
   Future<void> _loadBossTerritoriesFromBackend() async {
+    if (!_shouldRenderHeavyOverlays) {
+      return;
+    }
     try {
       final territoryApiService = di.getIt<TerritoryApiService>();
       final authService = di.getIt<AuthApiService>();
@@ -5911,6 +7587,9 @@ class _MapScreenState extends State<MapScreen>
     List<Map<String, dynamic>> bosses,
     String currentUserId,
   ) {
+    if (!_shouldRenderHeavyOverlays) {
+      return;
+    }
     if (!mounted) return;
 
     final pendingBossMarkers = <Map<String, dynamic>>[];
@@ -5994,6 +7673,7 @@ class _MapScreenState extends State<MapScreen>
             bossRewardPoints: boss['bossRewardPoints'],
             avatarSource: ownerAvatarSource,
             territoryId: boss['id']?.toString(),
+            territoryName: boss['name']?.toString(),
           );
         };
 
@@ -6028,6 +7708,7 @@ class _MapScreenState extends State<MapScreen>
         _territoryData[hexId] = {
           'polygonPoints': polygonPoints,
           'territoryId': boss['id']?.toString(),
+          'territoryName': boss['name']?.toString(),
           'ownerId': ownerId,
           'ownerName': boss['owner']?['name'] ?? 'Unknown',
           'captureCount': boss['captureCount'] ?? 1,
@@ -6136,7 +7817,9 @@ class _MapScreenState extends State<MapScreen>
 
     setState(() {
       _userMarkersById[userId] = marker;
+      _markerAvatarCacheKeys['user_$userId'] = userId;
     });
+    _scheduleMapboxSync();
   }
 
   void _handleTerritoryCaptured(dynamic payload) {
@@ -6267,7 +7950,6 @@ class _MapScreenState extends State<MapScreen>
       position: position,
       icon: icon ??
           BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-      infoWindow: InfoWindow(title: name),
       zIndex: 20.0,
     );
   }
@@ -6295,10 +7977,13 @@ class _MapScreenState extends State<MapScreen>
         icon: icon ??
             BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
         anchor: icon != null ? const Offset(0.5, 0.5) : const Offset(0.5, 1.0),
-        infoWindow: const InfoWindow(title: 'You'),
         zIndex: 30.0,
       );
+      if (avatarSource.isNotEmpty) {
+        _markerAvatarCacheKeys['current_user'] = user.id;
+      }
     });
+    _scheduleMapboxSync();
   }
 
   Future<BitmapDescriptor?> _getAvatarMarkerIcon(
@@ -6315,12 +8000,14 @@ class _MapScreenState extends State<MapScreen>
     try {
       final bytes = await _loadAvatarBytes(resolvedUrl);
       if (bytes == null) return null;
-      final icon = await _createCircularAvatarMarker(
+      final markerBytes = await _createCircularAvatarMarkerBytes(
         bytes,
         ringColor: ringColor,
       );
+      final icon = BitmapDescriptor.fromBytes(markerBytes);
       _userAvatarIconCache[userId] = icon;
       _userAvatarUrlCache[userId] = cacheKey;
+      _userAvatarBytesCache[cacheKey] = markerBytes;
       return icon;
     } catch (e) {
       print('Failed to load avatar icon: $e');
@@ -6347,7 +8034,7 @@ class _MapScreenState extends State<MapScreen>
     return response.bodyBytes;
   }
 
-  Future<BitmapDescriptor> _createCircularAvatarMarker(
+  Future<Uint8List> _createCircularAvatarMarkerBytes(
     Uint8List bytes, {
     int size = 96,
     Color? ringColor,
@@ -6387,7 +8074,20 @@ class _MapScreenState extends State<MapScreen>
       format: ui.ImageByteFormat.png,
     );
 
-    return BitmapDescriptor.fromBytes(byteData!.buffer.asUint8List());
+    return byteData!.buffer.asUint8List();
+  }
+
+  Future<BitmapDescriptor> _createCircularAvatarMarker(
+    Uint8List bytes, {
+    int size = 96,
+    Color? ringColor,
+  }) async {
+    final markerBytes = await _createCircularAvatarMarkerBytes(
+      bytes,
+      size: size,
+      ringColor: ringColor,
+    );
+    return BitmapDescriptor.fromBytes(markerBytes);
   }
 
   void _pruneStaleUsers() {
@@ -6403,6 +8103,7 @@ class _MapScreenState extends State<MapScreen>
         _userLastSeen.remove(userId);
       }
     });
+    _scheduleMapboxSync();
   }
 
   void _handleBoostUpdate(dynamic payload) {
@@ -6445,6 +8146,7 @@ class _MapScreenState extends State<MapScreen>
     if (_showHeatmap) {
       _buildHeatmapCircles();
     }
+    _scheduleMapboxSync();
   }
 
   void _buildHeatmapCircles() {
@@ -6504,6 +8206,7 @@ class _MapScreenState extends State<MapScreen>
         ),
       );
     }
+    _scheduleMapboxSync();
   }
 
   void _updateLocalStreaks() {
@@ -6560,6 +8263,9 @@ class _MapScreenState extends State<MapScreen>
 
   Set<Circle> _getMapCircles() {
     final circles = <Circle>{};
+    if (!_shouldRenderHeavyOverlays) {
+      return circles;
+    }
     if (_trackingState == TrackingState.started && _startPointCircle != null) {
       circles.add(_startPointCircle!);
     }
@@ -6963,8 +8669,9 @@ class _MapScreenState extends State<MapScreen>
     setState(() {
       _is3DMode = !_is3DMode;
     });
+    _scheduleMapboxSync();
 
-    if (_mapController != null) {
+    if (_mapboxMap != null) {
       final locationState = context.read<LocationBloc>().state;
       LatLng? currentPosition;
 
@@ -6981,15 +8688,12 @@ class _MapScreenState extends State<MapScreen>
       }
 
       if (currentPosition != null) {
-        _mapController!.animateCamera(
-          CameraUpdate.newCameraPosition(
-            CameraPosition(
-              target: currentPosition,
-              zoom: _is3DMode ? 18 : 15,
-              tilt: _is3DMode ? 45 : 0,
-              bearing: _is3DMode ? 45 : 0,
-            ),
-          ),
+        final enable3D = _is3DActive;
+        _easeCameraTo(
+          currentPosition,
+          zoom: enable3D ? 18 : 15,
+          pitch: enable3D ? 45 : 0,
+          bearing: enable3D ? 45 : 0,
         );
       }
     }
@@ -7006,11 +8710,35 @@ class _MapScreenState extends State<MapScreen>
         _currentMapType = MapType.normal;
       }
     });
+
+    if (_mapboxMap != null) {
+      _mapboxMap!.loadStyleURI(_mapboxStyleForMapType());
+      _territoryLayersReady = false;
+      _ensureMapboxManagers(reset: true).then((_) => _scheduleMapboxSync());
+    }
+    if (_pipMapboxMap != null) {
+      _pipMapboxMap!.loadStyleURI(_mapboxStyleForMapType());
+    }
+  }
+
+  Future<void> _toggleMapNightMode() async {
+    setState(() {
+      _mapNightMode = !_mapNightMode;
+    });
+    await _prefs.setBool(_mapNightModeKey, _mapNightMode);
+    if (_mapboxMap != null) {
+      _mapboxMap!.loadStyleURI(_mapboxStyleForMapType());
+      _territoryLayersReady = false;
+      _ensureMapboxManagers(reset: true).then((_) => _scheduleMapboxSync());
+    }
+    if (_pipMapboxMap != null) {
+      _pipMapboxMap!.loadStyleURI(_mapboxStyleForMapType());
+    }
   }
 
   // Show activity route on map
   void _showActivityOnMap(Map<String, dynamic> activity) {
-    if (_mapController == null) return;
+    if (_mapboxMap == null) return;
 
     // Get route points from activity
     final routePoints = activity['routePoints'] as List<dynamic>?;
@@ -7056,6 +8784,7 @@ class _MapScreenState extends State<MapScreen>
         ),
       );
     });
+    _scheduleMapboxSync();
 
     // Calculate bounds to fit all points
     double minLat = latLngPoints.first.latitude;
@@ -7080,7 +8809,7 @@ class _MapScreenState extends State<MapScreen>
     );
 
     // Animate camera to show the entire route
-    _mapController!.animateCamera(CameraUpdate.newLatLngBounds(bounds, 50));
+    _fitMapboxBounds(bounds, const EdgeInsets.all(50));
   }
 
   /// ═══════════════════════════════════════════════════════════════════════════
@@ -7092,12 +8821,7 @@ class _MapScreenState extends State<MapScreen>
     print('📦 Activity data found: ${activity != null}');
     if (activity != null) {
       print('🎭 Showing bottom drawer...');
-      showModalBottomSheet(
-        context: context,
-        backgroundColor: Colors.transparent,
-        isScrollControlled: true,
-        builder: (context) => ActivityDetailDrawer(activity: activity),
-      );
+      _showActivityDetailDrawer(activity);
     } else {
       print('❌ No activity data found for ${polylineId.value}');
       print('   Available keys: ${_activityData.keys.toList()}');
@@ -7107,12 +8831,11 @@ class _MapScreenState extends State<MapScreen>
   /// ═══════════════════════════════════════════════════════════════════════════
   /// HANDLE MAP TAP - Check if inside activity area and show drawer
   /// ═══════════════════════════════════════════════════════════════════════════
-  void _handleMapTapForActivities(LatLng tapPosition) {
+  bool _handleMapTapForActivities(LatLng tapPosition) {
     print(
       '🗺️ Map tapped at: ${tapPosition.latitude}, ${tapPosition.longitude}',
     );
     print('📊 Total activity data entries: ${_activityData.length}');
-    print('�️ Total territory data entries: ${_territoryData.length}');
 
     // First check activity polygons (user's own completed loops)
     for (final entry in _activityData.entries) {
@@ -7130,40 +8853,97 @@ class _MapScreenState extends State<MapScreen>
 
           if (_isPointInPolygon(tapPosition, routePoints)) {
             print('✅ Tap is inside activity polygon: ${entry.key}');
-            showModalBottomSheet(
-              context: context,
-              backgroundColor: Colors.transparent,
-              isScrollControlled: true,
-              builder: (context) => ActivityDetailDrawer(activity: activity),
-            );
-            return;
+            _showActivityDetailDrawer(activity);
+            return true;
           }
         }
       }
     }
 
-    // Then check territory polygons (all territories including others')
-    for (final entry in _territoryData.entries) {
-      final hexId = entry.key;
-      final data = entry.value;
-      final polygonPoints = data['polygonPoints'] as List<LatLng>;
+    print('❌ Tap not inside any activity or territory area');
+    return false;
+  }
 
-      if (_isPointInPolygon(tapPosition, polygonPoints)) {
-        print('✅ Tap is inside territory: $hexId');
-        print('   Owner: ${data['ownerName']}');
-
-        // Show territory owner info drawer
-        _showTerritoryOwnerDrawer(
-          ownerName: data['ownerName'],
-          isOwn: data['isOwn'],
-          captureCount: data['captureCount'],
-          territoryId: data['territoryId']?.toString(),
+  void _showActivityDetailDrawer(Map<String, dynamic> activity) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) {
+        final activityId = _resolveActivityId(activity);
+        if (activityId == null || activityId.isEmpty) {
+          return ActivityDetailDrawer(activity: activity);
+        }
+        return FutureBuilder<Map<String, dynamic>>(
+          future: _fetchActivityForDrawer(activityId),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return _buildActivityDrawerLoading();
+            }
+            if (snapshot.hasError || snapshot.data == null) {
+              return ActivityDetailDrawer(activity: activity);
+            }
+            return ActivityDetailDrawer(
+              activity: _normalizeActivityData(snapshot.data!),
+            );
+          },
         );
-        return;
+      },
+    );
+  }
+
+  String? _resolveActivityId(Map<String, dynamic> activity) {
+    final candidates = [
+      activity['id'],
+      activity['_id'],
+      activity['activityId'],
+    ];
+    for (final candidate in candidates) {
+      final value = candidate?.toString();
+      if (value != null && value.isNotEmpty) {
+        return value;
       }
     }
+    return null;
+  }
 
-    print('❌ Tap not inside any activity or territory area');
+  Future<Map<String, dynamic>> _fetchActivityForDrawer(String id) async {
+    final trackingApiService = di.getIt<TrackingApiService>();
+    return trackingApiService.getActivityById(id);
+  }
+
+  Widget _buildActivityDrawerLoading() {
+    final media = MediaQuery.of(context);
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + media.viewInsets.bottom),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.18),
+                blurRadius: 24,
+                offset: const Offset(0, 12),
+              ),
+            ],
+          ),
+          child: SizedBox(
+            height: 160,
+            child: Center(
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  Colors.grey.shade700,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// Show territory owner info in bottom drawer
@@ -7546,6 +9326,30 @@ class _MapScreenState extends State<MapScreen>
     _activePointers.remove(event.pointer);
   }
 
+  void _markMapGesture() {
+    _lastMapGestureAt = DateTime.now();
+  }
+
+  Future<void> _handleMapIdle() async {
+    if (!_shouldRenderHeavyOverlays || _mapboxMap == null) {
+      return;
+    }
+    final lastGestureAt = _lastMapGestureAt;
+    if (lastGestureAt == null) return;
+    if (DateTime.now().difference(lastGestureAt) > _mapIdleFetchWindow) {
+      return;
+    }
+    _lastMapGestureAt = null;
+    try {
+      final camera = await _mapboxMap!.getCameraState();
+      if (camera.zoom < 12.0) return;
+      final center = _latLngFromPoint(camera.center);
+      _scheduleTerritoryFetch(center, force: true);
+    } catch (e) {
+      print('Failed to load territories for map center: $e');
+    }
+  }
+
   void _triggerBackgroundSync() {
     if (_isSyncing) return;
     if (mounted) {
@@ -7581,11 +9385,12 @@ class _MapScreenState extends State<MapScreen>
   }
 
   void _handleStart(BuildContext context) {
-    if (_showLocationGate) {
+    if (_showTrackingGate) {
+      final message = _hasLocationAccess
+          ? 'Enable precise location to start tracking.'
+          : 'Enable location services to start tracking.';
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Enable precise location to start tracking.'),
-        ),
+        SnackBar(content: Text(message)),
       );
       _checkPreciseLocationAccess(requestPermission: true);
       return;
@@ -7610,6 +9415,8 @@ class _MapScreenState extends State<MapScreen>
       _lastSplitPace = null;
       _lastSplitDuration = null;
     });
+    _enableHeavyOverlays();
+    _scheduleMapboxSync();
     _buttonAnimController.forward();
     _startCountdown(context);
   }
@@ -7801,7 +9608,7 @@ class _MapScreenState extends State<MapScreen>
       print('   - territoriesCount: $newTerritoryCount');
       print('   - routePoints: ${routePoints.length}');
       print('   - capturedHexIds: ${_capturedHexIds.length}');
-      await _saveActivityToHistory(
+      final mapSnapshotBase64 = await _saveActivityToHistory(
         locationState: locationState,
         distance: distance,
         activeDuration: activeDuration,
@@ -7843,6 +9650,22 @@ class _MapScreenState extends State<MapScreen>
         _lastSplitDuration = null;
       });
 
+      _scheduleMapboxSync();
+      final endTarget = locationState is LocationTracking
+          ? LatLng(
+              locationState.currentPosition.latitude,
+              locationState.currentPosition.longitude,
+            )
+          : _lastKnownLocation;
+      if (endTarget != null && _mapboxMap != null) {
+        _easeCameraTo(
+          endTarget,
+          zoom: 16,
+          pitch: 0,
+          bearing: 0,
+        );
+      }
+
       _buttonAnimController.reverse();
       BackgroundTrackingService.stopTracking();
 
@@ -7860,8 +9683,12 @@ class _MapScreenState extends State<MapScreen>
             avgSpeed: avgSpeed,
             steps: sessionSteps,
             routePoints: routePoints,
+            routePositions: locationState is LocationTracking
+                ? locationState.routePoints
+                : null,
             territories: _polygons.isNotEmpty ? _polygons : null,
             workoutDate: _trackingStartTime,
+            mapSnapshotBase64: mapSnapshotBase64,
           ),
         ),
       );
@@ -7948,10 +9775,9 @@ class _MapScreenState extends State<MapScreen>
   // Capture map screenshot
   Future<String?> _captureMapScreenshot() async {
     try {
-      if (_mapController == null) return null;
+      if (_mapboxMap == null) return null;
 
-      final imageBytes = await _mapController!.takeSnapshot();
-      if (imageBytes == null) return null;
+      final imageBytes = await _mapboxMap!.snapshot();
 
       final base64Image = base64Encode(imageBytes);
       print('📸 Map screenshot captured (${imageBytes.length} bytes)');
@@ -8138,7 +9964,7 @@ class _MapScreenState extends State<MapScreen>
   }
 
   // Save completed workout to history
-  Future<void> _saveActivityToHistory({
+  Future<String?> _saveActivityToHistory({
     required LocationState locationState,
     required double distance,
     required Duration activeDuration,
@@ -8164,7 +9990,7 @@ class _MapScreenState extends State<MapScreen>
       if (locationState is LocationTracking) {
         print('   routePoints.length = ${locationState.routePoints.length}');
       }
-      return;
+      return null;
     }
 
     try {
@@ -8281,66 +10107,70 @@ class _MapScreenState extends State<MapScreen>
 
       // Kick off background sync without blocking the UI
       _triggerBackgroundSync();
+      return mapSnapshot;
     } catch (e, stackTrace) {
       print('[error] Error saving activity: $e');
       print('[error] Stack trace: $stackTrace');
+      return null;
     }
   }
 
   Widget _buildPipMode(BuildContext context) {
     return BlocBuilder<LocationBloc, LocationState>(
       builder: (context, locationState) {
-        CameraPosition cameraPosition = const CameraPosition(
-          target: LatLng(37.7749, -122.4194),
-          zoom: 15,
-        );
-
         bool isTracking = false;
         bool isPaused = false;
+        LatLng? currentPoint;
+        double targetZoom = 15;
 
         if (locationState is LocationIdle &&
             locationState.lastPosition != null) {
-          cameraPosition = CameraPosition(
-            target: LatLng(
-              locationState.lastPosition!.latitude,
-              locationState.lastPosition!.longitude,
-            ),
-            zoom: 15,
+          final point = LatLng(
+            locationState.lastPosition!.latitude,
+            locationState.lastPosition!.longitude,
           );
+          currentPoint = point;
+          targetZoom = 15;
         } else if (locationState is LocationTracking) {
-          cameraPosition = CameraPosition(
-            target: LatLng(
-              locationState.currentPosition.latitude,
-              locationState.currentPosition.longitude,
-            ),
-            zoom: 16,
+          final point = LatLng(
+            locationState.currentPosition.latitude,
+            locationState.currentPosition.longitude,
           );
+          currentPoint = point;
           isTracking = _trackingState == TrackingState.started;
           isPaused = _trackingState == TrackingState.paused;
+          targetZoom = 16;
         }
+
+        if (currentPoint != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _updatePipCamera(currentPoint!, zoom: targetZoom, pitch: 0);
+          });
+        }
+
+        final initialCamera = mapbox.CameraOptions(
+          center: _pointFromLatLng(
+            currentPoint ?? const LatLng(37.7749, -122.4194),
+          ),
+          zoom: targetZoom,
+          pitch: 0,
+        );
 
         return Stack(
           children: [
             // Map view
-            GoogleMap(
-              initialCameraPosition: cameraPosition,
-              myLocationEnabled: false,
-              myLocationButtonEnabled: false,
-              zoomControlsEnabled: false,
-              mapToolbarEnabled: false,
-              compassEnabled: false,
-              rotateGesturesEnabled: false,
-              scrollGesturesEnabled: false,
-              zoomGesturesEnabled: false,
-              tiltGesturesEnabled: false,
-              polygons: _polygons,
-              polylines: _polylines,
-              markers: _currentUserMarker != null
-                  ? {_currentUserMarker!}
-                  : const <Marker>{},
-              mapType: _currentMapType,
-              onMapCreated: (GoogleMapController controller) {
-                // Don't store controller in PiP mode to avoid conflicts
+            mapbox.MapWidget(
+              cameraOptions: initialCamera,
+              styleUri: _mapboxStyleForMapType(),
+              onMapCreated: (mapbox.MapboxMap controller) async {
+                _pipMapboxMap = controller;
+                if (currentPoint != null) {
+                  await _updatePipCamera(
+                    currentPoint!,
+                    zoom: targetZoom,
+                    pitch: 0,
+                  );
+                }
               },
             ),
 

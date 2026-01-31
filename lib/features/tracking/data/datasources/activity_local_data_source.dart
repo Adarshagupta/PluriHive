@@ -6,6 +6,7 @@ abstract class ActivityLocalDataSource {
   Future<List<Activity>> getAllActivities();
   Future<Activity?> getActivity(String id);
   Future<void> deleteActivity(String id);
+  Future<void> deleteByClientId(String clientId);
 }
 
 class ActivityLocalDataSourceImpl implements ActivityLocalDataSource {
@@ -70,5 +71,29 @@ class ActivityLocalDataSourceImpl implements ActivityLocalDataSource {
     final box = await _getBox();
     await box.delete(id);
     print('🗑️ Activity deleted: $id');
+  }
+
+  @override
+  Future<void> deleteByClientId(String clientId) async {
+    final box = await _getBox();
+    final keysToDelete = <dynamic>[];
+
+    for (final key in box.keys) {
+      final json = box.get(key);
+      if (json is Map) {
+        final storedClientId = json['clientId']?.toString();
+        if (storedClientId != null && storedClientId == clientId) {
+          keysToDelete.add(key);
+        }
+      }
+    }
+
+    for (final key in keysToDelete) {
+      await box.delete(key);
+    }
+
+    if (keysToDelete.isNotEmpty) {
+      print('🗑️ Activities deleted for clientId: $clientId');
+    }
   }
 }

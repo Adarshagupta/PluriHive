@@ -1,4 +1,4 @@
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../models/geo_types.dart';
 import 'engagement_api_service.dart';
 
 class Poi {

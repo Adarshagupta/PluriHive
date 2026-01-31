@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="open_map"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_map"
+        android:shortcutShortLabel="@string/shortcut_map_short"
+        android:shortcutLongLabel="@string/shortcut_map_long"
+        android:shortcutDisabledMessage="@string/shortcut_map_disabled">
+        <intent
+            android:action="es.antonborri.home_widget.action.LAUNCH"
+            android:targetPackage="com.plurihive.app"
+            android:targetClass="com.plurihive.app.MainActivity"
+            android:data="plurihive://map" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="open_activity"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_activity"
+        android:shortcutShortLabel="@string/shortcut_activity_short"
+        android:shortcutLongLabel="@string/shortcut_activity_long"
+        android:shortcutDisabledMessage="@string/shortcut_activity_disabled">
+        <intent
+            android:action="es.antonborri.home_widget.action.LAUNCH"
+            android:targetPackage="com.plurihive.app"
+            android:targetClass="com.plurihive.app.MainActivity"
+            android:data="plurihive://activity" />
+    </shortcut>
+</shortcuts>

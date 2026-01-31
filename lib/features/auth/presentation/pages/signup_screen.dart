@@ -12,6 +12,7 @@ import 'onboarding_screen.dart';
 import 'signin_screen.dart';
 import '../../domain/entities/user.dart';
 import '../../../dashboard/presentation/pages/main_dashboard.dart';
+import '../../../../core/services/shortcut_service.dart';
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -93,7 +94,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   void _routeAfterAuth(User user) {
     final target = user.hasCompletedOnboarding
-        ? const DashboardScreen()
+        ? DashboardScreen(initialTabIndex: ShortcutService.consumeInitialTab())
         : const OnboardingScreen();
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => target),

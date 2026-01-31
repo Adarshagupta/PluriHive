@@ -38,6 +38,9 @@ export class Territory {
   @Column({ type: "jsonb", nullable: true })
   routePoints: { lat: number; lng: number }[]; // Actual loop path
 
+  @Column({ type: "varchar", length: 40, nullable: true })
+  name?: string | null;
+
   @Column({ type: "uuid" })
   ownerId: string;
 

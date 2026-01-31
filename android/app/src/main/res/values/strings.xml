@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PluriHive</string>
+    <string name="widget_progress_label">PluriHive Progress</string>
+    <string name="widget_shortcuts_label">PluriHive Shortcuts</string>
+    <string name="shortcut_map_short">Map</string>
+    <string name="shortcut_map_long">Open Map</string>
+    <string name="shortcut_map_disabled">Map shortcut unavailable</string>
+    <string name="shortcut_activity_short">Activity</string>
+    <string name="shortcut_activity_long">Activity History</string>
+    <string name="shortcut_activity_disabled">Activity shortcut unavailable</string>
+</resources>

@@ -8,7 +8,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
 import '../../../auth/presentation/pages/signin_screen.dart';
-import '../../../../core/theme/app_theme.dart';
 import '../../../../core/services/api_config.dart';
 import '../../../../core/services/settings_api_service.dart';
 import '../../../../core/services/update_service.dart';
@@ -35,6 +34,23 @@ class _SettingsScreenState extends State<SettingsScreen>
   static const String _settingsCacheTimeKey = 'settings_cache_time_v1';
   static const String _backgroundStepTrackingKey =
       'background_step_tracking_enabled';
+  static const String _liteModeKey = 'lite_mode_enabled';
+  static const String _liteModeAggressiveKey = 'lite_mode_aggressive';
+  static const Color _pageBackground = Color(0xFFFFFFFF);
+  static const Color _headerGradientStart = Color(0xFFFFFFFF);
+  static const Color _headerGradientEnd = Color(0xFFF7FDFD);
+  static const Color _surfaceColor = Color(0xFFF8FEFE);
+  static const Color _surfaceAltColor = Color(0xFFF4FBFB);
+  static const Color _borderColor = Color(0xFFCFE8E8);
+  static const Color _borderStrongColor = Color(0xFFB7E0E0);
+  static const Color _iconBadgeColor = Color(0xFFE1F6F6);
+  static const Color _accentColor = Color(0xFF0E9FA0);
+  static const Color _accentStrongColor = Color(0xFF0B6F73);
+  static const Color _textPrimaryColor = Color(0xFF0B2D30);
+  static const Color _textSecondaryColor = Color(0xFF4A6A6D);
+  static const Color _textTertiaryColor = Color(0xFF6B8B8E);
+  static const Color _chipColor = Color(0xFFE6F9F9);
+  static const Color _chipBorderColor = Color(0xFFBFE4E4);
   String _selectedBackend = ApiConfig.localUrl;
   late final SettingsApiService _settingsService;
   late final SharedPreferences _prefs;
@@ -51,6 +67,8 @@ class _SettingsScreenState extends State<SettingsScreen>
   String? _smartReminderTime;
   bool _backgroundStepTracking = false;
   bool _darkMode = false;
+  bool _liteModeEnabled = false;
+  bool _liteModeAggressive = false;
   String _language = 'English';
   bool _isInitialLoading = true;
   bool _isSaving = false;
@@ -73,6 +91,8 @@ class _SettingsScreenState extends State<SettingsScreen>
     _authApiService = di.getIt<AuthApiService>();
     _backgroundStepTracking =
         _prefs.getBool(_backgroundStepTrackingKey) ?? false;
+    _liteModeEnabled = _prefs.getBool(_liteModeKey) ?? false;
+    _liteModeAggressive = _prefs.getBool(_liteModeAggressiveKey) ?? false;
     _smartReminderService.initialize();
     _floatController = AnimationController(
       duration: const Duration(seconds: 3),
@@ -244,18 +264,66 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   }
 
+  Future<void> _toggleLiteMode(bool value) async {
+    if (value == _liteModeEnabled) return;
+    setState(() => _liteModeEnabled = value);
+    await _prefs.setBool(_liteModeKey, value);
+    if (!value && _liteModeAggressive) {
+      setState(() => _liteModeAggressive = false);
+      await _prefs.setBool(_liteModeAggressiveKey, false);
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? 'Lite mode enabled. Cache will be cleared when the app closes.'
+                : 'Lite mode disabled.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _toggleLiteModeAggressive(bool value) async {
+    if (!_liteModeEnabled) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Enable Lite mode first to use aggressive cleanup.'),
+          ),
+        );
+      }
+      return;
+    }
+    if (value == _liteModeAggressive) return;
+    setState(() => _liteModeAggressive = value);
+    await _prefs.setBool(_liteModeAggressiveKey, value);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? 'Aggressive Lite mode enabled. Local activity history will be cleared on close.'
+                : 'Aggressive Lite mode disabled.',
+          ),
+        ),
+      );
+    }
+  }
+
   Future<bool?> _confirmBackgroundTracking() {
     return showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
+        backgroundColor: _surfaceColor,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
         ),
         title: Text(
           'Enable background step tracking?',
           style: GoogleFonts.spaceGrotesk(
-            color: AppTheme.textPrimary,
+            color: _textPrimaryColor,
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -264,7 +332,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           'We will request notification access and may ask to exempt '
           'Plurihive from battery optimizations for reliable tracking.',
           style: GoogleFonts.dmSans(
-            color: AppTheme.textSecondary,
+            color: _textSecondaryColor,
           ),
         ),
         actions: [
@@ -275,7 +343,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.primaryColor,
+              backgroundColor: _accentColor,
               foregroundColor: Colors.white,
             ),
             child: const Text('Enable'),
@@ -347,7 +415,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         }
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFFF7F7F2),
+        backgroundColor: _pageBackground,
         body: SafeArea(
           child: _isInitialLoading
               ? _buildSettingsSkeleton()
@@ -392,7 +460,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                         child: LinearProgressIndicator(
                           minHeight: 2,
                           backgroundColor: Colors.transparent,
-                          color: AppTheme.primaryColor,
+                          color: _accentColor,
                         ),
                       ),
                   ],
@@ -446,13 +514,27 @@ class _SettingsScreenState extends State<SettingsScreen>
     return SliverAppBar(
       expandedHeight: 170,
       pinned: true,
-      backgroundColor: const Color(0xFFF7F7F2),
+      backgroundColor: _pageBackground,
       elevation: 0,
       systemOverlayStyle: SystemUiOverlayStyle.dark,
       flexibleSpace: FlexibleSpaceBar(
         collapseMode: CollapseMode.pin,
         background: Stack(
           children: [
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      _headerGradientStart,
+                      _headerGradientEnd,
+                    ],
+                  ),
+                ),
+              ),
+            ),
             Positioned(
               right: -40,
               top: -10,
@@ -469,7 +551,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   width: 140,
                   height: 140,
                   decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withOpacity(0.18),
+                    color: _accentColor.withOpacity(0.2),
                     shape: BoxShape.circle,
                   ),
                 ),
@@ -482,7 +564,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 width: 120,
                 height: 120,
                 decoration: BoxDecoration(
-                  color: const Color(0xFFBFD9FF).withOpacity(0.4),
+                  color: _borderStrongColor.withOpacity(0.45),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -498,7 +580,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                       style: GoogleFonts.spaceGrotesk(
                         fontSize: 28,
                         fontWeight: FontWeight.w700,
-                        color: AppTheme.textPrimary,
+                        color: _textPrimaryColor,
                       ),
                     ),
                     const SizedBox(height: 6),
@@ -507,7 +589,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                       style: GoogleFonts.dmSans(
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
-                        color: AppTheme.textSecondary,
+                        color: _textSecondaryColor,
                       ),
                     ),
                   ],
@@ -543,12 +625,12 @@ class _SettingsScreenState extends State<SettingsScreen>
                 children: [
                   CircleAvatar(
                     radius: 24,
-                    backgroundColor: AppTheme.primaryColor.withOpacity(0.15),
+                    backgroundColor: _accentColor.withOpacity(0.15),
                     child: Text(
                       user.name.isNotEmpty ? user.name[0].toUpperCase() : 'U',
                       style: GoogleFonts.spaceGrotesk(
                         fontWeight: FontWeight.w700,
-                        color: AppTheme.textPrimary,
+                        color: _textPrimaryColor,
                       ),
                     ),
                   ),
@@ -562,7 +644,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                           style: GoogleFonts.spaceGrotesk(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
-                            color: AppTheme.textPrimary,
+                            color: _textPrimaryColor,
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -570,7 +652,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                           user.email,
                           style: GoogleFonts.dmSans(
                             fontSize: 13,
-                            color: AppTheme.textSecondary,
+                            color: _textSecondaryColor,
                           ),
                         ),
                       ],
@@ -618,7 +700,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   icon: const Icon(Icons.edit_outlined, size: 18),
                   label: const Text('Edit profile'),
                   style: TextButton.styleFrom(
-                    foregroundColor: AppTheme.accentColor,
+                    foregroundColor: _accentStrongColor,
                   ),
                 ),
               ),
@@ -737,6 +819,23 @@ class _SettingsScreenState extends State<SettingsScreen>
             onChanged: (value) => _updateSetting('darkMode', value),
           ),
           const SizedBox(height: 12),
+          _buildSwitchTile(
+            icon: Icons.layers_clear_outlined,
+            title: 'Lite mode',
+            subtitle: 'Clear cached data and route snapshots when closed',
+            value: _liteModeEnabled,
+            onChanged: (value) => _toggleLiteMode(value),
+          ),
+          const SizedBox(height: 12),
+          _buildSwitchTile(
+            icon: Icons.delete_sweep_outlined,
+            title: 'Aggressive lite mode',
+            subtitle:
+                'Also clears local activity history on close (unsynced sessions will be lost)',
+            value: _liteModeAggressive,
+            onChanged: (value) => _toggleLiteModeAggressive(value),
+          ),
+          const SizedBox(height: 12),
           _buildDropdownTile(
             icon: Icons.language_outlined,
             title: 'Language',
@@ -813,7 +912,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   icon: const Icon(Icons.system_update_alt),
                   label: const Text('Check for updates'),
                   style: TextButton.styleFrom(
-                    foregroundColor: AppTheme.accentColor,
+                    foregroundColor: _accentStrongColor,
                   ),
                 ),
               ),
@@ -834,7 +933,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             'Delete your account and all stored activity data.',
             style: GoogleFonts.dmSans(
               fontSize: 12,
-              color: AppTheme.textSecondary,
+              color: _textSecondaryColor,
             ),
           ),
           const SizedBox(height: 12),
@@ -898,21 +997,21 @@ class _SettingsScreenState extends State<SettingsScreen>
     final shouldLogout = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
+        backgroundColor: _surfaceColor,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
         ),
         title: Text(
           'Sign out?',
           style: GoogleFonts.spaceGrotesk(
-            color: AppTheme.textPrimary,
+            color: _textPrimaryColor,
             fontWeight: FontWeight.w600,
           ),
         ),
         content: Text(
           'You will need to sign in again to continue tracking.',
           style: GoogleFonts.dmSans(
-            color: AppTheme.textSecondary,
+            color: _textSecondaryColor,
           ),
         ),
         actions: [
@@ -941,14 +1040,14 @@ class _SettingsScreenState extends State<SettingsScreen>
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
+        backgroundColor: _surfaceColor,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
         ),
         title: Text(
           'Delete account?',
           style: GoogleFonts.spaceGrotesk(
-            color: AppTheme.textPrimary,
+            color: _textPrimaryColor,
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -956,7 +1055,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           'This permanently deletes your account and all activity data. '
           'This cannot be undone.',
           style: GoogleFonts.dmSans(
-            color: AppTheme.textSecondary,
+            color: _textSecondaryColor,
           ),
         ),
         actions: [
@@ -999,37 +1098,45 @@ class _SettingsScreenState extends State<SettingsScreen>
     required String title,
     required Widget child,
   }) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: const Color(0xFFE5E7EB),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 16,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: GoogleFonts.spaceGrotesk(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: AppTheme.textPrimary,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              title,
+              style: GoogleFonts.spaceGrotesk(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: _textPrimaryColor,
+              ),
             ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Container(
+                height: 1,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      _borderStrongColor.withOpacity(0.7),
+                      Colors.transparent,
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: _surfaceColor.withOpacity(0.65),
+            borderRadius: BorderRadius.circular(22),
           ),
-          const SizedBox(height: 12),
-          child,
-        ],
-      ),
+          child: child,
+        ),
+      ],
     );
   }
 
@@ -1053,7 +1160,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary,
+                  color: _textPrimaryColor,
                 ),
               ),
               const SizedBox(height: 4),
@@ -1061,7 +1168,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 subtitle,
                 style: GoogleFonts.dmSans(
                   fontSize: 12,
-                  color: AppTheme.textSecondary,
+                  color: _textSecondaryColor,
                 ),
               ),
             ],
@@ -1070,7 +1177,10 @@ class _SettingsScreenState extends State<SettingsScreen>
         Switch.adaptive(
           value: value,
           onChanged: onChanged,
-          activeColor: AppTheme.primaryColor,
+          activeColor: _accentColor,
+          activeTrackColor: _accentColor.withOpacity(0.35),
+          inactiveThumbColor: _textTertiaryColor,
+          inactiveTrackColor: _borderColor.withOpacity(0.6),
         ),
       ],
     );
@@ -1090,9 +1200,8 @@ class _SettingsScreenState extends State<SettingsScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
+        color: _surfaceAltColor.withOpacity(0.55),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
       ),
       child: Row(
         children: [
@@ -1107,7 +1216,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   style: GoogleFonts.spaceGrotesk(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
-                    color: AppTheme.textPrimary,
+                    color: _textPrimaryColor,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -1115,7 +1224,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   subtitle,
                   style: GoogleFonts.dmSans(
                     fontSize: 12,
-                    color: AppTheme.textSecondary,
+                    color: _textSecondaryColor,
                   ),
                 ),
               ],
@@ -1124,10 +1233,10 @@ class _SettingsScreenState extends State<SettingsScreen>
           DropdownButtonHideUnderline(
             child: DropdownButton<String>(
               value: safeValue,
-              dropdownColor: Colors.white,
-              iconEnabledColor: AppTheme.textPrimary,
+              dropdownColor: _surfaceColor,
+              iconEnabledColor: _textPrimaryColor,
               style: GoogleFonts.dmSans(
-                color: AppTheme.textPrimary,
+                color: _textPrimaryColor,
                 fontWeight: FontWeight.w600,
               ),
               items: options
@@ -1154,9 +1263,8 @@ class _SettingsScreenState extends State<SettingsScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
+        color: _surfaceAltColor.withOpacity(0.55),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1166,7 +1274,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             style: GoogleFonts.spaceGrotesk(
               fontSize: 14,
               fontWeight: FontWeight.w600,
-              color: AppTheme.textPrimary,
+              color: _textPrimaryColor,
             ),
           ),
           const SizedBox(height: 4),
@@ -1174,7 +1282,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             'Switch between environments instantly.',
             style: GoogleFonts.dmSans(
               fontSize: 12,
-              color: AppTheme.textSecondary,
+              color: _textSecondaryColor,
             ),
           ),
           const SizedBox(height: 12),
@@ -1190,7 +1298,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             _selectedBackend,
             style: GoogleFonts.dmSans(
               fontSize: 11,
-              color: AppTheme.textTertiary,
+              color: _textTertiaryColor,
             ),
           ),
         ],
@@ -1204,10 +1312,10 @@ class _SettingsScreenState extends State<SettingsScreen>
       label: Text(label),
       selected: isSelected,
       onSelected: (_) => _changeBackend(value),
-      selectedColor: AppTheme.primaryColor,
-      backgroundColor: Colors.white,
+      selectedColor: _accentColor,
+      backgroundColor: _chipColor,
       labelStyle: GoogleFonts.dmSans(
-        color: isSelected ? const Color(0xFF0B1C12) : AppTheme.textPrimary,
+        color: isSelected ? Colors.white : _textPrimaryColor,
         fontWeight: FontWeight.w600,
       ),
     );
@@ -1232,7 +1340,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary,
+                  color: _textPrimaryColor,
                 ),
               ),
               const SizedBox(height: 4),
@@ -1240,7 +1348,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 value,
                 style: GoogleFonts.dmSans(
                   fontSize: 12,
-                  color: AppTheme.textSecondary,
+                  color: _textSecondaryColor,
                 ),
               ),
             ],
@@ -1273,7 +1381,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   style: GoogleFonts.spaceGrotesk(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: AppTheme.textPrimary,
+                    color: _textPrimaryColor,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -1281,13 +1389,13 @@ class _SettingsScreenState extends State<SettingsScreen>
                   value,
                   style: GoogleFonts.dmSans(
                     fontSize: 12,
-                    color: AppTheme.textSecondary,
+                    color: _textSecondaryColor,
                   ),
                 ),
               ],
             ),
           ),
-          const Icon(Icons.chevron_right, color: Color(0xFF94A3B8)),
+          Icon(Icons.chevron_right, color: _textTertiaryColor),
         ],
       ),
     );
@@ -1298,10 +1406,11 @@ class _SettingsScreenState extends State<SettingsScreen>
       width: 36,
       height: 36,
       decoration: BoxDecoration(
-        color: const Color(0xFFF1F5F9),
+        color: _iconBadgeColor.withOpacity(0.7),
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _borderColor.withOpacity(0.8)),
       ),
-      child: Icon(icon, size: 18, color: AppTheme.accentColor),
+      child: Icon(icon, size: 18, color: _accentStrongColor),
     );
   }
 
@@ -1312,21 +1421,21 @@ class _SettingsScreenState extends State<SettingsScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFFF1F5F9),
+        color: _chipColor.withOpacity(0.65),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
+        border: Border.all(color: _chipBorderColor),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: AppTheme.accentColor),
+          Icon(icon, size: 14, color: _accentStrongColor),
           const SizedBox(width: 6),
           Text(
             label,
             style: GoogleFonts.dmSans(
               fontSize: 11,
               fontWeight: FontWeight.w600,
-              color: AppTheme.textPrimary,
+              color: _textPrimaryColor,
             ),
           ),
         ],
@@ -1349,7 +1458,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           style: GoogleFonts.spaceGrotesk(
             fontSize: 14,
             fontWeight: FontWeight.w600,
-            color: AppTheme.textPrimary,
+            color: _textPrimaryColor,
           ),
         ),
         const SizedBox(height: 6),
@@ -1357,7 +1466,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           subtitle,
           style: GoogleFonts.dmSans(
             fontSize: 12,
-            color: AppTheme.textSecondary,
+            color: _textSecondaryColor,
           ),
         ),
       ],

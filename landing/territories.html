@@ -1,0 +1,603 @@
+<!doctype html>
+<html data-wf-domain="plurihive.app" data-wf-page="territories" data-wf-site="plurihive">
+    <head>
+        <meta charset="utf-8" />
+        <title>Plurihive Territories</title>
+        <meta
+            content="Explore captured territories on the Plurihive map."
+            name="description"
+        />
+        <meta content="width=device-width, initial-scale=1" name="viewport" />
+        <link
+            href="https://assets-global.website-files.com/65bf7d3d6bb1c09b8e01a7d0/css/thrive-template.webflow.d602b637b.css"
+            rel="stylesheet"
+            type="text/css"
+        />
+        <link rel="stylesheet" href="styles.css" />
+        <link
+            href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css"
+            rel="stylesheet"
+        />
+        <style>
+            body {
+                -webkit-font-smoothing: antialiased;
+                -moz-osx-font-smoothing: grayscale;
+                text-rendering: optimizeLegibility;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="map" style="position: fixed; inset: 0; background: #e5e7eb;"></div>
+        <div
+            id="searchbar"
+            style="
+                position: fixed;
+                top: 16px;
+                left: 16px;
+                right: 16px;
+                max-width: 640px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                background: #ffffff;
+                border-radius: 28px;
+                padding: 8px 12px;
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+                z-index: 10;
+            "
+        >
+            <button
+                id="menuBtn"
+                type="button"
+                style="
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 50%;
+                    border: 1px solid #e5e7eb;
+                    background: #ffffff;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                "
+                aria-label="Menu"
+                title="Menu"
+            >
+                <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#111827"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                >
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+            </button>
+            <input
+                id="searchInput"
+                type="text"
+                placeholder="Search places or owner"
+                style="
+                    flex: 1;
+                    border: none;
+                    outline: none;
+                    font-size: 14px;
+                "
+            />
+            <button
+                id="searchBtn"
+                type="button"
+                style="
+                    border: none;
+                    background: #0e9fa0;
+                    color: #ffffff;
+                    font-size: 12px;
+                    padding: 8px 14px;
+                    border-radius: 18px;
+                    cursor: pointer;
+                "
+            >
+                Search
+            </button>
+        </div>
+        <div
+            id="status"
+            style="
+                position: fixed;
+                top: 74px;
+                left: 28px;
+                font-size: 12px;
+                color: #6b7280;
+                z-index: 10;
+                background: rgba(255, 255, 255, 0.92);
+                padding: 4px 10px;
+                border-radius: 12px;
+            "
+        ></div>
+        <div
+            id="mapControls"
+            style="
+                position: fixed;
+                right: 16px;
+                bottom: 20px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                z-index: 10;
+            "
+        >
+            <button
+                id="locBtn"
+                type="button"
+                style="
+                    width: 46px;
+                    height: 46px;
+                    border-radius: 50%;
+                    background: #ffffff;
+                    border: 1px solid #e5e7eb;
+                    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                "
+                title="Center on my location"
+                aria-label="Center on my location"
+            >
+                <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#111827"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                >
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <line x1="12" y1="2" x2="12" y2="6"></line>
+                    <line x1="12" y1="18" x2="12" y2="22"></line>
+                    <line x1="2" y1="12" x2="6" y2="12"></line>
+                    <line x1="18" y1="12" x2="22" y2="12"></line>
+                </svg>
+                    </button>
+            <button
+                id="toggle3dBtn"
+                type="button"
+                style="
+                    width: 46px;
+                    height: 46px;
+                    border-radius: 50%;
+                    background: #ffffff;
+                    border: 1px solid #e5e7eb;
+                    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+                    cursor: pointer;
+                    font-weight: 600;
+                    font-size: 12px;
+                    color: #111827;
+                "
+                title="Toggle 3D"
+                aria-label="Toggle 3D"
+            >
+                3D
+            </button>
+            <button
+                id="styleBtn"
+                type="button"
+                style="
+                    width: 46px;
+                    height: 46px;
+                    border-radius: 50%;
+                    background: #ffffff;
+                    border: 1px solid #e5e7eb;
+                    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+                    cursor: pointer;
+                    font-weight: 600;
+                    font-size: 11px;
+                    color: #111827;
+                "
+                title="Toggle map style"
+                aria-label="Toggle map style"
+            >
+                SAT
+            </button>
+        </div>
+        <a
+            href="index.html"
+            id="branding"
+            style="
+                position: fixed;
+                left: 16px;
+                bottom: 16px;
+                font-size: 14px;
+                font-weight: 600;
+                color: #0f172a;
+                background: rgba(255, 255, 255, 0.95);
+                padding: 8px 16px;
+                border-radius: 12px;
+                z-index: 10;
+                text-decoration: none;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            "
+        >
+            Plurihive
+        </a>
+
+        <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+        <script>
+            const params = new URLSearchParams(window.location.search);
+            const statusEl = document.getElementById("status");
+            const host = window.location.hostname;
+            const inferredApi =
+                window.location.protocol === "file:"
+                    ? "http://localhost:3000"
+                    : host === "localhost" || host === "127.0.0.1"
+                    ? `http://${host}:3000`
+                    : window.location.origin;
+            const API_BASE = params.get("api") || inferredApi;
+            const MAPBOX_TOKEN =
+                params.get("token") ||
+                "pk.eyJ1Ijoic3lsaWNhYWkiLCJhIjoiY21rd3UwcGtvMDFmdDNkcjBhdzc4ejEyaCJ9.yKkADo8N37hnMeJS44VBRQ";
+            const DEFAULT_RADIUS_KM = 5;
+
+            let map;
+            let lastTerritories = [];
+            let is3d = true;
+            let currentStyle = "mapbox://styles/mapbox/streets-v12";
+            const satelliteStyle = "mapbox://styles/mapbox/satellite-streets-v12";
+
+            function setStatus(message) {
+                statusEl.textContent = message || "";
+            }
+
+            function formatTimestamp(value) {
+                if (!value) return "Unknown";
+                const date = new Date(value);
+                if (Number.isNaN(date.getTime())) return value;
+                return date.toLocaleString();
+            }
+
+            function openTerritoryPopup(props, lngLat) {
+                const ownerName =
+                    props.ownerName || props.ownerEmail || props.ownerId || "Unknown";
+                const ownerSub =
+                    props.ownerName && props.ownerEmail ? props.ownerEmail : "";
+                const capturedAt = formatTimestamp(props.capturedAt);
+                const captureCount = props.captureCount || 1;
+                const avatar = props.ownerAvatar
+                    ? `<img src="${props.ownerAvatar}" alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover;margin-right:8px;" />`
+                    : "";
+                const html = `
+                    <div style="display:flex;align-items:center;margin-bottom:6px;">
+                        ${avatar}
+                        <div>
+                            <div style="font-weight:600;">${ownerName}</div>
+                            ${ownerSub ? `<div style="font-size:11px;color:#6b7280;">${ownerSub}</div>` : ""}
+                        </div>
+                    </div>
+                    <div style="font-size:12px;">
+                        Captured: ${capturedAt}<br/>
+                        Captures: ${captureCount}
+                    </div>
+                `;
+                new mapboxgl.Popup().setLngLat(lngLat).setHTML(html).addTo(map);
+            }
+
+            function normalizeTerritories(data) {
+                if (Array.isArray(data)) return data;
+                if (data && Array.isArray(data.territories)) return data.territories;
+                if (data && Array.isArray(data.data)) return data.data;
+                return [];
+            }
+
+            function mapboxPoint(lat, lng) {
+                return [Number(lng), Number(lat)];
+            }
+
+            function buildGeoJson(territories) {
+                const polygonFeatures = [];
+                const pointFeatures = [];
+
+                territories.forEach((territory) => {
+                    const owner = territory.owner || {};
+                    const ownerName = owner.name || "";
+                    const ownerEmail = owner.email || "";
+                    const ownerAvatar =
+                        owner.profilePicture || owner.avatarImageUrl || "";
+                    const route = Array.isArray(territory.routePoints)
+                        ? territory.routePoints
+                        : [];
+                    const routeCoords = route
+                        .map((point) => mapboxPoint(point.lat, point.lng))
+                        .filter(
+                            (coord) =>
+                                Number.isFinite(coord[0]) &&
+                                Number.isFinite(coord[1]),
+                        );
+
+                    if (routeCoords.length >= 3) {
+                        const first = routeCoords[0];
+                        const last = routeCoords[routeCoords.length - 1];
+                        if (first[0] !== last[0] || first[1] !== last[1]) {
+                            routeCoords.push(first);
+                        }
+                        polygonFeatures.push({
+                            type: "Feature",
+                            properties: {
+                                id: territory.id,
+                                ownerId: territory.ownerId,
+                                ownerName: ownerName,
+                                ownerEmail: ownerEmail,
+                                ownerAvatar: ownerAvatar,
+                                capturedAt: territory.capturedAt,
+                                captureCount: territory.captureCount,
+                            },
+                            geometry: {
+                                type: "Polygon",
+                                coordinates: [routeCoords],
+                            },
+                        });
+                        return;
+                    }
+
+                    const lat = Number(territory.latitude);
+                    const lng = Number(territory.longitude);
+                    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                        pointFeatures.push({
+                            type: "Feature",
+                            properties: {
+                                id: territory.id,
+                                ownerId: territory.ownerId,
+                                ownerName: ownerName,
+                                ownerEmail: ownerEmail,
+                                ownerAvatar: ownerAvatar,
+                                capturedAt: territory.capturedAt,
+                            },
+                            geometry: {
+                                type: "Point",
+                                coordinates: [lng, lat],
+                            },
+                        });
+                    }
+                });
+
+                return {
+                    polygons: {
+                        type: "FeatureCollection",
+                        features: polygonFeatures,
+                    },
+                    points: {
+                        type: "FeatureCollection",
+                        features: pointFeatures,
+                    },
+                };
+            }
+
+            function updateSources(territories) {
+                lastTerritories = territories || [];
+                const geo = buildGeoJson(territories);
+
+                if (!map.getSource("territory-polygons")) {
+                    map.addSource("territory-polygons", {
+                        type: "geojson",
+                        data: geo.polygons,
+                    });
+                    map.addLayer({
+                        id: "territory-fill",
+                        type: "fill",
+                        source: "territory-polygons",
+                        paint: {
+                            "fill-color": "#0E9FA0",
+                            "fill-opacity": 0.35,
+                        },
+                    });
+                    map.addLayer({
+                        id: "territory-outline",
+                        type: "line",
+                        source: "territory-polygons",
+                        paint: {
+                            "line-color": "#0B7C7C",
+                            "line-width": 2,
+                        },
+                    });
+
+                    map.on("click", "territory-fill", (event) => {
+                        const feature = event.features && event.features[0];
+                        if (!feature) return;
+                        const props = feature.properties || {};
+                        openTerritoryPopup(props, event.lngLat);
+                    });
+                    map.on("mouseenter", "territory-fill", () => {
+                        map.getCanvas().style.cursor = "pointer";
+                    });
+                    map.on("mouseleave", "territory-fill", () => {
+                        map.getCanvas().style.cursor = "";
+                    });
+                } else {
+                    map.getSource("territory-polygons").setData(geo.polygons);
+                }
+
+                if (!map.getSource("territory-points")) {
+                    map.addSource("territory-points", {
+                        type: "geojson",
+                        data: geo.points,
+                    });
+                    map.addLayer({
+                        id: "territory-points",
+                        type: "circle",
+                        source: "territory-points",
+                        paint: {
+                            "circle-color": "#0E9FA0",
+                            "circle-radius": 5,
+                            "circle-stroke-width": 1,
+                            "circle-stroke-color": "#ffffff",
+                        },
+                    });
+                    map.on("click", "territory-points", (event) => {
+                        const feature = event.features && event.features[0];
+                        if (!feature) return;
+                        const props = feature.properties || {};
+                        openTerritoryPopup(props, event.lngLat);
+                    });
+                } else {
+                    map.getSource("territory-points").setData(geo.points);
+                }
+
+                fitBoundsToData(geo);
+            }
+
+            function fitBoundsToData(geo) {
+                const bounds = new mapboxgl.LngLatBounds();
+                let hasPoints = false;
+
+                geo.polygons.features.forEach((feature) => {
+                    feature.geometry.coordinates[0].forEach((coord) => {
+                        bounds.extend(coord);
+                        hasPoints = true;
+                    });
+                });
+                geo.points.features.forEach((feature) => {
+                    bounds.extend(feature.geometry.coordinates);
+                    hasPoints = true;
+                });
+
+                if (hasPoints) {
+                    map.fitBounds(bounds, { padding: 80, maxZoom: 16 });
+                }
+            }
+
+            async function fetchTerritories(lat, lng) {
+                if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+                    setStatus(
+                        "Location permission is needed to load territories.",
+                    );
+                    return;
+                }
+                const url = `${API_BASE}/territories/nearby?lat=${lat}&lng=${lng}&radius=${DEFAULT_RADIUS_KM}`;
+                setStatus("Loading nearby territories...");
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`Request failed: ${response.status}`);
+                }
+                const data = await response.json();
+                const territories = normalizeTerritories(data);
+                setStatus(`${territories.length} territories loaded`);
+                updateSources(territories);
+            }
+
+            function initMap() {
+                if (!MAPBOX_TOKEN || MAPBOX_TOKEN.indexOf("pk.") !== 0) {
+                    setStatus("Mapbox token missing.");
+                    return;
+                }
+                mapboxgl.accessToken = MAPBOX_TOKEN;
+                map = new mapboxgl.Map({
+                    container: "map",
+                    style: currentStyle,
+                    center: [77.2, 28.6],
+                    zoom: 11,
+                    pitch: is3d ? 60 : 0,
+                });
+                map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
+
+                map.on("load", requestLocation);
+                map.on("style.load", () => {
+                    if (lastTerritories.length) {
+                        updateSources(lastTerritories);
+                    }
+                    if (is3d) {
+                        map.easeTo({ pitch: 60, duration: 0 });
+                    }
+                });
+            }
+
+            function apply3dState() {
+                if (!map) return;
+                map.easeTo({ pitch: is3d ? 60 : 0, bearing: is3d ? map.getBearing() : 0, duration: 500 });
+            }
+
+            function toggleStyle() {
+                if (!map) return;
+                currentStyle = currentStyle === satelliteStyle
+                    ? "mapbox://styles/mapbox/streets-v12"
+                    : satelliteStyle;
+                map.setStyle(currentStyle);
+            }
+
+            function updateControlLabels() {
+                const toggle3dBtn = document.getElementById("toggle3dBtn");
+                const styleBtn = document.getElementById("styleBtn");
+                if (toggle3dBtn) {
+                    toggle3dBtn.textContent = is3d ? "3D" : "2D";
+                }
+                if (styleBtn) {
+                    styleBtn.textContent = currentStyle === satelliteStyle ? "MAP" : "SAT";
+                }
+            }
+
+            function requestLocation() {
+                if (!navigator.geolocation) {
+                    setStatus("Location not supported in this browser.");
+                    return;
+                }
+                setStatus("Requesting location...");
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                        const lat = pos.coords.latitude;
+                        const lng = pos.coords.longitude;
+                        map.easeTo({ center: [lng, lat], zoom: 14 });
+                        fetchTerritories(lat, lng).catch((err) => {
+                            setStatus(err.message);
+                        });
+                    },
+                    () => {
+                        setStatus(
+                            "Location permission is needed to load territories.",
+                        );
+                    },
+                    { enableHighAccuracy: true, timeout: 8000 },
+                );
+            }
+
+            const searchBtn = document.getElementById("searchBtn");
+            const searchInput = document.getElementById("searchInput");
+            if (searchBtn) {
+                searchBtn.addEventListener("click", () => {
+                    const query = searchInput ? searchInput.value.trim() : "";
+                    if (!query) {
+                        requestLocation();
+                        return;
+                    }
+                    setStatus("Search is not enabled yet. Centering on you.");
+                    requestLocation();
+                });
+            }
+
+            const toggle3dBtn = document.getElementById("toggle3dBtn");
+            const styleBtn = document.getElementById("styleBtn");
+            if (toggle3dBtn) {
+                toggle3dBtn.addEventListener("click", () => {
+                    is3d = !is3d;
+                    apply3dState();
+                    updateControlLabels();
+                });
+            }
+            if (styleBtn) {
+                styleBtn.addEventListener("click", () => {
+                    toggleStyle();
+                    updateControlLabels();
+                });
+            }
+
+            document.getElementById("locBtn").addEventListener("click", () => {
+                requestLocation();
+            });
+
+            updateControlLabels();
+            initMap();
+        </script>
+    </body>
+</html>

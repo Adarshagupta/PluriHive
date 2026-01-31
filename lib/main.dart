@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/di/injection_container.dart';
 import 'core/theme/app_theme.dart';
@@ -9,7 +10,9 @@ import 'core/services/update_service.dart';
 import 'core/services/code_push_service.dart';
 import 'core/navigation/app_route_observer.dart';
 import 'core/services/home_widget_service.dart';
+import 'core/services/shortcut_service.dart';
 import 'core/services/mapbox_config.dart';
+import 'core/services/user_data_cleanup_service.dart';
 import 'features/tracking/data/datasources/activity_local_data_source.dart';
 import 'features/auth/presentation/bloc/auth_bloc.dart';
 import 'features/auth/presentation/pages/splash_screen.dart';
@@ -34,6 +37,7 @@ void main() async {
 
   // Warm home widget data from cache on launch
   await HomeWidgetService.syncFromCache();
+  await ShortcutService.initialize();
 
   // Seed widget with last activity if available
   try {
@@ -68,6 +72,12 @@ class TerritoryFitnessApp extends StatefulWidget {
 
 class _TerritoryFitnessAppState extends State<TerritoryFitnessApp>
     with WidgetsBindingObserver {
+  static const String _liteModeKey = 'lite_mode_enabled';
+  static const String _liteModeAggressiveKey = 'lite_mode_aggressive';
+  static const Duration _liteModeCooldown = Duration(seconds: 10);
+  DateTime? _lastLiteClearAt;
+  bool _liteClearInProgress = false;
+
   @override
   void initState() {
     super.initState();
@@ -91,6 +101,32 @@ class _TerritoryFitnessAppState extends State<TerritoryFitnessApp>
     if (state == AppLifecycleState.resumed && mounted) {
       UpdateService().checkForUpdateIfNeeded(context);
       CodePushService().checkForUpdateIfNeeded(context);
+    }
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _maybeClearLiteCache();
+    }
+  }
+
+  Future<void> _maybeClearLiteCache() async {
+    if (_liteClearInProgress) return;
+    final now = DateTime.now();
+    if (_lastLiteClearAt != null &&
+        now.difference(_lastLiteClearAt!) < _liteModeCooldown) {
+      return;
+    }
+    try {
+      final prefs = getIt<SharedPreferences>();
+      final enabled = prefs.getBool(_liteModeKey) ?? false;
+      if (!enabled) return;
+      _liteClearInProgress = true;
+      final aggressive = prefs.getBool(_liteModeAggressiveKey) ?? false;
+      await UserDataCleanupService.clearLiteCache(clearActivities: aggressive);
+      _lastLiteClearAt = DateTime.now();
+    } catch (e) {
+      // Avoid crashing on lifecycle callbacks.
+    } finally {
+      _liteClearInProgress = false;
     }
   }
 

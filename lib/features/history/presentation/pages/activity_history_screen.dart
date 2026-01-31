@@ -2,15 +2,17 @@ import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../../../../core/models/geo_types.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../../tracking/domain/entities/activity.dart';
-import '../../../tracking/data/datasources/activity_local_data_source.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import 'package:intl/intl.dart';
 import '../../../../core/widgets/skeleton.dart';
+import '../../../../core/widgets/route_preview.dart';
+import '../../../../core/theme/app_theme.dart';
+import '../../../tracking/data/datasources/activity_local_data_source.dart';
 
 class ActivityHistoryScreen extends StatefulWidget {
   const ActivityHistoryScreen({super.key});
@@ -21,12 +23,12 @@ class ActivityHistoryScreen extends StatefulWidget {
 
 class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
   late final TrackingApiService _apiService;
-  final ActivityLocalDataSource _localDataSource = ActivityLocalDataSourceImpl();
+  final ActivityLocalDataSource _activityLocalDataSource =
+      ActivityLocalDataSourceImpl();
   List<Activity> _activities = [];
   bool _isLoading = true;
-  bool _hasLocalActivities = false;
   bool _isRefreshingActivities = false;
-  final Map<String, GoogleMapController> _mapControllers = {};
+  bool _isOffline = false;
   
   @override
   void initState() {
@@ -36,62 +38,114 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
   }
   
   Future<void> _loadActivities() async {
-    await _loadActivitiesFromLocal();
+    setState(() {
+      _isLoading = true;
+      _isOffline = false;
+    });
+    await _loadLocalActivities();
     _refreshActivitiesFromBackend();
   }
 
-  Future<void> _loadActivitiesFromLocal() async {
+  Future<void> _loadLocalActivities() async {
     try {
-      final localActivities = await _localDataSource.getAllActivities();
-      localActivities.sort((a, b) => b.startTime.compareTo(a.startTime));
+      final localActivities = await _activityLocalDataSource.getAllActivities();
       if (!mounted) return;
       setState(() {
         _activities = localActivities;
-        _isLoading = localActivities.isEmpty;
+        _isLoading = false;
       });
-      _hasLocalActivities = localActivities.isNotEmpty;
-      print('Loaded ${localActivities.length} activities from local storage');
     } catch (e) {
-      print('Error loading local activities: $e');
-      if (mounted) {
-        setState(() => _isLoading = true);
-      }
+      if (!mounted) return;
+      setState(() {
+        _activities = [];
+        _isLoading = false;
+      });
     }
   }
 
   Future<void> _refreshActivitiesFromBackend() async {
     if (_isRefreshingActivities) return;
-    _isRefreshingActivities = true;
+    if (mounted) {
+      setState(() => _isRefreshingActivities = true);
+    } else {
+      _isRefreshingActivities = true;
+    }
     try {
       final activitiesData = await _apiService.getUserActivities();
       final backendActivities =
           activitiesData.map((data) => Activity.fromJson(data)).toList();
-      backendActivities.sort((a, b) => b.startTime.compareTo(a.startTime));
-
-      if (backendActivities.isNotEmpty) {
-        for (final activity in backendActivities) {
-          await _localDataSource.saveActivity(activity);
-        }
-      }
+      final localActivities = await _activityLocalDataSource.getAllActivities();
+      final mergedActivities =
+          _mergeActivities(backendActivities, localActivities);
+      mergedActivities.sort((a, b) => b.startTime.compareTo(a.startTime));
 
       if (!mounted) return;
-      if (backendActivities.isNotEmpty || !_hasLocalActivities) {
-        setState(() {
-          _activities = backendActivities;
-          _isLoading = false;
-        });
-      } else {
-        setState(() => _isLoading = false);
-      }
+      setState(() {
+        _activities = mergedActivities;
+        _isLoading = false;
+        _isOffline = false;
+      });
     } catch (e) {
       print('Could not load activities from backend: $e');
-      if (mounted && !_hasLocalActivities) {
-        setState(() => _isLoading = false);
-      }
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _isOffline = true;
+      });
     } finally {
-      _isRefreshingActivities = false;
+      if (mounted) {
+        setState(() => _isRefreshingActivities = false);
+      } else {
+        _isRefreshingActivities = false;
+      }
     }
   }
+
+  List<Activity> _mergeActivities(
+    List<Activity> backend,
+    List<Activity> local,
+  ) {
+    if (local.isEmpty) return backend;
+    final existingKeys = <String>{};
+    for (final activity in backend) {
+      _addActivityKeys(existingKeys, activity);
+    }
+    final merged = <Activity>[...backend];
+    for (final activity in local) {
+      if (_hasMatchingKey(existingKeys, activity)) {
+        continue;
+      }
+      merged.add(activity);
+    }
+    return merged;
+  }
+
+  void _addActivityKeys(Set<String> keys, Activity activity) {
+    final clientId = activity.clientId;
+    if (clientId != null && clientId.isNotEmpty) {
+      keys.add('c:$clientId');
+    }
+    if (activity.id.isNotEmpty) {
+      keys.add('i:${activity.id}');
+    }
+    final timeKey =
+        't:${activity.startTime.millisecondsSinceEpoch}-${activity.distanceMeters.round()}';
+    keys.add(timeKey);
+  }
+
+  bool _hasMatchingKey(Set<String> keys, Activity activity) {
+    final clientId = activity.clientId;
+    if (clientId != null && clientId.isNotEmpty && keys.contains('c:$clientId')) {
+      return true;
+    }
+    if (activity.id.isNotEmpty && keys.contains('i:${activity.id}')) {
+      return true;
+    }
+    final timeKey =
+        't:${activity.startTime.millisecondsSinceEpoch}-${activity.distanceMeters.round()}';
+    return keys.contains(timeKey);
+  }
+
 
   double get _totalDistance => _activities.fold(0.0, (sum, a) => sum + a.distanceMeters / 1000);
   int get _totalActivities => _activities.length;
@@ -107,41 +161,66 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Container(
-                        padding: EdgeInsets.all(32),
-                        decoration: BoxDecoration(
-                          color: Color(0xFFF3F4F6),
-                          shape: BoxShape.circle,
+                      if (_isRefreshingActivities) ...[
+                        const SizedBox(
+                          width: 52,
+                          height: 52,
+                          child: CircularProgressIndicator(strokeWidth: 3),
                         ),
-                        child: Icon(
-                          Icons.directions_run,
-                          size: 80,
-                          color: Color(0xFF9CA3AF),
+                        const SizedBox(height: 20),
+                        Text(
+                          'Syncing activities...',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary,
+                          ),
                         ),
-                      ),
-                      SizedBox(height: 24),
-                      Text(
-                        'No activities yet',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF1A1A1A),
+                        SizedBox(height: 8),
+                        Text(
+                          'Pulling your history from the server',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: AppTheme.textSecondary,
+                          ),
                         ),
-                      ),
-                      SizedBox(height: 8),
-                      Text(
-                        'Start tracking your runs to see them here',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Color(0xFF6B7280),
+                      ] else ...[
+                        Container(
+                          padding: EdgeInsets.all(32),
+                          decoration: BoxDecoration(
+                            color: Color(0xFFF3F4F6),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.directions_run,
+                            size: 80,
+                            color: AppTheme.textTertiary,
+                          ),
                         ),
-                      ),
+                        SizedBox(height: 24),
+                        Text(
+                          'No activities yet',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary,
+                          ),
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          'Start tracking your runs to see them here',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 )
               : RefreshIndicator(
                   onRefresh: _loadActivities,
-                  color: Color(0xFF667EEA),
+                  color: AppTheme.primaryColor,
                   child: CustomScrollView(
                     slivers: [
                       // Compact Professional Header
@@ -159,16 +238,16 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
                               style: TextStyle(
                                 fontSize: 22,
                                 fontWeight: FontWeight.w700,
-                                color: Color(0xFF1A1A1A),
+                                color: AppTheme.textPrimary,
                               ),
                             ),
                             SizedBox(height: 4),
                             Text(
-                              '$_totalActivities workouts • ${_totalDistance.toStringAsFixed(1)} km',
+                              '$_totalActivities workouts - ${_totalDistance.toStringAsFixed(1)} km${_isOffline ? ' - Offline' : ''}',
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w500,
-                                color: Color(0xFF6B7280),
+                                color: AppTheme.textSecondary,
                               ),
                             ),
                           ],
@@ -183,9 +262,6 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
                               activity: activity,
                               isFirst: index == 0,
                               onShare: () => _shareActivity(activity),
-                              onMapCreated: (controller) {
-                                _mapControllers[activity.id] = controller;
-                              },
                             );
                           },
                           childCount: _activities.length,
@@ -222,50 +298,22 @@ Started at $time
 ''';
     
     try {
-      // Try to capture map screenshot
-      final mapController = _mapControllers[activity.id];
-      if (mapController != null) {
-        // Show loading indicator
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation(Colors.white),
-                  ),
-                ),
-                SizedBox(width: 12),
-                Text('Preparing map screenshot...'),
-              ],
-            ),
-            duration: Duration(seconds: 2),
-          ),
+      final snapshot = activity.routeMapSnapshot;
+      if (snapshot != null && snapshot.isNotEmpty) {
+        final imageBytes = base64Decode(snapshot);
+        final tempDir = await getTemporaryDirectory();
+        final file =
+            File('${tempDir.path}/plurihive_activity_${activity.id}.png');
+        await file.writeAsBytes(imageBytes);
+
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          text: shareText,
+          subject: 'My PluriHive Activity',
         );
-        
-        await Future.delayed(Duration(milliseconds: 500));
-        
-        final imageBytes = await mapController.takeSnapshot();
-        if (imageBytes != null) {
-          // Save to temporary file
-          final tempDir = await getTemporaryDirectory();
-          final file = File('${tempDir.path}/plurihive_activity_${activity.id}.png');
-          await file.writeAsBytes(imageBytes);
-          
-          // Share with image
-          await Share.shareXFiles(
-            [XFile(file.path)],
-            text: shareText,
-            subject: 'My PluriHive Activity',
-          );
-          
-          // Clean up
-          await file.delete();
-          return;
-        }
+
+        await file.delete();
+        return;
       }
     } catch (e) {
       print('Error capturing map screenshot: $e');
@@ -330,13 +378,11 @@ class _ActivityItem extends StatelessWidget {
   final Activity activity;
   final bool isFirst;
   final VoidCallback onShare;
-  final Function(GoogleMapController) onMapCreated;
   
   const _ActivityItem({
     required this.activity,
     this.isFirst = false,
     required this.onShare,
-    required this.onMapCreated,
   });
 
   @override
@@ -354,7 +400,7 @@ class _ActivityItem extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
-                color: Color(0xFF6B7280),
+                color: AppTheme.textSecondary,
                 letterSpacing: 0.5,
               ),
             ),
@@ -364,7 +410,6 @@ class _ActivityItem extends StatelessWidget {
             _Route3DMap(
               activity: activity,
               onShare: onShare,
-              onMapCreated: onMapCreated,
             ),
           // Additional stats section
           Container(
@@ -414,147 +459,44 @@ class _ActivityItem extends StatelessWidget {
   }
 }
 
-// 3D Map Widget with Route Visualization
-class _Route3DMap extends StatefulWidget {
+// Route Preview Widget with Route Visualization
+class _Route3DMap extends StatelessWidget {
   final Activity activity;
   final VoidCallback onShare;
-  final Function(GoogleMapController) onMapCreated;
   
   const _Route3DMap({
     required this.activity,
     required this.onShare,
-    required this.onMapCreated,
   });
 
   @override
-  State<_Route3DMap> createState() => _Route3DMapState();
-}
-
-class _Route3DMapState extends State<_Route3DMap> {
-  GoogleMapController? _mapController;
-  Set<Polyline> _polylines = {};
-  Set<Marker> _markers = {};
-
-  @override
-  void initState() {
-    super.initState();
-    _setupMap();
-  }
-
-  void _setupMap() {
-    final route = widget.activity.route;
-    if (route.isEmpty) return;
-
-    // Create polyline for the route
-    _polylines.add(
-      Polyline(
-        polylineId: PolylineId('route'),
-        points: route.map((p) => LatLng(p.latitude, p.longitude)).toList(),
-        color: Color(0xFF667EEA),
-        width: 5,
-        startCap: Cap.roundCap,
-        endCap: Cap.roundCap,
-      ),
-    );
-
-    // Add start marker
-    _markers.add(
-      Marker(
-        markerId: MarkerId('start'),
-        position: LatLng(route.first.latitude, route.first.longitude),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-        infoWindow: InfoWindow(title: 'Start'),
-      ),
-    );
-
-    // Add end marker
-    _markers.add(
-      Marker(
-        markerId: MarkerId('end'),
-        position: LatLng(route.last.latitude, route.last.longitude),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-        infoWindow: InfoWindow(title: 'End'),
-      ),
-    );
-  }
-
-  void _onMapCreated(GoogleMapController controller) {
-    _mapController = controller;
-    widget.onMapCreated(controller);
-    _animate3DView();
-  }
-
-  void _animate3DView() async {
-    await Future.delayed(Duration(milliseconds: 500));
-    if (_mapController == null) return;
-
-    final route = widget.activity.route;
-    if (route.isEmpty) return;
-
-    // Calculate bounds
-    double minLat = route.first.latitude;
-    double maxLat = route.first.latitude;
-    double minLng = route.first.longitude;
-    double maxLng = route.first.longitude;
-
-    for (var pos in route) {
-      if (pos.latitude < minLat) minLat = pos.latitude;
-      if (pos.latitude > maxLat) maxLat = pos.latitude;
-      if (pos.longitude < minLng) minLng = pos.longitude;
-      if (pos.longitude > maxLng) maxLng = pos.longitude;
-    }
-
-    final center = LatLng((minLat + maxLat) / 2, (minLng + maxLng) / 2);
-
-    // Animate to 3D view with tilt and bearing
-    await _mapController!.animateCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: center,
-          zoom: 16.5, // Zoomed out to show more of the route
-          tilt: 45.0, // 3D tilt angle
-          bearing: 30.0, // Rotate view
-        ),
-      ),
-    );
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (widget.activity.route.isEmpty) {
+    if (activity.route.isEmpty) {
       return Container(
         height: 300,
         color: Color(0xFFF3F4F6),
         child: Center(
-          child: Icon(Icons.map, size: 48, color: Color(0xFF9CA3AF)),
+          child: Icon(Icons.map, size: 48, color: AppTheme.textTertiary),
         ),
       );
     }
 
-    final route = widget.activity.route;
-    final center = LatLng(route.first.latitude, route.first.longitude);
+    final route = activity.route
+        .map((p) => LatLng(p.latitude, p.longitude))
+        .toList();
+    final snapshot = activity.routeMapSnapshot;
+    final snapshotBytes =
+        snapshot != null && snapshot.isNotEmpty ? base64Decode(snapshot) : null;
 
     return Stack(
       children: [
         Container(
           height: 300,
-          child: GoogleMap(
-            onMapCreated: _onMapCreated,
-            initialCameraPosition: CameraPosition(
-              target: center,
-              zoom: 13.5,
-              tilt: 45.0,
-              bearing: 30.0,
-            ),
-            polylines: _polylines,
-            markers: _markers,
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled: false,
-            mapToolbarEnabled: false,
-            rotateGesturesEnabled: true,
-            scrollGesturesEnabled: true,
-            tiltGesturesEnabled: true,
-            zoomGesturesEnabled: true,
+          child: RoutePreview(
+            routePoints: route,
+            snapshotBytes: snapshotBytes,
+            lineColor: AppTheme.primaryColor,
+            lineWidth: 4,
           ),
         ),
         // Gradient overlay at bottom
@@ -585,11 +527,11 @@ class _Route3DMapState extends State<_Route3DMap> {
             children: [
               // Share button
               GestureDetector(
-                onTap: widget.onShare,
+                onTap: onShare,
                 child: Container(
                   padding: EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Color(0xFF667EEA).withOpacity(0.9),
+                    color: AppTheme.primaryColor.withOpacity(0.9),
                     shape: BoxShape.circle,
                     border: Border.all(color: Colors.white.withOpacity(0.3), width: 2),
                     boxShadow: [
@@ -618,7 +560,7 @@ class _Route3DMapState extends State<_Route3DMap> {
                     Icon(Icons.access_time, size: 14, color: Colors.white),
                     SizedBox(width: 6),
                     Text(
-                      DateFormat('h:mm a').format(widget.activity.startTime),
+                      DateFormat('h:mm a').format(activity.startTime),
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
@@ -638,7 +580,7 @@ class _Route3DMapState extends State<_Route3DMap> {
           child: Container(
             padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: Color(0xFF667EEA).withOpacity(0.9),
+              color: AppTheme.primaryColor.withOpacity(0.9),
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: Colors.white.withOpacity(0.3)),
             ),
@@ -670,19 +612,19 @@ class _Route3DMapState extends State<_Route3DMap> {
             children: [
               _OverlayStat(
                 icon: Icons.straighten,
-                value: '${(widget.activity.distanceMeters / 1000).toStringAsFixed(2)}',
+                value: '${(activity.distanceMeters / 1000).toStringAsFixed(2)}',
                 label: 'km',
               ),
               Container(width: 1, height: 40, color: Colors.white.withOpacity(0.3)),
               _OverlayStat(
                 icon: Icons.timer,
-                value: _formatDuration(widget.activity.duration),
+                value: _formatDuration(activity.duration),
                 label: '',
               ),
               Container(width: 1, height: 40, color: Colors.white.withOpacity(0.3)),
               _OverlayStat(
                 icon: Icons.speed,
-                value: '${widget.activity.averageSpeed.toStringAsFixed(1)}',
+                value: '${activity.averageSpeed.toStringAsFixed(1)}',
                 label: 'km/h',
               ),
             ],
@@ -701,11 +643,6 @@ class _Route3DMapState extends State<_Route3DMap> {
     return '${minutes}m';
   }
 
-  @override
-  void dispose() {
-    _mapController?.dispose();
-    super.dispose();
-  }
 }
 
 class _OverlayStat extends StatelessWidget {
@@ -771,14 +708,14 @@ class _CompactStat extends StatelessWidget {
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w700,
-            color: Color(0xFF1A1A1A),
+            color: AppTheme.textPrimary,
           ),
         ),
         Text(
           label,
           style: TextStyle(
             fontSize: 10,
-            color: Color(0xFF6B7280),
+            color: AppTheme.textSecondary,
           ),
         ),
       ],

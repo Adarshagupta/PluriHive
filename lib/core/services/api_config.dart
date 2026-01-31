@@ -2,7 +2,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
   // Backend URLs
-  static const String localUrl = 'https://plurihub.sylicaai.com';
+  static const String localUrl = 'http://10.1.80.42:3000';
   static const String productionUrl = 'https://plurihub.sylicaai.com:443';
 
   static const String _backendPrefKey = 'selected_backend_url';
@@ -48,12 +48,23 @@ class ApiConfig {
   /// WebSocket base URL derived from the current API baseUrl.
   /// Ensures ws:// for http:// and wss:// for https://.
   static String get wsUrl {
-    final uri = Uri.parse(_sanitizeBaseUrl(baseUrl));
+    final normalized = _sanitizeBaseUrl(baseUrl);
+    Uri uri;
+    try {
+      uri = Uri.parse(normalized);
+    } catch (_) {
+      uri = Uri.parse('https://plurihub.sylicaai.com');
+    }
     final isSecure = uri.scheme == 'https';
     final scheme = isSecure ? 'wss' : 'ws';
-    final hasValidPort = uri.hasPort && uri.port != 0;
-    final port = hasValidPort ? uri.port : (isSecure ? 443 : 80);
-    return uri.replace(scheme: scheme, port: port).toString();
+    final port = (uri.hasPort && uri.port != 0) ? uri.port : (isSecure ? 443 : 80);
+    var host = uri.host;
+    if (host.isEmpty) {
+      final trimmed =
+          normalized.replaceFirst(RegExp(r'^https?://', caseSensitive: false), '');
+      host = trimmed.split('/').first.split(':').first;
+    }
+    return '$scheme://$host:$port';
   }
 
   static String _sanitizeBaseUrl(String url) {

@@ -9,6 +9,7 @@ class Territory extends Equatable {
   final int points;
   final String? ownerId; // User who owns this territory
   final String? ownerName; // Owner's display name
+  final String? name; // Public territory name
   final int captureCount; // How many times it's been captured
   final DateTime? lastBattleAt; // Last time it was contested
   
@@ -21,12 +22,13 @@ class Territory extends Equatable {
     required this.points,
     this.ownerId,
     this.ownerName,
+    this.name,
     this.captureCount = 1,
     this.lastBattleAt,
   });
   
   @override
-  List<Object?> get props => [hexId, centerLat, centerLng, boundary, capturedAt, points, ownerId, ownerName, captureCount, lastBattleAt];
+  List<Object?> get props => [hexId, centerLat, centerLng, boundary, capturedAt, points, ownerId, ownerName, name, captureCount, lastBattleAt];
   
   // Helper: Check if this territory is owned by the current user
   bool isOwnedBy(String userId) => ownerId == userId;
@@ -42,6 +44,7 @@ class Territory extends Equatable {
       points: points + 25, // Bonus points for recapture
       ownerId: newOwnerId,
       ownerName: newOwnerName,
+      name: null,
       captureCount: captureCount + 1,
       lastBattleAt: DateTime.now(),
     );
@@ -56,6 +59,7 @@ class Territory extends Equatable {
     'points': points,
     'ownerId': ownerId,
     'ownerName': ownerName,
+    'name': name,
     'captureCount': captureCount,
     'lastBattleAt': lastBattleAt?.toIso8601String(),
   };
@@ -69,6 +73,7 @@ class Territory extends Equatable {
     points: json['points'],
     ownerId: json['ownerId'],
     ownerName: json['ownerName'],
+    name: json['name'],
     captureCount: json['captureCount'] ?? 1,
     lastBattleAt: json['lastBattleAt'] != null ? DateTime.parse(json['lastBattleAt']) : null,
   );

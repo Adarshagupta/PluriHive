@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
@@ -11,10 +13,12 @@ import '../../../tracking/presentation/bloc/location_bloc.dart';
 import '../../../../core/services/persistent_step_counter_service.dart';
 import '../../../../core/services/strict_permission_service.dart';
 import '../../../../core/services/pip_service.dart';
+import '../../../../core/services/shortcut_service.dart';
 import 'home_tab.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  final int? initialTabIndex;
+  const DashboardScreen({super.key, this.initialTabIndex});
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -30,6 +34,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _permissionPromptVisible = false;
   late final PageController _pageController;
   late final List<Widget> _screens;
+  late final StreamSubscription<int> _shortcutSubscription;
   static const List<_NavItem> _navItems = [
     _NavItem(index: 0, icon: Icons.cottage_rounded),
     _NavItem(index: 1, icon: Icons.explore_rounded),
@@ -43,6 +48,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _currentIndex = _normalizeIndex(widget.initialTabIndex);
     _pageController = PageController(initialPage: _currentIndex);
     _screens = [
       HomeTab(onNavigateToTab: (index) {
@@ -55,6 +61,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       LeaderboardScreen(),
       ProfileScreen(),
     ];
+    _shortcutSubscription = ShortcutService.tabStream.listen(_handleShortcut);
     _initializePipListener();
     _requestLocationPermissions();
     _pipService.disablePip();
@@ -69,6 +76,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     WidgetsBinding.instance.removeObserver(this);
     _pipService.removePipModeListener(_handlePipModeChange);
     _pageController.dispose();
+    _shortcutSubscription.cancel();
     super.dispose();
   }
 
@@ -133,6 +141,17 @@ class _DashboardScreenState extends State<DashboardScreen>
         _isInPipMode = inPip;
       });
     }
+    _syncPipForIndex(_currentIndex);
+  }
+
+  int _normalizeIndex(int? index) {
+    if (index == null) return 0;
+    if (index < 0 || index > 4) return 0;
+    return index;
+  }
+
+  void _handleShortcut(int index) {
+    _setCurrentIndex(index);
   }
 
   void _handlePipModeChange(bool isInPip, String screen) {
@@ -143,9 +162,21 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
+  void _syncPipForIndex(int index) {
+    final trackingActive = context.read<LocationBloc>().state is LocationTracking;
+    if (index != 1) {
+      if (trackingActive) {
+        _pipService.enablePipForScreen('map');
+      } else {
+        _pipService.disablePip();
+      }
+    } else {
+      _pipService.enablePipForScreen('map');
+    }
+  }
+
   void _setCurrentIndex(int index) {
     if (_currentIndex == index) return;
-    final trackingActive = context.read<LocationBloc>().state is LocationTracking;
 
     setState(() {
       _currentIndex = index;
@@ -162,15 +193,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       );
     }
 
-    if (index != 1) {
-      if (trackingActive) {
-        _pipService.enablePipForScreen('map');
-      } else {
-        _pipService.disablePip();
-      }
-    } else {
-      _pipService.enablePipForScreen('map');
-    }
+    _syncPipForIndex(index);
   }
 
   Future<void> _initializePersistentStepCounter() async {
@@ -346,23 +369,13 @@ class _DashboardScreenState extends State<DashboardScreen>
                   : const PageScrollPhysics(),
               onPageChanged: (index) {
                 if (_currentIndex == index) return;
-                final trackingActive =
-                    context.read<LocationBloc>().state is LocationTracking;
                 setState(() {
                   _currentIndex = index;
                   if (index != 1) {
                     _isInPipMode = false;
                   }
                 });
-                if (index != 1) {
-                  if (trackingActive) {
-                    _pipService.enablePipForScreen('map');
-                  } else {
-                    _pipService.disablePip();
-                  }
-                } else {
-                  _pipService.enablePipForScreen('map');
-                }
+                _syncPipForIndex(index);
               },
               children: _screens,
             ),

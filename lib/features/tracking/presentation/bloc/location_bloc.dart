@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../../../../core/models/geo_types.dart';
 import '../../domain/entities/position.dart';
 import '../../domain/usecases/start_tracking.dart';
 import '../../domain/usecases/stop_tracking.dart';

@@ -8,7 +8,7 @@ A fully functional Flutter prototype of a gamified health app with:
 
 1. **GPS Tracking System**
    - Real-time location updates using Geolocator
-   - Route visualization on Google Maps
+   - Route visualization on Mapbox
    - Distance calculation
    - Start/Stop tracking controls
 
@@ -90,7 +90,7 @@ territory_fitness/
 ### 🎨 UI Components
 
 1. **Map Screen** (Main)
-   - Full-screen Google Maps view
+   - Full-screen Mapbox view
    - Real-time location marker
    - Route polyline (blue)
    - Territory polygons (purple)
@@ -113,7 +113,7 @@ territory_fitness/
 | Category | Package | Version |
 |----------|---------|---------|
 | **State Management** | flutter_bloc | 8.1.3 |
-| **Maps** | google_maps_flutter | 2.5.0 |
+| **Maps** | mapbox_maps_flutter | 2.0.0 |
 | **Location** | geolocator | 10.1.0 |
 | **Storage** | hive_flutter | 1.1.0 |
 | **Storage** | shared_preferences | 2.2.2 |
@@ -201,10 +201,11 @@ The app tracks:
 
 ### 🔑 Setup Requirements
 
-1. **Google Maps API Key** (Required)
-   - Get from Google Cloud Console
-   - Enable Maps SDK for Android/iOS
-   - Add to AndroidManifest.xml and iOS AppDelegate
+1. **Mapbox Tokens** (Required)
+   - Create a Mapbox access token for runtime maps
+   - Create a Mapbox downloads token for Android SDK artifacts
+   - Provide the access token via `--dart-define=MAPBOX_ACCESS_TOKEN=...`
+   - Add the downloads token to `android/gradle.properties`
 
 2. **Physical Device or Emulator**
    - Location services enabled
@@ -223,9 +224,9 @@ cd "c:\Users\adasg\OneDrive\Pictures\Rugged"
 # 2. Get dependencies (already done)
 flutter pub get
 
-# 3. Add your Google Maps API key
-# Edit android/app/src/main/AndroidManifest.xml
-# Edit ios/Runner/AppDelegate.swift
+# 3. Provide Mapbox tokens
+# flutter run --dart-define=MAPBOX_ACCESS_TOKEN=YOUR_MAPBOX_ACCESS_TOKEN
+# Android: set MAPBOX_DOWNLOADS_TOKEN in android/gradle.properties
 
 # 4. Run the app
 flutter run
@@ -314,6 +315,6 @@ The app is ready to:
 - ✅ Track calories & distance
 - ✅ Persist data locally
 
-**Next Step**: Get your Google Maps API key and run the app!
+**Next Step**: Add your Mapbox tokens and run the app!
 
 See [SETUP.md](SETUP.md) for detailed setup instructions.

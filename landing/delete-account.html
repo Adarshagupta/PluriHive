@@ -41,41 +41,79 @@
         padding: 18px 20px;
         margin-top: 16px;
       }
+      .danger-zone {
+        background: var(--accent);
+        color: var(--card);
+      }
+      .card-title {
+        margin: 0;
+        font-size: 20px;
+      }
+      .card-text {
+        margin: 0;
+        font-size: 16px;
+      }
+      .danger-title {
+        color: var(--accent);
+      }
+      .danger-text {
+        color: var(--card);
+      }
       .steps {
         margin: 0;
         padding-left: 18px;
       }
-      .danger {
-        color: var(--accent);
-        font-weight: 700;
+      footer {
+        margin-top: 40px;
+        padding: 20px;
+        border-top: 1px solid #e2e8f0;
       }
     </style>
   </head>
   <body>
-    <header>
-      <h1>Delete your Plurihive account</h1>
-    </header>
-    <main>
-      <div class="card">
-        <p>
-          You can delete your account directly in the app. This removes your
-          profile and activity data from our servers.
+    <nav class="nav">
+      <div class="nav-container">
+        <a href="index.html" class="nav-logo">Plurihive</a>
+        <div class="nav-links">
+          <a href="index.html" class="nav-link">Home</a>
+          <a href="territories.html" class="nav-link">Territories</a>
+          <a href="privacy.html" class="nav-link">Privacy</a>
+          <a href="terms.html" class="nav-link">Terms</a>
+        </div>
+      </div>
+    </nav>
+
+    <main class="container">
+      <header class="page-header">
+        <h1>Delete Account</h1>
+        <p>We're sorry to see you go. Here's how to delete your Plurihive account.</p>
+      </header>
+      <div class="card danger-zone">
+        <h3 class="card-title danger-title">Delete in the App</h3>
+        <p class="card-text danger-text">
+          You can delete your account directly in the app. This removes your profile and activity data from our servers.
         </p>
         <ol class="steps">
           <li>Open the Plurihive app.</li>
           <li>Go to Settings.</li>
-          <li>Scroll to <span class="danger">Danger zone</span>.</li>
+          <li>Scroll to <span class="danger-title">Danger zone</span>.</li>
           <li>Tap <strong>Delete account</strong> and confirm.</li>
         </ol>
       </div>
+
       <div class="card">
-        <p>
-          If you cannot access the app, email
-          <a href="mailto:support@territoryfitness.com">support@territoryfitness.com</a>
-          with the subject "Account Deletion" and we will verify your identity
-          and process the request.
+        <h3 class="card-title">Need Help?</h3>
+        <p class="card-text">
+          If you cannot access the app, email <a href="mailto:support@territoryfitness.com">support@territoryfitness.com</a> with the subject "Account Deletion" and we will verify your identity and process the request.
         </p>
       </div>
+
+      <footer class="page-footer">
+        <a href="index.html">Home</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="terms.html">Terms</a>
+        <p style="margin-top: 12px;">2026 Plurihive. All rights reserved.</p>
+      </footer>
     </main>
   </body>
 </html>

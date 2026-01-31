@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../../../core/services/tracking_api_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
 import '../../../../core/widgets/skeleton.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../data/datasources/activity_local_data_source.dart';
 import '../../domain/entities/activity.dart';
 
@@ -16,12 +17,15 @@ class ActivityHistorySheet extends StatefulWidget {
 
 class _ActivityHistorySheetState extends State<ActivityHistorySheet> {
   final _trackingService = di.getIt<TrackingApiService>();
-  final ActivityLocalDataSource _localDataSource = ActivityLocalDataSourceImpl();
+  final ActivityLocalDataSource _activityLocalDataSource =
+      ActivityLocalDataSourceImpl();
   List<Map<String, dynamic>> _activities = [];
   bool _isLoading = true;
   String? _error;
+  bool _isOffline = false;
+  bool _isSyncing = false;
 
-  static const Color _accent = Color(0xFF16A34A);
+  static const Color _accent = AppTheme.primaryColor;
 
   @override
   void initState() {
@@ -30,38 +34,133 @@ class _ActivityHistorySheetState extends State<ActivityHistorySheet> {
   }
 
   Future<void> _loadActivities() async {
-    try {
-      final activities = await _trackingService.getUserActivities(limit: 100);
-      for (final data in activities) {
-        try {
-          final activity = Activity.fromJson(data);
-          await _localDataSource.saveActivity(activity);
-        } catch (e) {
-          print('[warn] Failed to cache activity locally: $e');
-        }
-      }
+    if (mounted) {
       setState(() {
-        _activities = activities;
+        _isLoading = true;
+        _isOffline = false;
+        _error = null;
+      });
+    } else {
+      _isLoading = true;
+      _isOffline = false;
+      _error = null;
+    }
+    await _loadLocalActivities();
+    _refreshActivitiesFromBackend();
+  }
+
+  Future<void> _loadLocalActivities() async {
+    try {
+      final localActivities = await _activityLocalDataSource.getAllActivities();
+      if (!mounted) return;
+      setState(() {
+        _activities = localActivities.map(_activityToMap).toList();
         _isLoading = false;
+        _error = null;
       });
     } catch (e) {
-      try {
-        final localActivities = await _localDataSource.getAllActivities();
-        setState(() {
-          _activities =
-              localActivities.map((activity) => activity.toJson()).toList();
-          _isLoading = false;
-          _error = null;
-        });
-        return;
-      } catch (localError) {
-        print('[warn] Failed to load local activities: $localError');
-      }
+      if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _activities = [];
         _isLoading = false;
+        _error = e.toString();
       });
     }
+  }
+
+  Future<void> _refreshActivitiesFromBackend() async {
+    if (_isSyncing) return;
+    if (mounted) {
+      setState(() => _isSyncing = true);
+    } else {
+      _isSyncing = true;
+    }
+    try {
+      final activities = await _trackingService.getUserActivities(limit: 100);
+      final backendActivities =
+          activities.map((data) => Activity.fromJson(data)).toList();
+      final localActivities = await _activityLocalDataSource.getAllActivities();
+      final merged = _mergeActivities(backendActivities, localActivities);
+      merged.sort((a, b) => b.startTime.compareTo(a.startTime));
+      if (!mounted) return;
+      setState(() {
+        _activities = merged.map(_activityToMap).toList();
+        _isOffline = false;
+        _error = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isOffline = true;
+        _error = _activities.isEmpty ? e.toString() : null;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
+          _isLoading = false;
+        });
+      } else {
+        _isSyncing = false;
+        _isLoading = false;
+      }
+    }
+  }
+
+  List<Activity> _mergeActivities(
+    List<Activity> backend,
+    List<Activity> local,
+  ) {
+    if (local.isEmpty) return backend;
+    final existingKeys = <String>{};
+    for (final activity in backend) {
+      _addActivityKeys(existingKeys, activity);
+    }
+    final merged = <Activity>[...backend];
+    for (final activity in local) {
+      if (_hasMatchingKey(existingKeys, activity)) {
+        continue;
+      }
+      merged.add(activity);
+    }
+    return merged;
+  }
+
+  void _addActivityKeys(Set<String> keys, Activity activity) {
+    final clientId = activity.clientId;
+    if (clientId != null && clientId.isNotEmpty) {
+      keys.add('c:$clientId');
+    }
+    if (activity.id.isNotEmpty) {
+      keys.add('i:${activity.id}');
+    }
+    final timeKey =
+        't:${activity.startTime.millisecondsSinceEpoch}-${activity.distanceMeters.round()}';
+    keys.add(timeKey);
+  }
+
+  bool _hasMatchingKey(Set<String> keys, Activity activity) {
+    final clientId = activity.clientId;
+    if (clientId != null && clientId.isNotEmpty && keys.contains('c:$clientId')) {
+      return true;
+    }
+    if (activity.id.isNotEmpty && keys.contains('i:${activity.id}')) {
+      return true;
+    }
+    final timeKey =
+        't:${activity.startTime.millisecondsSinceEpoch}-${activity.distanceMeters.round()}';
+    return keys.contains(timeKey);
+  }
+
+  Map<String, dynamic> _activityToMap(Activity activity) {
+    final map = activity.toJson();
+    map['routePoints'] = activity.route.map((p) => p.toJson()).toList();
+    map['duration'] = '${activity.duration.inSeconds} seconds';
+    map['startTime'] = activity.startTime.toIso8601String();
+    if (activity.endTime != null) {
+      map['endTime'] = activity.endTime!.toIso8601String();
+    }
+    return map;
   }
 
   String _formatDuration(String duration) {
@@ -281,7 +380,7 @@ class _ActivityHistorySheetState extends State<ActivityHistorySheet> {
                                     ),
                                   ),
                                   Text(
-                                    '${_activities.length} ${_activities.length == 1 ? 'activity' : 'activities'}',
+                                    '${_activities.length} ${_activities.length == 1 ? 'activity' : 'activities'}${_isOffline ? ' - Offline' : ''}',
                                     style: GoogleFonts.dmSans(
                                       fontSize: 13,
                                       color: const Color(0xFF64748B),
@@ -468,29 +567,55 @@ class _ActivityHistorySheetState extends State<ActivityHistorySheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.directions_run,
-              size: 64,
-              color: Color(0xFF9CA3AF),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No activities yet',
-              style: GoogleFonts.spaceGrotesk(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: const Color(0xFF0F172A),
+            if (_isSyncing) ...[
+              const SizedBox(
+                width: 46,
+                height: 46,
+                child: CircularProgressIndicator(strokeWidth: 3),
               ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Start your first workout to see it here!',
-              textAlign: TextAlign.center,
-              style: GoogleFonts.dmSans(
-                fontSize: 14,
-                color: const Color(0xFF64748B),
+              const SizedBox(height: 16),
+              Text(
+                'Syncing activities...',
+                style: GoogleFonts.spaceGrotesk(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: const Color(0xFF0F172A),
+                ),
               ),
-            ),
+              const SizedBox(height: 8),
+              Text(
+                'Pulling your history from the server',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.dmSans(
+                  fontSize: 14,
+                  color: const Color(0xFF64748B),
+                ),
+              ),
+            ] else ...[
+              const Icon(
+                Icons.directions_run,
+                size: 64,
+                color: Color(0xFF9CA3AF),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'No activities yet',
+                style: GoogleFonts.spaceGrotesk(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: const Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Start your first workout to see it here!',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.dmSans(
+                  fontSize: 14,
+                  color: const Color(0xFF64748B),
+                ),
+              ),
+            ],
           ],
         ),
       ),

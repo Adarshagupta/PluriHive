@@ -55,7 +55,7 @@ class PatternPainter extends CustomPainter {
   }
 
   void _drawHexagonGrid(Canvas canvas, Size size, Paint paint) {
-    paint.color = AppTheme.primaryColor.withOpacity(0.15);
+    paint.color = AppTheme.primaryColor.withOpacity(0.09);
     paint.style = PaintingStyle.stroke;
     paint.strokeWidth = 1.5;
     
@@ -87,7 +87,7 @@ class PatternPainter extends CustomPainter {
   }
 
   void _drawGridPattern(Canvas canvas, Size size, Paint paint) {
-    paint.color = AppTheme.primaryColor.withOpacity(0.08);
+    paint.color = AppTheme.primaryColor.withOpacity(0.05);
     paint.style = PaintingStyle.stroke;
     paint.strokeWidth = 1.0;
     
@@ -113,7 +113,7 @@ class PatternPainter extends CustomPainter {
   }
 
   void _drawCornerAccents(Canvas canvas, Size size, Paint paint) {
-    paint.color = AppTheme.primaryColor.withOpacity(0.12);
+    paint.color = AppTheme.primaryColor.withOpacity(0.08);
     paint.style = PaintingStyle.stroke;
     paint.strokeWidth = 2.0;
     
@@ -158,7 +158,7 @@ class PatternPainter extends CustomPainter {
 
   void _drawWaveLines(Canvas canvas, Size size, Paint paint) {
     paint
-      ..color = AppTheme.primaryColor.withOpacity(0.1)
+      ..color = AppTheme.primaryColor.withOpacity(0.06)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0;
 

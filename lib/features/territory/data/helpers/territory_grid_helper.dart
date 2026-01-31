@@ -1,6 +1,6 @@
 import 'dart:math';
 import '../../../../core/algorithms/geospatial_algorithms.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../../../../core/models/geo_types.dart';
 import '../../domain/entities/territory.dart';
 
 /// ============================================================================

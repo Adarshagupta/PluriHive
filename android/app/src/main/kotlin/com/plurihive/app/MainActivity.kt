@@ -1,4 +1,4 @@
-package com.example.territory_fitness
+package com.plurihive.app
 
 import android.app.PictureInPictureParams
 import android.content.res.Configuration

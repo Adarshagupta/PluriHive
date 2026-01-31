@@ -1,7 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:health/health.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../../../../core/services/google_fit_service.dart';
 import '../../../../core/di/injection_container.dart' as di;
+
+const Color _surfaceColor = Color(0xFFF8FEFE);
+const Color _borderColor = Color(0xFFCFE8E8);
+const Color _iconBadgeColor = Color(0xFFE1F6F6);
+const Color _accentColor = Color(0xFF0E9FA0);
+const Color _textPrimaryColor = Color(0xFF0B2D30);
+const Color _textSecondaryColor = Color(0xFF4A6A6D);
+const Color _textTertiaryColor = Color(0xFF6B8B8E);
 
 class GoogleFitCard extends StatefulWidget {
   final EdgeInsetsGeometry margin;
@@ -105,18 +114,13 @@ class _GoogleFitCardState extends State<GoogleFitCard> {
 
   @override
   Widget build(BuildContext context) {
+    final statusColor = _isConnected ? _accentColor : _textTertiaryColor;
     return Container(
       margin: widget.margin,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _surfaceColor.withOpacity(0.7),
         borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 15,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        border: Border.all(color: _borderColor.withOpacity(0.8)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -126,13 +130,14 @@ class _GoogleFitCardState extends State<GoogleFitCard> {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: _isConnected
-                    ? const Color(0xFF4CAF50).withOpacity(0.1)
-                    : Colors.grey.shade100,
+                    ? _accentColor.withOpacity(0.14)
+                    : _iconBadgeColor.withOpacity(0.9),
                 borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _borderColor.withOpacity(0.8)),
               ),
               child: Icon(
                 Icons.fitness_center,
-                color: _isConnected ? const Color(0xFF4CAF50) : Colors.grey,
+                color: statusColor,
                 size: 24,
               ),
             ),
@@ -141,22 +146,20 @@ class _GoogleFitCardState extends State<GoogleFitCard> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     'Health Connect',
-                    style: TextStyle(
+                    style: GoogleFonts.spaceGrotesk(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
-                      color: Colors.black87,
+                      color: _textPrimaryColor,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     _isConnected ? 'Connected' : 'Not connected',
-                    style: TextStyle(
+                    style: GoogleFonts.dmSans(
                       fontSize: 14,
-                      color: _isConnected
-                          ? const Color(0xFF4CAF50)
-                          : Colors.grey.shade600,
+                      color: _isConnected ? _accentColor : _textSecondaryColor,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
@@ -177,7 +180,7 @@ class _GoogleFitCardState extends State<GoogleFitCard> {
                     _connectGoogleFit();
                   }
                 },
-                activeColor: const Color(0xFF4CAF50),
+                activeColor: _accentColor,
               ),
           ],
         ),

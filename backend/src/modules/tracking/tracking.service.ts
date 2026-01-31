@@ -218,18 +218,9 @@ export class TrackingService {
         take: limit,
       });
 
-      // Manually serialize to avoid circular references
-      const serialized = activities.map((activity) => ({
-        ...activity,
-        user: activity.user
-          ? {
-              id: activity.user.id,
-              name: activity.user.name,
-              email: activity.user.email,
-              profilePicture: activity.user.profilePicture,
-            }
-          : null,
-      }));
+      const serialized = activities.map((activity) =>
+        this.serializeActivity(activity),
+      );
 
       const ttlSeconds = this.redisService.getDefaultTtlSeconds();
       if (ttlSeconds > 0) {
@@ -245,8 +236,54 @@ export class TrackingService {
       take: limit,
     });
 
-    // Manually serialize to avoid circular references
-    return activities.map((activity) => ({
+    return activities.map((activity) => this.serializeActivity(activity));
+  }
+
+  async getActivityById(id: string): Promise<Activity> {
+    return this.activityRepository.findOne({ where: { id } });
+  }
+
+  async getActivityByIdForUser(userId: string, id: string): Promise<any> {
+    if (this.redisService.isEnabled()) {
+      const version = await this.redisService.getVersion(
+        this.getActivitiesVersionKey(userId),
+      );
+      const cacheKey = `activity:${userId}:${id}:v${version}`;
+      const cached = await this.redisService.getJson<any>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const activity = await this.activityRepository.findOne({
+        where: { id, userId },
+        relations: ["user"],
+      });
+      if (!activity) {
+        throw new NotFoundException("Activity not found");
+      }
+      const serialized = this.serializeActivity(activity);
+      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
+      if (ttlSeconds > 0) {
+        await this.redisService.setJson(cacheKey, serialized, ttlSeconds);
+      }
+      return serialized;
+    }
+
+    const activity = await this.activityRepository.findOne({
+      where: { id, userId },
+      relations: ["user"],
+    });
+    if (!activity) {
+      throw new NotFoundException("Activity not found");
+    }
+    return this.serializeActivity(activity);
+  }
+
+  private getActivitiesVersionKey(userId: string) {
+    return `cache:activities:${userId}:version`;
+  }
+
+  private serializeActivity(activity: Activity) {
+    return {
       ...activity,
       user: activity.user
         ? {
@@ -256,47 +293,7 @@ export class TrackingService {
             profilePicture: activity.user.profilePicture,
           }
         : null,
-    }));
-  }
-
-  async getActivityById(id: string): Promise<Activity> {
-    return this.activityRepository.findOne({ where: { id } });
-  }
-
-  async getActivityByIdForUser(userId: string, id: string): Promise<Activity> {
-    if (this.redisService.isEnabled()) {
-      const version = await this.redisService.getVersion(
-        this.getActivitiesVersionKey(userId),
-      );
-      const cacheKey = `activity:${userId}:${id}:v${version}`;
-      const cached = await this.redisService.getJson<Activity>(cacheKey);
-      if (cached) {
-        return cached;
-      }
-      const activity = await this.activityRepository.findOne({
-        where: { id, userId },
-      });
-      if (!activity) {
-        throw new NotFoundException("Activity not found");
-      }
-      const ttlSeconds = this.redisService.getDefaultTtlSeconds();
-      if (ttlSeconds > 0) {
-        await this.redisService.setJson(cacheKey, activity, ttlSeconds);
-      }
-      return activity;
-    }
-
-    const activity = await this.activityRepository.findOne({
-      where: { id, userId },
-    });
-    if (!activity) {
-      throw new NotFoundException("Activity not found");
-    }
-    return activity;
-  }
-
-  private getActivitiesVersionKey(userId: string) {
-    return `cache:activities:${userId}:version`;
+    };
   }
 
   private calculateRouteDistance(

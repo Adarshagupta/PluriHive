@@ -5,7 +5,7 @@
 [![Flutter](https://img.shields.io/badge/Flutter-02569B?style=for-the-badge&logo=flutter&logoColor=white)](https://flutter.dev)
 [![NestJS](https://img.shields.io/badge/NestJS-E0234E?style=for-the-badge&logo=nestjs&logoColor=white)](https://nestjs.com)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white)](https://postgresql.org)
-[![Google Maps](https://img.shields.io/badge/Google_Maps-4285F4?style=for-the-badge&logo=google-maps&logoColor=white)](https://maps.google.com)
+[![Mapbox](https://img.shields.io/badge/Mapbox-000000?style=for-the-badge&logo=mapbox&logoColor=white)](https://www.mapbox.com)
 
 ## 🎯 Problem Statement
 
@@ -28,7 +28,7 @@ Think **Pokémon GO meets Risk** - but for fitness enthusiasts.
 ### 🗺️ Real-Time Territory Capture
 - **GPS-based tracking** with sub-5-meter accuracy
 - **Hexagonal grid system** overlays the real world
-- **Live territory visualization** on Google Maps
+- **Live territory visualization** on Mapbox
 - **Route shape preservation** - your exact walking path becomes your territory
 
 ### 🏆 Competitive Gameplay
@@ -70,7 +70,7 @@ Think **Pokémon GO meets Risk** - but for fitness enthusiasts.
 | **Flutter 3.x** | Cross-platform UI framework |
 | **Dart** | Primary programming language |
 | **BLoC Pattern** | State management with flutter_bloc |
-| **Google Maps Flutter** | Interactive map rendering |
+| **Mapbox Maps Flutter** | Interactive map rendering |
 | **Geolocator** | GPS location tracking |
 | **Sensors Plus** | Accelerometer/gyroscope for motion detection |
 | **Pedometer** | Step counting |
@@ -91,7 +91,8 @@ Think **Pokémon GO meets Risk** - but for fitness enthusiasts.
 | Technology | Purpose |
 |------------|---------|
 | **Render** | Backend hosting (plurihubb.onrender.com) |
-| **Google Cloud** | OAuth & Maps API |
+| **Google Cloud** | OAuth (Google Sign-In) |
+| **Mapbox** | Maps platform |
 | **Git** | Version control |
 | **GitHub** | Repository hosting |
 
@@ -158,7 +159,8 @@ Think **Pokémon GO meets Risk** - but for fitness enthusiasts.
 - **Node.js** 16.x or higher
 - **PostgreSQL** 14.x or higher
 - **Android Studio** (for mobile development)
-- **Google Cloud Console** account (for Maps & OAuth)
+- **Google Cloud Console** account (for OAuth)
+- **Mapbox** account (for maps)
 
 ### 1️⃣ Clone Repository
 ```bash
@@ -211,18 +213,18 @@ ifconfig  # Mac/Linux
 flutter run
 ```
 
-### 4️⃣ Google Cloud Setup
+### 4️⃣ Mapbox + Google Sign-In Setup
 
-1. **Enable APIs:**
-   - Google Maps SDK for Android
-   - Google Sign-In API
+1. **Mapbox access:**
+   - Create a Mapbox access token
+   - Add your downloads token to `android/gradle.properties` as `MAPBOX_DOWNLOADS_TOKEN=...`
+   - Provide the access token at runtime: `--dart-define=MAPBOX_ACCESS_TOKEN=...`
 
-2. **Create OAuth 2.0 credentials:**
+2. **Google Sign-In:**
+   - Enable the Google Sign-In API
+   - Create OAuth 2.0 credentials
    - Add SHA-1 fingerprint from your Android keystore
    - Configure authorized redirect URIs
-
-3. **Get API Keys:**
-   - Maps API key → `android/app/src/main/AndroidManifest.xml`
    - OAuth Client ID → Backend `.env`
 
 ---
@@ -512,7 +514,7 @@ MIT License - See [LICENSE](LICENSE) file for details
 ## 🙏 Acknowledgments
 
 - **Uber H3** for hexagonal grid library
-- **Google Maps Platform** for mapping infrastructure
+- **Mapbox platform** for mapping infrastructure
 - **Flutter Community** for excellent packages
 - **NestJS Team** for the robust backend framework
 

@@ -1,15 +1,14 @@
-package com.example.territory_fitness
+package com.plurihive.app
 
-import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.content.Context
-import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.os.Build
+import android.net.Uri
 import android.util.Base64
 import android.widget.RemoteViews
+import es.antonborri.home_widget.HomeWidgetLaunchIntent
 import es.antonborri.home_widget.HomeWidgetProvider
 
 class TerritoryWidgetProvider : HomeWidgetProvider() {
@@ -43,21 +42,10 @@ class TerritoryWidgetProvider : HomeWidgetProvider() {
                 ?: fallbackPrefs.getString("${FLUTTER_PREFIX}widget_map_snapshot", null)
                 ?: fallbackPrefs.getString("${FLUTTER_PREFIX}offline_map_snapshot", null)
 
-        val launchIntent = context.packageManager
-            .getLaunchIntentForPackage(context.packageName)
-            ?: Intent(context, MainActivity::class.java)
-        val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                PendingIntent.FLAG_IMMUTABLE
-            } else {
-                0
-            }
-
-        val pendingIntent = PendingIntent.getActivity(
+        val pendingIntent = HomeWidgetLaunchIntent.getActivity(
             context,
-            0,
-            launchIntent,
-            pendingFlags,
+            MainActivity::class.java,
+            Uri.parse("plurihive://home"),
         )
 
         appWidgetIds.forEach { widgetId ->

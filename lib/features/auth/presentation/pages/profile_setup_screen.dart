@@ -6,6 +6,7 @@ import '../../../../core/widgets/auth_backdrop.dart';
 import '../../../../core/services/settings_api_service.dart';
 import '../../../../core/di/injection_container.dart';
 import '../../../dashboard/presentation/pages/main_dashboard.dart';
+import '../../../../core/services/shortcut_service.dart';
 import '../bloc/auth_bloc.dart';
 
 class ProfileSetupScreen extends StatefulWidget {
@@ -181,7 +182,11 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
           if (state.user.hasCompletedOnboarding) {
             setState(() => _isLoading = false);
             Navigator.of(context).pushAndRemoveUntil(
-              MaterialPageRoute(builder: (_) => const DashboardScreen()),
+              MaterialPageRoute(
+                builder: (_) => DashboardScreen(
+                  initialTabIndex: ShortcutService.consumeInitialTab(),
+                ),
+              ),
               (route) => false,
             );
           }

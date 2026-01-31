@@ -66,14 +66,58 @@
         font-size: 13px;
         color: var(--muted);
       }
+      .nav {
+        background: var(--card);
+        border-bottom: 1px solid #e2e8f0;
+        padding: 18px 20px;
+      }
+      .nav-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .nav-logo {
+        font-size: 18px;
+        font-weight: 600;
+        text-decoration: none;
+        color: var(--ink);
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+      }
+      .nav-link {
+        margin-left: 20px;
+        text-decoration: none;
+        color: var(--muted);
+      }
+      .nav-link.active {
+        color: var(--accent);
+      }
+      .page-header {
+        padding: 18px 20px;
+      }
     </style>
   </head>
   <body>
-    <header>
-      <h1>Terms of Service</h1>
-      <div class="badge">Last updated: January 29, 2026</div>
-    </header>
-    <main>
+    <nav class="nav">
+      <div class="nav-container">
+        <a href="index.html" class="nav-logo">Plurihive</a>
+        <div class="nav-links">
+          <a href="index.html" class="nav-link">Home</a>
+          <a href="territories.html" class="nav-link">Territories</a>
+          <a href="privacy.html" class="nav-link">Privacy</a>
+          <a href="terms.html" class="nav-link active">Terms</a>
+        </div>
+      </div>
+    </nav>
+
+    <main class="container">
+      <header class="page-header">
+        <h1>Terms of Service</h1>
+        <p>These Terms of Service govern your access to and use of the Plurihive app and services.</p>
+        <span class="badge">Last updated: January 29, 2026</span>
+      </header>
       <div class="card">
         <p>
           These Terms of Service govern your access to and use of the Plurihive
@@ -81,58 +125,55 @@
         </p>
       </div>
 
-      <h2>Account eligibility</h2>
+      <h2 class="section-title">Account Eligibility</h2>
       <div class="card">
-        <p>
-          You must provide accurate information and keep your account secure.
-          You are responsible for all activity under your account.
+        <p class="card-text">
+          You must provide accurate information and keep your account secure. You are responsible for all activity under your account.
         </p>
       </div>
 
-      <h2>Acceptable use</h2>
+      <h2 class="section-title">Acceptable Use</h2>
       <div class="card">
-        <ul>
+        <ul class="feature-list">
           <li>Do not misuse the app, APIs, or services.</li>
           <li>Do not attempt to interfere with other users' activity.</li>
           <li>Do not upload illegal or harmful content.</li>
         </ul>
       </div>
 
-      <h2>Gameplay and rewards</h2>
+      <h2 class="section-title">Gameplay and Rewards</h2>
       <div class="card">
-        <p>
-          Points, territories, and badges are provided for entertainment. We
-          may adjust gameplay balance, rewards, or availability at any time.
+        <p class="card-text">
+          Points, territories, and badges are provided for entertainment. We may adjust gameplay balance, rewards, or availability at any time.
         </p>
       </div>
 
-      <h2>Termination</h2>
+      <h2 class="section-title">Termination</h2>
       <div class="card">
-        <p>
-          You may delete your account at any time in Settings. We may suspend or
-          terminate accounts that violate these terms.
+        <p class="card-text">
+          You may delete your account at any time in Settings. We may suspend or terminate accounts that violate these terms.
         </p>
       </div>
 
-      <h2>Disclaimers</h2>
+      <h2 class="section-title">Disclaimers</h2>
       <div class="card">
-        <p>
-          The app is provided "as is" without warranties. We are not liable for
-          indirect or consequential damages to the extent permitted by law.
+        <p class="card-text">
+          The app is provided "as is" without warranties. We are not liable for indirect or consequential damages to the extent permitted by law.
         </p>
       </div>
 
-      <h2>Contact</h2>
+      <h2 class="section-title">Contact</h2>
       <div class="card">
-        <p>
-          Questions about these terms can be sent to
-          <a href="mailto:support@territoryfitness.com">support@territoryfitness.com</a>.
+        <p class="card-text">
+          Questions about these terms can be sent to <a href="mailto:support@territoryfitness.com">support@territoryfitness.com</a>.
         </p>
       </div>
 
-      <footer>
-        These terms may be updated over time. Continued use means acceptance of
-        the latest version.
+      <footer class="page-footer">
+        <a href="index.html">Home</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="terms.html">Terms</a>
+        <p style="margin-top: 12px;">2026 Plurihive. All rights reserved.</p>
       </footer>
     </main>
   </body>

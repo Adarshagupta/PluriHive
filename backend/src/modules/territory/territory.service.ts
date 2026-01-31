@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { Territory } from './territory.entity';
@@ -77,6 +82,7 @@ export class TerritoryService {
           existing.points = 0;
           existing.lastBattleAt = new Date();
           existing.lastCaptureSessionId = sessionId;
+          existing.name = null;
           if (routePoints) existing.routePoints = routePoints;
 
           toSave.push(existing);
@@ -289,6 +295,31 @@ export class TerritoryService {
 
   private getTerritoriesVersionKey() {
     return 'cache:territories:version';
+  }
+
+  async updateTerritoryName(userId: string, territoryId: string, name?: string) {
+    const territory = await this.territoryRepository.findOne({
+      where: { id: territoryId },
+    });
+    if (!territory) {
+      throw new NotFoundException('Territory not found');
+    }
+    if (territory.ownerId !== userId) {
+      throw new ForbiddenException('Only the owner can rename this territory');
+    }
+
+    const trimmed = (name ?? '').trim();
+    if (trimmed.length > 40) {
+      throw new BadRequestException('Territory name is too long');
+    }
+    if (trimmed.length > 0 && trimmed.length < 2) {
+      throw new BadRequestException('Territory name is too short');
+    }
+
+    territory.name = trimmed.length == 0 ? null : trimmed;
+    await this.territoryRepository.save(territory);
+    await this.redisService.bumpVersion(this.getTerritoriesVersionKey());
+    return territory;
   }
 
   private getWeekIndex(date: Date) {

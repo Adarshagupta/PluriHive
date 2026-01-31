@@ -443,7 +443,7 @@ final visibleTerritories = territories.where((t) =>
 **Learning:**
 - Rendering hundreds of polygons is expensive - use caching
 - Implement viewport culling for large datasets
-- Consider using Google Maps clustering for dense areas
+- Consider using Mapbox clustering for dense areas
 - Profile with Flutter DevTools to find bottlenecks
 
 ---

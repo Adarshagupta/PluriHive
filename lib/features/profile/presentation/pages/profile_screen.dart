@@ -9,13 +9,28 @@ import '../../../settings/presentation/pages/settings_screen.dart';
 import '../../../../core/services/user_stats_api_service.dart';
 import '../../../../core/di/injection_container.dart';
 import '../../../../core/services/avatar_preset_service.dart';
-import '../../../../core/theme/app_theme.dart';
 import 'personal_info_screen.dart';
 import 'notifications_screen.dart';
 import 'help_support_screen.dart';
 import 'avatar_editor_screen.dart';
 import '../../../../core/widgets/skeleton.dart';
 import '../widgets/google_fit_card.dart';
+
+const Color _profileBackground = Color(0xFFFFFFFF);
+const Color _headerGradientStart = Color(0xFFFFFFFF);
+const Color _headerGradientEnd = Color(0xFFFFFFFF);
+const Color _surfaceColor = Color(0xFFF8FEFE);
+const Color _surfaceAltColor = Color(0xFFEAF8F8);
+const Color _borderColor = Color(0xFFCFE8E8);
+const Color _borderStrongColor = Color(0xFFB7E0E0);
+const Color _iconBadgeColor = Color(0xFFE1F6F6);
+const Color _accentColor = Color(0xFF0E9FA0);
+const Color _accentStrongColor = Color(0xFF0B6F73);
+const Color _textPrimaryColor = Color(0xFF0B2D30);
+const Color _textSecondaryColor = Color(0xFF4A6A6D);
+const Color _textTertiaryColor = Color(0xFF6B8B8E);
+const Color _chipColor = Color(0xFFE6F9F9);
+const Color _chipBorderColor = Color(0xFFBFE4E4);
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -159,10 +174,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           final user = state.user;
 
           return Scaffold(
-            backgroundColor: const Color(0xFFF7F4EE),
+            backgroundColor: _profileBackground,
             body: RefreshIndicator(
               onRefresh: _refreshProfile,
-              color: AppTheme.primaryColor,
+              color: _accentColor,
               child: CustomScrollView(
                 slivers: [
                   _buildProfileHeader(user),
@@ -183,19 +198,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     label: 'Distance',
                                     value:
                                         '${user.totalDistanceKm.toStringAsFixed(1)} km',
-                                    color: const Color(0xFF1F8EF1),
+                                    color: _accentColor,
                                   ),
                                   const SizedBox(width: 10),
                                   _ProfileQuickStat(
                                     label: 'Workouts',
                                     value: '${user.totalWorkouts}',
-                                    color: const Color(0xFF7FE87A),
+                                    color: const Color(0xFF48BEB8),
                                   ),
                                   const SizedBox(width: 10),
                                   _ProfileQuickStat(
                                     label: 'Territories',
                                     value: '${user.totalTerritoriesCaptured}',
-                                    color: const Color(0xFFFFB74D),
+                                    color: const Color(0xFF7EDBD5),
                                   ),
                                 ],
                               ),
@@ -378,7 +393,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       style: GoogleFonts.spaceGrotesk(
         fontSize: 18,
         fontWeight: FontWeight.w700,
-        color: const Color(0xFF111827),
+        color: _textPrimaryColor,
       ),
     );
   }
@@ -389,33 +404,62 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ? user.avatarImageUrl
         : (user.avatarModelUrl is String ? user.avatarModelUrl : null);
     final resolvedUrl = AvatarPresetService.resolveAvatarImageUrl(source);
+    Widget avatar;
 
     if (resolvedUrl.isNotEmpty) {
       if (AvatarPresetService.isAssetPath(resolvedUrl)) {
         final assetPath =
             AvatarPresetService.normalizeAssetPath(resolvedUrl);
-        return ClipOval(
-          child: Image.asset(
-            assetPath,
-            width: 72,
-            height: 72,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _buildAvatarFallback(user),
-          ),
+        avatar = Image.asset(
+          assetPath,
+          width: 72,
+          height: 72,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _buildAvatarFallback(user),
         );
-      }
-      return ClipOval(
-        child: CachedNetworkImage(
+      } else {
+        avatar = CachedNetworkImage(
           imageUrl: resolvedUrl,
           width: 72,
           height: 72,
           fit: BoxFit.cover,
           placeholder: (context, url) => _buildAvatarFallback(user),
           errorWidget: (context, url, error) => _buildAvatarFallback(user),
-        ),
-      );
+        );
+      }
+    } else {
+      avatar = _buildAvatarFallback(user);
     }
-    return _buildAvatarFallback(user);
+
+    return Container(
+      width: 78,
+      height: 78,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const LinearGradient(
+          colors: [
+            _accentColor,
+            _borderStrongColor,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Container(
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          color: _surfaceColor,
+        ),
+        child: ClipOval(
+          child: SizedBox(
+            width: 72,
+            height: 72,
+            child: avatar,
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildAvatarFallback(user) {
@@ -423,7 +467,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       width: 72,
       height: 72,
       decoration: const BoxDecoration(
-        color: Color(0xFF111827),
+        color: _accentStrongColor,
         shape: BoxShape.circle,
       ),
       child: Center(
@@ -458,7 +502,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           },
           icon: const Icon(
             Icons.settings_outlined,
-            color: Color(0xFF111827),
+            color: _accentStrongColor,
           ),
         ),
       ],
@@ -471,9 +515,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    Color(0xFFFFF3D6),
-                    Color(0xFFEFFBE6),
-                    Color(0xFFF7F4EE),
+                    _headerGradientStart,
+                    _headerGradientEnd,
+                    Colors.white,
                   ],
                 ),
               ),
@@ -485,7 +529,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 width: 120,
                 height: 120,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF7FE87A).withOpacity(0.15),
+                  color: Colors.black.withOpacity(0.04),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -497,7 +541,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 width: 90,
                 height: 90,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1F8EF1).withOpacity(0.12),
+                  color: Colors.black.withOpacity(0.03),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -519,7 +563,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             style: GoogleFonts.spaceGrotesk(
                               fontSize: 22,
                               fontWeight: FontWeight.w700,
-                              color: const Color(0xFF111827),
+                              color: _textPrimaryColor,
                             ),
                           ),
                           const SizedBox(height: 4),
@@ -528,7 +572,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             style: GoogleFonts.dmSans(
                               fontSize: 13,
                               fontWeight: FontWeight.w500,
-                              color: const Color(0xFF6B7280),
+                              color: _textSecondaryColor,
                             ),
                           ),
                           const SizedBox(height: 8),
@@ -574,21 +618,21 @@ class _ProfileBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.75),
+        color: _chipColor.withOpacity(0.8),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
+        border: Border.all(color: _chipBorderColor),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: const Color(0xFF111827)),
+          Icon(icon, size: 14, color: _accentStrongColor),
           const SizedBox(width: 6),
           Text(
             label,
             style: GoogleFonts.dmSans(
               fontSize: 12,
               fontWeight: FontWeight.w600,
-              color: const Color(0xFF111827),
+              color: _textPrimaryColor,
             ),
           ),
         ],
@@ -614,25 +658,34 @@ class _ProfileQuickStat extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.04),
-              blurRadius: 12,
-              offset: const Offset(0, 6),
-            ),
-          ],
+          gradient: LinearGradient(
+            colors: [
+              color.withOpacity(0.16),
+              _surfaceAltColor.withOpacity(0.25),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(20),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Container(
+              width: 26,
+              height: 3,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            const SizedBox(height: 8),
             Text(
               label,
               style: GoogleFonts.dmSans(
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
-                color: color,
+                color: _textSecondaryColor,
               ),
             ),
             const SizedBox(height: 6),
@@ -641,7 +694,7 @@ class _ProfileQuickStat extends StatelessWidget {
               style: GoogleFonts.spaceGrotesk(
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
-                color: const Color(0xFF111827),
+                color: _textPrimaryColor,
               ),
             ),
           ],
@@ -661,15 +714,9 @@ class _ProfileMetricCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 12,
-            offset: const Offset(0, 6),
-          ),
-        ],
+        color: _surfaceColor.withOpacity(0.7),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _borderColor.withOpacity(0.8)),
       ),
       child: Row(
         children: metrics
@@ -681,11 +728,14 @@ class _ProfileMetricCard extends StatelessWidget {
                       width: 36,
                       height: 36,
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryColor.withOpacity(0.12),
-                        shape: BoxShape.circle,
+                        color: _iconBadgeColor.withOpacity(0.85),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _borderColor.withOpacity(0.8),
+                        ),
                       ),
                       child: Icon(metric.icon,
-                          size: 18, color: AppTheme.textPrimary),
+                          size: 18, color: _accentStrongColor),
                     ),
                     const SizedBox(height: 8),
                     Text(
@@ -693,7 +743,7 @@ class _ProfileMetricCard extends StatelessWidget {
                       style: GoogleFonts.spaceGrotesk(
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
-                        color: const Color(0xFF111827),
+                        color: _textPrimaryColor,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -702,7 +752,7 @@ class _ProfileMetricCard extends StatelessWidget {
                       style: GoogleFonts.dmSans(
                         fontSize: 11,
                         fontWeight: FontWeight.w500,
-                        color: const Color(0xFF6B7280),
+                        color: _textSecondaryColor,
                       ),
                     ),
                   ],
@@ -746,9 +796,9 @@ class _ProfileActionTile extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFE5E7EB)),
+          color: _surfaceAltColor.withOpacity(0.6),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: _borderColor.withOpacity(0.7)),
         ),
         child: Row(
           children: [
@@ -756,10 +806,11 @@ class _ProfileActionTile extends StatelessWidget {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: AppTheme.primaryColor.withOpacity(0.15),
+                color: _iconBadgeColor.withOpacity(0.9),
                 borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _borderColor.withOpacity(0.7)),
               ),
-              child: Icon(icon, size: 18, color: AppTheme.textPrimary),
+              child: Icon(icon, size: 18, color: _accentStrongColor),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -768,11 +819,11 @@ class _ProfileActionTile extends StatelessWidget {
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: const Color(0xFF111827),
+                  color: _textPrimaryColor,
                 ),
               ),
             ),
-            const Icon(Icons.chevron_right, size: 18, color: Color(0xFF9CA3AF)),
+            Icon(Icons.chevron_right, size: 18, color: _textTertiaryColor),
           ],
         ),
       ),

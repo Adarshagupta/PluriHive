@@ -211,6 +211,7 @@ Future<void> initializeDependencies() async {
       territoryApiService: getIt(),
       pendingSyncDataSource: getIt(),
       authApiService: getIt(),
+      activityLocalDataSource: getIt(),
     ),
   );
 

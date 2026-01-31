@@ -24,10 +24,13 @@ class TerritoryPrefetchService {
   final TerritoryApiService _territoryApiService;
   final TerritoryCacheDataSource _cache;
 
-  final List<double> _radiiKm = [20, 35, 50];
+  final List<double> _radiiKm = [1];
+  static const double _maxCacheRadiusKm = 12;
   final Duration _cooldown = const Duration(seconds: 30);
   DateTime? _lastPrefetchAt;
   DateTime? _lastSnapshotAt;
+  double? _lastCenterLat;
+  double? _lastCenterLng;
   bool _inFlight = false;
   bool _listening = false;
   Timer? _fallbackTimer;
@@ -65,6 +68,8 @@ class TerritoryPrefetchService {
       _ensureSnapshotListener();
       await _webSocketService.connect(userId, token: token);
       _lastSnapshotAt = null;
+      _lastCenterLat = position.latitude;
+      _lastCenterLng = position.longitude;
 
       final connected = await _waitForWebSocketConnected();
       var usedHttpFallback = false;
@@ -156,20 +161,48 @@ class TerritoryPrefetchService {
   Future<void> _mergeAndCache(List<Map<String, dynamic>> incoming) async {
     if (incoming.isEmpty) return;
     final cached = await _cache.getNearbyTerritories();
+    final filteredCached = _filterByRadius(cached);
+    final filteredIncoming = _filterByRadius(incoming);
     final merged = <String, Map<String, dynamic>>{};
-    for (final territory in cached) {
+    for (final territory in filteredCached) {
       final hexId = territory['hexId']?.toString();
       if (hexId != null && hexId.isNotEmpty) {
         merged[hexId] = territory;
       }
     }
-    for (final territory in incoming) {
+    for (final territory in filteredIncoming) {
       final hexId = territory['hexId']?.toString();
       if (hexId != null && hexId.isNotEmpty) {
         merged[hexId] = territory;
       }
     }
     await _cache.saveNearbyTerritories(merged.values.toList());
+  }
+
+  List<Map<String, dynamic>> _filterByRadius(
+    List<Map<String, dynamic>> territories,
+  ) {
+    final lat = _lastCenterLat;
+    final lng = _lastCenterLng;
+    if (lat == null || lng == null) return territories;
+    final maxMeters = _maxCacheRadiusKm * 1000;
+    return territories.where((territory) {
+      final tLat = _toDouble(territory['centerLat']) ??
+          _toDouble(territory['lat']) ??
+          _toDouble(territory['latitude']);
+      final tLng = _toDouble(territory['centerLng']) ??
+          _toDouble(territory['lng']) ??
+          _toDouble(territory['longitude']);
+      if (tLat == null || tLng == null) return false;
+      final distance = Geolocator.distanceBetween(lat, lng, tLat, tLng);
+      return distance <= maxMeters;
+    }).toList();
+  }
+
+  double? _toDouble(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
   }
 
   Future<bool> _waitForWebSocketConnected({

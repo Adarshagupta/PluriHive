@@ -6,6 +6,7 @@ import '../bloc/auth_bloc.dart';
 import 'welcome_screen.dart';
 import 'onboarding_screen.dart';
 import '../../../dashboard/presentation/pages/main_dashboard.dart';
+import '../../../../core/services/shortcut_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -58,8 +59,11 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     if (state is Authenticated) {
       print('???? SplashScreen: User authenticated, hasCompletedOnboarding: ${state.user.hasCompletedOnboarding}');
       if (state.user.hasCompletedOnboarding) {
+        final initialTab = ShortcutService.consumeInitialTab();
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(
+            builder: (_) => DashboardScreen(initialTabIndex: initialTab),
+          ),
         );
       } else {
         Navigator.of(context).pushReplacement(

@@ -1,14 +1,20 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart' as geo;
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:intl/intl.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mapbox;
+import '../../../../core/models/geo_types.dart';
 import 'package:video_player/video_player.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../../../core/widgets/route_preview.dart';
+import '../../domain/entities/position.dart';
 
 class WorkoutSummaryScreen extends StatefulWidget {
   final double distanceKm;
@@ -18,9 +24,11 @@ class WorkoutSummaryScreen extends StatefulWidget {
   final double avgSpeed;
   final int steps;
   final List<LatLng>? routePoints;
+  final List<Position>? routePositions;
   final Set<Polygon>? territories;
   final DateTime workoutDate;
   final String? videoPath;
+  final String? mapSnapshotBase64;
 
   WorkoutSummaryScreen({
     super.key,
@@ -31,9 +39,11 @@ class WorkoutSummaryScreen extends StatefulWidget {
     required this.avgSpeed,
     this.steps = 0,
     this.routePoints,
+    this.routePositions,
     this.territories,
     DateTime? workoutDate,
     this.videoPath,
+    this.mapSnapshotBase64,
   }) : workoutDate = workoutDate ?? DateTime.now();
 
   @override
@@ -46,6 +56,8 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
   late Animation<double> _scaleAnimation;
+  late AnimationController _chartController;
+  late Animation<double> _chartAnimation;
   bool _isSharing = false;
   int _selectedStyle = 0;
 
@@ -55,6 +67,17 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
 
   VideoPlayerController? _videoController;
   bool _useVideoPlayback = false;
+  Uint8List? _snapshotBytes;
+  List<double> _paceSeries = [];
+  List<double> _splitPaces = [];
+  double _paceMin = 0;
+  double _paceMax = 0;
+  mapbox.MapboxMap? _replayMapboxMap;
+  mapbox.PolylineAnnotationManager? _replayPolylineManager;
+  List<LatLng> _replayRoute = [];
+  List<mapbox.Point> _replayRoutePoints = [];
+  int _replaySession = 0;
+  double _replayZoom = 16.0;
 
   @override
   void initState() {
@@ -73,6 +96,27 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
     );
 
     _controller.forward();
+
+    _chartController = AnimationController(
+      duration: const Duration(milliseconds: 1200),
+      vsync: this,
+    );
+    _chartAnimation = CurvedAnimation(
+      parent: _chartController,
+      curve: Curves.easeOutCubic,
+    );
+    _prepareRecapSeries();
+    _prepareReplayRoute();
+    _chartController.forward();
+
+    if (widget.mapSnapshotBase64 != null &&
+        widget.mapSnapshotBase64!.isNotEmpty) {
+      try {
+        _snapshotBytes = base64Decode(widget.mapSnapshotBase64!);
+      } catch (e) {
+        print('Failed to decode map snapshot: $e');
+      }
+    }
 
     // Initialize video player if video path is provided
     if (widget.videoPath != null && File(widget.videoPath!).existsSync()) {
@@ -128,7 +172,9 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
 
   @override
   void dispose() {
+    _replaySession++;
     _controller.dispose();
+    _chartController.dispose();
     _routeAnimController?.dispose();
     _videoController?.dispose();
     super.dispose();
@@ -142,6 +188,255 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
     return duration.inHours > 0
         ? '$hours:$minutes:$seconds'
         : '$minutes:$seconds';
+  }
+
+  void _prepareRecapSeries() {
+    final positions = widget.routePositions;
+    if (positions == null || positions.length < 2) {
+      return;
+    }
+
+    const double segmentTargetMeters = 200;
+    const double splitTargetMeters = 1000;
+    double segmentMeters = 0;
+    Duration segmentTime = Duration.zero;
+    double splitMeters = 0;
+    Duration splitTime = Duration.zero;
+    final paceSamples = <double>[];
+    final splitPaces = <double>[];
+
+    for (int i = 1; i < positions.length; i++) {
+      final prev = positions[i - 1];
+      final current = positions[i];
+      final dt = current.timestamp.difference(prev.timestamp);
+      if (dt.inMilliseconds <= 0) {
+        continue;
+      }
+
+      final distance = geo.Geolocator.distanceBetween(
+        prev.latitude,
+        prev.longitude,
+        current.latitude,
+        current.longitude,
+      );
+      if (distance <= 0) {
+        continue;
+      }
+
+      segmentMeters += distance;
+      segmentTime += dt;
+      splitMeters += distance;
+      splitTime += dt;
+
+      if (segmentMeters >= segmentTargetMeters) {
+        paceSamples.add(_paceFrom(segmentTime, segmentMeters));
+        segmentMeters = 0;
+        segmentTime = Duration.zero;
+      }
+
+      if (splitMeters >= splitTargetMeters) {
+        splitPaces.add(_paceFrom(splitTime, splitMeters));
+        splitMeters = 0;
+        splitTime = Duration.zero;
+        if (splitPaces.length >= 6) {
+          break;
+        }
+      }
+    }
+
+    if (segmentMeters > 0 && segmentTime.inSeconds > 0) {
+      paceSamples.add(_paceFrom(segmentTime, segmentMeters));
+    }
+
+    if (splitMeters > 0 && splitTime.inSeconds > 0 && splitPaces.length < 6) {
+      splitPaces.add(_paceFrom(splitTime, splitMeters));
+    }
+
+    final downsampled = _downsample(paceSamples, 24);
+    if (downsampled.isNotEmpty) {
+      _paceSeries = downsampled;
+      _paceMin = downsampled.reduce(min);
+      _paceMax = downsampled.reduce(max);
+      if ((_paceMax - _paceMin).abs() < 0.05) {
+        _paceMax += 0.1;
+        _paceMin = (_paceMin - 0.1).clamp(0.1, _paceMax);
+      }
+    }
+
+    if (splitPaces.isNotEmpty) {
+      _splitPaces = splitPaces;
+    }
+  }
+
+  double _paceFrom(Duration time, double meters) {
+    if (meters <= 0) return 0;
+    final minutes = time.inSeconds / 60.0;
+    final km = meters / 1000.0;
+    if (km <= 0) return 0;
+    return minutes / km;
+  }
+
+  List<double> _downsample(List<double> values, int maxSamples) {
+    if (values.length <= maxSamples) return values;
+    final step = (values.length / maxSamples).ceil();
+    final sampled = <double>[];
+    for (int i = 0; i < values.length; i += step) {
+      sampled.add(values[i]);
+    }
+    return sampled;
+  }
+
+  void _prepareReplayRoute() {
+    final points = widget.routePoints;
+    if (points == null || points.length < 2) {
+      _replayRoute = [];
+      _replayRoutePoints = [];
+      return;
+    }
+
+    final sampled = _downsampleRoute(points, 100);
+    _replayRoute = sampled;
+    _replayRoutePoints = sampled.map(_mapboxPointFromLatLng).toList();
+  }
+
+  List<LatLng> _downsampleRoute(List<LatLng> points, int maxSamples) {
+    if (points.length <= maxSamples) return List<LatLng>.from(points);
+    final sampled = <LatLng>[];
+    final lastIndex = points.length - 1;
+    for (int i = 0; i < maxSamples; i++) {
+      final t = i / (maxSamples - 1);
+      final index = (t * lastIndex).round();
+      sampled.add(points[index]);
+    }
+    return sampled;
+  }
+
+  mapbox.Point _mapboxPointFromLatLng(LatLng latLng) {
+    return mapbox.Point(
+      coordinates: mapbox.Position(latLng.longitude, latLng.latitude),
+    );
+  }
+
+  double _bearingBetween(LatLng from, LatLng to) {
+    final lat1 = from.latitude * pi / 180;
+    final lat2 = to.latitude * pi / 180;
+    final dLon = (to.longitude - from.longitude) * pi / 180;
+    final y = sin(dLon) * cos(lat2);
+    final x =
+        cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
+    final bearing = atan2(y, x) * 180 / pi;
+    return (bearing + 360) % 360;
+  }
+
+  Future<void> _setupReplayMap() async {
+    if (_replayMapboxMap == null || _replayRoutePoints.length < 2) return;
+    await _ensureReplayPolylineManager(reset: true);
+    await _replayPolylineManager?.deleteAll();
+    await _replayPolylineManager?.create(
+      mapbox.PolylineAnnotationOptions(
+        geometry: mapbox.LineString.fromPoints(points: _replayRoutePoints),
+        lineColor: const Color(0xFF0E9FA0).value,
+        lineWidth: 4.0,
+      ),
+    );
+    await _fitReplayBounds();
+    _startReplayFlythrough();
+  }
+
+  Future<void> _ensureReplayPolylineManager({bool reset = false}) async {
+    if (_replayMapboxMap == null) return;
+    if (reset) {
+      _replayPolylineManager = null;
+    }
+    _replayPolylineManager ??=
+        await _replayMapboxMap!.annotations.createPolylineAnnotationManager();
+  }
+
+  Future<void> _fitReplayBounds() async {
+    if (_replayMapboxMap == null || _replayRoute.isEmpty) return;
+    double minLat = _replayRoute.first.latitude;
+    double maxLat = _replayRoute.first.latitude;
+    double minLng = _replayRoute.first.longitude;
+    double maxLng = _replayRoute.first.longitude;
+
+    for (final point in _replayRoute) {
+      if (point.latitude < minLat) minLat = point.latitude;
+      if (point.latitude > maxLat) maxLat = point.latitude;
+      if (point.longitude < minLng) minLng = point.longitude;
+      if (point.longitude > maxLng) maxLng = point.longitude;
+    }
+
+    final latPadding = (maxLat - minLat) * 0.12;
+    final lngPadding = (maxLng - minLng) * 0.12;
+
+    final bounds = LatLngBounds(
+      southwest: LatLng(minLat - latPadding, minLng - lngPadding),
+      northeast: LatLng(maxLat + latPadding, maxLng + lngPadding),
+    );
+
+    final camera = await _replayMapboxMap!.cameraForCoordinateBounds(
+      mapbox.CoordinateBounds(
+        southwest: _mapboxPointFromLatLng(bounds.southwest),
+        northeast: _mapboxPointFromLatLng(bounds.northeast),
+        infiniteBounds: false,
+      ),
+      mapbox.MbxEdgeInsets(top: 40, left: 40, bottom: 40, right: 40),
+      null,
+      null,
+      null,
+      null,
+    );
+
+    final baseZoom = camera.zoom ?? 16.0;
+    _replayZoom = baseZoom.clamp(14.8, 17.2).toDouble();
+    await _replayMapboxMap!.easeTo(
+      mapbox.CameraOptions(
+        center: camera.center ?? _replayRoutePoints.first,
+        zoom: _replayZoom,
+        bearing: camera.bearing ?? 0,
+        pitch: 60,
+      ),
+      mapbox.MapAnimationOptions(duration: 700),
+    );
+  }
+
+  Future<void> _startReplayFlythrough() async {
+    if (_replayMapboxMap == null || _replayRoute.length < 2) return;
+    final session = ++_replaySession;
+    const pitch = 60.0;
+    final duration = Duration(milliseconds: 520);
+
+    for (int i = 1; i < _replayRoute.length; i++) {
+      if (!mounted || session != _replaySession) return;
+      final prev = _replayRoute[i - 1];
+      final current = _replayRoute[i];
+      final bearing = _bearingBetween(prev, current);
+      await _replayMapboxMap!.easeTo(
+        mapbox.CameraOptions(
+          center: _replayRoutePoints[i],
+          zoom: _replayZoom,
+          pitch: pitch,
+          bearing: bearing,
+        ),
+        mapbox.MapAnimationOptions(duration: duration.inMilliseconds),
+      );
+    }
+
+    if (!mounted || session != _replaySession) return;
+    await Future.delayed(const Duration(milliseconds: 900));
+    if (mounted && session == _replaySession) {
+      _startReplayFlythrough();
+    }
+  }
+
+  String _formatPace(double pace) {
+    if (pace <= 0 || pace.isInfinite || pace.isNaN) {
+      return '--';
+    }
+    final minutes = pace.floor();
+    final seconds = ((pace - minutes) * 60).round();
+    final paddedSeconds = seconds.toString().padLeft(2, '0');
+    return '$minutes:$paddedSeconds /km';
   }
 
   Future<void> _captureAndShare() async {
@@ -325,6 +620,13 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const SizedBox(height: 6),
+                            _buildRecapSection(),
+                            const SizedBox(height: 12),
+                            _buildSectionHeader(
+                              title: 'Share cards',
+                              subtitle: 'Pick a style to share',
+                            ),
+                            const SizedBox(height: 8),
                             _buildStyleSelector(),
                             const SizedBox(height: 12),
                             Center(
@@ -741,6 +1043,497 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
           );
         }),
       ),
+    );
+  }
+
+  Widget _buildSectionHeader({
+    required String title,
+    required String subtitle,
+  }) {
+    const textPrimary = Color(0xFF0F172A);
+    const textSecondary = Color(0xFF64748B);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: GoogleFonts.spaceGrotesk(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: textPrimary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            style: GoogleFonts.dmSans(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecapSection() {
+    const accent = Color(0xFF0E9FA0);
+    final paceMinPerKm = widget.distanceKm > 0
+        ? (widget.duration.inSeconds / 60.0) / widget.distanceKm
+        : 0.0;
+    final stepsPerKm = widget.distanceKm > 0
+        ? (widget.steps / widget.distanceKm).round()
+        : 0;
+    final dateLabel = DateFormat('EEE, MMM d - h:mm a').format(widget.workoutDate);
+
+    final inlineStats = [
+      _InlineStat(
+        label: 'Steps',
+        value: widget.steps.toString(),
+      ),
+      _InlineStat(
+        label: 'Steps/km',
+        value: stepsPerKm.toString(),
+      ),
+      _InlineStat(
+        label: 'Avg speed',
+        value: '${widget.avgSpeed.toStringAsFixed(1)} km/h',
+      ),
+      _InlineStat(
+        label: 'Territories',
+        value: widget.territoriesCaptured.toString(),
+      ),
+      _InlineStat(
+        label: 'Points',
+        value: widget.pointsEarned.toString(),
+      ),
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader(
+          title: 'Run recap',
+          subtitle: dateLabel,
+        ),
+        const SizedBox(height: 14),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildPrimaryMetric(
+                      label: 'Distance',
+                      unit: 'km',
+                      value: widget.distanceKm,
+                      formatter: (value) => value.toStringAsFixed(2),
+                    ),
+                  ),
+                  _buildMetricDivider(),
+                  Expanded(
+                    child: _buildPrimaryMetric(
+                      label: 'Time',
+                      unit: '',
+                      value: widget.duration.inSeconds.toDouble(),
+                      formatter: (value) =>
+                          _formatDuration(Duration(seconds: value.round())),
+                    ),
+                  ),
+                  _buildMetricDivider(),
+                  Expanded(
+                    child: _buildPrimaryMetric(
+                      label: 'Avg pace',
+                      unit: '',
+                      value: paceMinPerKm,
+                      formatter: _formatPace,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Divider(color: Color(0xFFE2E8F0), height: 1),
+              const SizedBox(height: 12),
+              Column(
+                children: List.generate(
+                  (inlineStats.length / 2).ceil(),
+                  (rowIndex) {
+                    final start = rowIndex * 2;
+                    final left = inlineStats[start];
+                    final right = start + 1 < inlineStats.length
+                        ? inlineStats[start + 1]
+                        : null;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        children: [
+                          Expanded(child: _buildInlineStat(left, accent)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: right != null
+                                ? _buildInlineStat(right, accent)
+                                : const SizedBox.shrink(),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: _buildInsightsSection(),
+        ),
+        const SizedBox(height: 18),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: _buildReplaySection(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInsightsSection() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildInsightHeader(
+            title: 'Pace trend',
+            subtitle: _paceSeries.isNotEmpty
+                ? 'Smoother pace = steadier run'
+                : 'Need GPS samples to chart pace',
+          ),
+          const SizedBox(height: 10),
+          _buildPaceChart(),
+          const SizedBox(height: 14),
+          const Divider(color: Color(0xFFE2E8F0), height: 1),
+          const SizedBox(height: 14),
+          _buildInsightHeader(
+            title: 'Split pace',
+            subtitle: _splitPaces.isNotEmpty
+                ? 'Avg pace per km'
+                : 'Splits will appear on longer runs',
+          ),
+          const SizedBox(height: 10),
+          _buildSplitChart(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInsightHeader({
+    required String title,
+    required String subtitle,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: GoogleFonts.spaceGrotesk(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: const Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          subtitle,
+          style: GoogleFonts.dmSans(
+            fontSize: 11,
+            color: const Color(0xFF64748B),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPaceChart() {
+    if (_paceSeries.length < 2) {
+      return _buildChartEmptyState('Not enough data points');
+    }
+
+    return SizedBox(
+      height: 140,
+      child: AnimatedBuilder(
+        animation: _chartAnimation,
+        builder: (context, child) {
+          return CustomPaint(
+            painter: _PaceLinePainter(
+              values: _paceSeries,
+              minValue: _paceMin,
+              maxValue: _paceMax,
+              progress: _chartAnimation.value,
+              lineColor: const Color(0xFF0E9FA0),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSplitChart() {
+    if (_splitPaces.isEmpty) {
+      return _buildChartEmptyState('No split data yet');
+    }
+
+    final speeds = _splitPaces
+        .map((pace) => pace > 0 ? 60 / pace : 0)
+        .toList();
+    final maxSpeed = speeds.reduce(max).clamp(0.1, 100);
+
+    return SizedBox(
+      height: 140,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: List.generate(_splitPaces.length, (index) {
+          final speed = speeds[index];
+          final heightFactor = (speed / maxSpeed).clamp(0.1, 1.0);
+          return Expanded(
+            child: TweenAnimationBuilder<double>(
+              tween: Tween<double>(begin: 0, end: heightFactor),
+              duration: const Duration(milliseconds: 900),
+              curve: Curves.easeOutCubic,
+              builder: (context, value, child) {
+                return Column(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Container(
+                      height: 90 * value,
+                      width: 18,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0E9FA0),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${index + 1} km',
+                      style: GoogleFonts.dmSans(
+                        fontSize: 10,
+                        color: const Color(0xFF64748B),
+                      ),
+                    ),
+                    Text(
+                      _formatPace(_splitPaces[index]),
+                      style: GoogleFonts.dmSans(
+                        fontSize: 9,
+                        color: const Color(0xFF94A3B8),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _buildChartEmptyState(String label) {
+    return Container(
+      height: 120,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Center(
+        child: Text(
+          label,
+          style: GoogleFonts.dmSans(
+            fontSize: 11,
+            color: const Color(0xFF94A3B8),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReplaySection() {
+    final hasRoute = _replayRoutePoints.length >= 2;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildInsightHeader(
+          title: '3D route replay',
+          subtitle: hasRoute
+              ? 'Mapbox flythrough of your route'
+              : 'Need route data for replay',
+        ),
+        const SizedBox(height: 10),
+        hasRoute ? _buildReplayMap() : _buildReplayPlaceholder(),
+      ],
+    );
+  }
+
+  Widget _buildReplayMap() {
+    final initialCenter = _replayRoutePoints.isNotEmpty
+        ? _replayRoutePoints.first
+        : mapbox.Point(coordinates: mapbox.Position(0, 0));
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: SizedBox(
+        height: 190,
+        child: IgnorePointer(
+          child: mapbox.MapWidget(
+            cameraOptions: mapbox.CameraOptions(
+              center: initialCenter,
+              zoom: 15.5,
+              pitch: 60,
+            ),
+            styleUri: mapbox.MapboxStyles.STANDARD,
+            onMapCreated: (mapbox.MapboxMap controller) async {
+              _replayMapboxMap = controller;
+              await _setupReplayMap();
+            },
+            onStyleLoadedListener: (_) {
+              _setupReplayMap();
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReplayPlaceholder() {
+    return Container(
+      height: 160,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Center(
+        child: Text(
+          'Replay will appear after a tracked run',
+          style: GoogleFonts.dmSans(
+            fontSize: 11,
+            color: const Color(0xFF94A3B8),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPrimaryMetric({
+    required String label,
+    required String unit,
+    required double value,
+    required String Function(double) formatter,
+  }) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: value),
+      duration: const Duration(milliseconds: 900),
+      curve: Curves.easeOutCubic,
+      builder: (context, animatedValue, child) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Flexible(
+                  child: Text(
+                    formatter(animatedValue),
+                    style: GoogleFonts.spaceGrotesk(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF0F172A),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (unit.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, bottom: 2),
+                    child: Text(
+                      unit,
+                      style: GoogleFonts.dmSans(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF64748B),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: GoogleFonts.dmSans(
+                fontSize: 11,
+                color: const Color(0xFF64748B),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildMetricDivider() {
+    return Container(
+      width: 1,
+      height: 44,
+      margin: const EdgeInsets.symmetric(horizontal: 8),
+      color: const Color(0xFFE2E8F0),
+    );
+  }
+
+  Widget _buildInlineStat(_InlineStat stat, Color accent) {
+    return Row(
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: accent,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                stat.value,
+                style: GoogleFonts.spaceGrotesk(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: const Color(0xFF0F172A),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                stat.label,
+                style: GoogleFonts.dmSans(
+                  fontSize: 10,
+                  color: const Color(0xFF64748B),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -1374,53 +2167,105 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
       return SizedBox.shrink();
     }
 
-    double minLat = widget.routePoints!.first.latitude;
-    double maxLat = widget.routePoints!.first.latitude;
-    double minLng = widget.routePoints!.first.longitude;
-    double maxLng = widget.routePoints!.first.longitude;
+    final routePoints = _animatedRoutePoints.isNotEmpty
+        ? _animatedRoutePoints
+        : widget.routePoints!;
+    final overlayTerritories =
+        _routeProgress > 0.8 ? widget.territories : null;
 
-    for (var point in widget.routePoints!) {
-      if (point.latitude < minLat) minLat = point.latitude;
-      if (point.latitude > maxLat) maxLat = point.latitude;
-      if (point.longitude < minLng) minLng = point.longitude;
-      if (point.longitude > maxLng) maxLng = point.longitude;
+    return RoutePreview(
+      routePoints: routePoints,
+      polygons: overlayTerritories,
+      snapshotBytes: _snapshotBytes,
+      lineColor: const Color(0xFFFF8A65),
+      lineWidth: 4,
+      showStartEnd: _animatedRoutePoints.isEmpty,
+    );
+  }
+}
+
+class _InlineStat {
+  final String label;
+  final String value;
+
+  const _InlineStat({
+    required this.label,
+    required this.value,
+  });
+}
+
+class _PaceLinePainter extends CustomPainter {
+  final List<double> values;
+  final double minValue;
+  final double maxValue;
+  final double progress;
+  final Color lineColor;
+
+  _PaceLinePainter({
+    required this.values,
+    required this.minValue,
+    required this.maxValue,
+    required this.progress,
+    required this.lineColor,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (values.length < 2) return;
+
+    final padding = 8.0;
+    final chartWidth = size.width - padding * 2;
+    final chartHeight = size.height - padding * 2;
+
+    final gridPaint = Paint()
+      ..color = lineColor.withOpacity(0.12)
+      ..strokeWidth = 1;
+
+    for (int i = 1; i <= 3; i++) {
+      final y = padding + (chartHeight / 4) * i;
+      canvas.drawLine(Offset(padding, y), Offset(size.width - padding, y),
+          gridPaint);
     }
 
-    final center = LatLng((minLat + maxLat) / 2, (minLng + maxLng) / 2);
+    final path = Path();
+    for (int i = 0; i < values.length; i++) {
+      final dx = padding + (chartWidth * (i / (values.length - 1)));
+      final normalized =
+          (values[i] - minValue) / (maxValue - minValue == 0 ? 1 : maxValue - minValue);
+      final dy = padding + chartHeight * (1 - normalized);
+      if (i == 0) {
+        path.moveTo(dx, dy);
+      } else {
+        path.lineTo(dx, dy);
+      }
+    }
 
-    return GoogleMap(
-      initialCameraPosition: CameraPosition(target: center, zoom: 14),
-      polylines: {
-        if (_animatedRoutePoints.isNotEmpty)
-          Polyline(
-            polylineId: PolylineId('route'),
-            points: _animatedRoutePoints,
-            color: Color(0xFFFF8A65),
-            width: 4,
-            startCap: Cap.roundCap,
-            endCap: Cap.roundCap,
-          ),
-      },
-      markers: _animatedRoutePoints.isNotEmpty
-          ? {
-              Marker(
-                markerId: MarkerId('current_position'),
-                position: _animatedRoutePoints.last,
-                icon: BitmapDescriptor.defaultMarkerWithHue(
-                    BitmapDescriptor.hueOrange),
-              ),
-            }
-          : {},
-      polygons: _routeProgress > 0.8 ? (widget.territories ?? {}) : {},
-      myLocationEnabled: false,
-      myLocationButtonEnabled: false,
-      zoomControlsEnabled: false,
-      zoomGesturesEnabled: false,
-      scrollGesturesEnabled: false,
-      rotateGesturesEnabled: false,
-      tiltGesturesEnabled: false,
-      mapToolbarEnabled: false,
-      compassEnabled: false,
-    );
+    final metrics = path.computeMetrics().toList();
+    if (metrics.isEmpty) return;
+
+    final drawPath = Path();
+    for (final metric in metrics) {
+      drawPath.addPath(
+        metric.extractPath(0, metric.length * progress),
+        Offset.zero,
+      );
+    }
+
+    final linePaint = Paint()
+      ..color = lineColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawPath(drawPath, linePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PaceLinePainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.values != values ||
+        oldDelegate.minValue != minValue ||
+        oldDelegate.maxValue != maxValue ||
+        oldDelegate.lineColor != lineColor;
   }
 }

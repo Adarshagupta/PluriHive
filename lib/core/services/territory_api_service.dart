@@ -206,4 +206,37 @@ class TerritoryApiService {
       throw Exception('Get boss territories error: $e');
     }
   }
+
+  Future<Map<String, dynamic>> updateTerritoryName({
+    required String territoryId,
+    required String name,
+  }) async {
+    try {
+      final token = await _authService.getToken();
+      if (token == null) {
+        throw Exception('Not authenticated');
+      }
+
+      final response = await _client
+          .patch(
+            Uri.parse('${ApiConfig.baseUrl}/territories/$territoryId/name'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({'name': name}),
+          )
+          .timeout(ApiConfig.defaultTimeout);
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return data;
+      } else {
+        throw Exception(data['message'] ?? 'Failed to update territory name');
+      }
+    } catch (e) {
+      throw Exception('Update territory name error: $e');
+    }
+  }
 }
