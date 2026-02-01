@@ -13,6 +13,7 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mapbox;
 import '../../../../core/models/geo_types.dart';
 import 'package:video_player/video_player.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../../../core/widgets/route_preview.dart';
 import '../../domain/entities/position.dart';
 
@@ -52,6 +53,8 @@ class WorkoutSummaryScreen extends StatefulWidget {
 
 class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
     with TickerProviderStateMixin {
+  static const double _storyAspectRatio = 9 / 16;
+  static const double _storyMaxWidth = 360;
   final GlobalKey _summaryKey = GlobalKey();
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
@@ -60,6 +63,10 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
   late Animation<double> _chartAnimation;
   bool _isSharing = false;
   int _selectedStyle = 0;
+  final ImagePicker _imagePicker = ImagePicker();
+  Uint8List? _customBackgroundBytes;
+  String? _customBackgroundPath;
+  bool _isPickingBackground = false;
 
   AnimationController? _routeAnimController;
   double _routeProgress = 0.0;
@@ -628,6 +635,10 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
                             ),
                             const SizedBox(height: 8),
                             _buildStyleSelector(),
+                            if (_selectedStyle == 3) ...[
+                              const SizedBox(height: 10),
+                              _buildCustomBackgroundControls(),
+                            ],
                             const SizedBox(height: 12),
                             Center(
                               child: RepaintBoundary(
@@ -759,186 +770,203 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
         return _buildSummaryCardTicket();
       case 2:
         return _buildSummaryCardPlayful();
+      case 3:
+        return _buildSummaryCardCustom();
       default:
         return _buildSummaryCardClassic();
     }
+  }
+
+  Widget _buildStoryFrame({required Widget child}) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: _storyMaxWidth),
+        child: AspectRatio(
+          aspectRatio: _storyAspectRatio,
+          child: child,
+        ),
+      ),
+    );
   }
 
   Widget _buildSummaryCardClassic() {
     final dateLabel = DateFormat('EEE, MMM d').format(widget.workoutDate);
     final timeLabel = DateFormat('h:mm a').format(widget.workoutDate);
 
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 420),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(28),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.08),
-              blurRadius: 30,
-              offset: const Offset(0, 12),
+    return _buildStoryFrame(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final mapHeight = constraints.maxHeight * 0.44;
+          return Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(28),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.08),
+                  blurRadius: 30,
+                  offset: const Offset(0, 12),
+                ),
+              ],
             ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                height: 260,
-                width: double.infinity,
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: widget.routePoints != null &&
-                              widget.routePoints!.isNotEmpty
-                          ? _buildCompactMap()
-                          : _buildMapPlaceholder(),
-                    ),
-                    Positioned.fill(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.black.withOpacity(0.25),
-                              Colors.transparent,
-                              Colors.transparent,
-                              Colors.black.withOpacity(0.35),
-                            ],
-                            stops: const [0.0, 0.25, 0.7, 1.0],
-                          ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(28),
+              child: Column(
+                children: [
+                  SizedBox(
+                    height: mapHeight,
+                    width: double.infinity,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: widget.routePoints != null &&
+                                  widget.routePoints!.isNotEmpty
+                              ? _buildCompactMap()
+                              : _buildMapPlaceholder(),
                         ),
-                      ),
-                    ),
-                    Positioned(
-                      top: 16,
-                      left: 16,
-                      child: _buildBadge('Plurihive Run'),
-                    ),
-                    Positioned(
-                      top: 16,
-                      right: 16,
-                      child: _buildBadge(dateLabel, isLight: true),
-                    ),
-                    Positioned(
-                      bottom: 16,
-                      left: 16,
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.directions_run_rounded,
-                            color: Colors.white,
-                            size: 16,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Route captured',
-                            style: GoogleFonts.spaceGrotesk(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
-                              letterSpacing: 0.2,
+                        Positioned.fill(
+                          child: Container(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.black.withOpacity(0.25),
+                                  Colors.transparent,
+                                  Colors.transparent,
+                                  Colors.black.withOpacity(0.35),
+                                ],
+                                stops: const [0.0, 0.25, 0.7, 1.0],
+                              ),
                             ),
                           ),
-                        ],
-                      ),
+                        ),
+                        Positioned(
+                          top: 16,
+                          left: 16,
+                          child: _buildBadge('Plurihive Run'),
+                        ),
+                        Positioned(
+                          top: 16,
+                          right: 16,
+                          child: _buildBadge(dateLabel, isLight: true),
+                        ),
+                        Positioned(
+                          bottom: 16,
+                          left: 16,
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.directions_run_rounded,
+                                color: Colors.white,
+                                size: 16,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Route captured',
+                                style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _buildHeroMetric(
+                            value: widget.distanceKm.toStringAsFixed(2),
+                            unit: 'km',
+                            label: 'Distance',
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: _buildHeroMetric(
+                            value: _formatDuration(widget.duration),
+                            unit: '',
+                            label: 'Time',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                    child: GridView.count(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: 2.6,
+                      children: [
+                        _buildMetricTile(
+                          icon: Icons.map_rounded,
+                          value: '${widget.territoriesCaptured}',
+                          label: 'Zones',
+                          color: const Color(0xFF4DB6AC),
+                        ),
+                        _buildMetricTile(
+                          icon: Icons.star_rounded,
+                          value: '${widget.pointsEarned}',
+                          label: 'Points',
+                          color: const Color(0xFFFFB74D),
+                        ),
+                        _buildMetricTile(
+                          icon: Icons.speed_rounded,
+                          value: widget.avgSpeed.toStringAsFixed(1),
+                          label: 'Avg km/h',
+                          color: const Color(0xFF64B5F6),
+                        ),
+                        _buildMetricTile(
+                          icon: Icons.directions_walk_rounded,
+                          value: '${widget.steps}',
+                          label: 'Steps',
+                          color: const Color(0xFFFF8A65),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Spacer(),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Plurihive',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFF1C1C1C),
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                        Text(
+                          timeLabel,
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF6B6B6B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: _buildHeroMetric(
-                        value: widget.distanceKm.toStringAsFixed(2),
-                        unit: 'km',
-                        label: 'Distance',
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: _buildHeroMetric(
-                        value: _formatDuration(widget.duration),
-                        unit: '',
-                        label: 'Time',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 4, 20, 18),
-                child: GridView.count(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  crossAxisCount: 2,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                  childAspectRatio: 2.6,
-                  children: [
-                    _buildMetricTile(
-                      icon: Icons.map_rounded,
-                      value: '${widget.territoriesCaptured}',
-                      label: 'Zones',
-                      color: const Color(0xFF4DB6AC),
-                    ),
-                    _buildMetricTile(
-                      icon: Icons.star_rounded,
-                      value: '${widget.pointsEarned}',
-                      label: 'Points',
-                      color: const Color(0xFFFFB74D),
-                    ),
-                    _buildMetricTile(
-                      icon: Icons.speed_rounded,
-                      value: widget.avgSpeed.toStringAsFixed(1),
-                      label: 'Avg km/h',
-                      color: const Color(0xFF64B5F6),
-                    ),
-                    _buildMetricTile(
-                      icon: Icons.directions_walk_rounded,
-                      value: '${widget.steps}',
-                      label: 'Steps',
-                      color: const Color(0xFFFF8A65),
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Plurihive',
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: const Color(0xFF1C1C1C),
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                    Text(
-                      timeLabel,
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFF6B6B6B),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -960,6 +988,11 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
         'icon': Icons.auto_awesome_rounded,
         'colors': [const Color(0xFFCBB7FF), const Color(0xFFFF8A65)],
       },
+      {
+        'label': _customBackgroundBytes != null ? 'Custom' : 'Add photo',
+        'icon': Icons.photo_rounded,
+        'colors': [const Color(0xFF0F172A), const Color(0xFF475569)],
+      },
     ];
 
     return Padding(
@@ -979,6 +1012,9 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
                   setState(() {
                     _selectedStyle = index;
                   });
+                  if (index == 3 && _customBackgroundBytes == null) {
+                    _pickCustomBackground();
+                  }
                 },
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
@@ -1046,6 +1082,47 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
     );
   }
 
+  Future<void> _pickCustomBackground() async {
+    if (_isPickingBackground) return;
+    setState(() => _isPickingBackground = true);
+    try {
+      final file = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 2000,
+        maxHeight: 2000,
+        imageQuality: 88,
+      );
+      if (file == null) return;
+      final bytes = await file.readAsBytes();
+      if (!mounted) return;
+      setState(() {
+        _customBackgroundBytes = bytes;
+        _customBackgroundPath = file.path;
+        _selectedStyle = 3;
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to pick image: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isPickingBackground = false);
+      }
+    }
+  }
+
+  void _clearCustomBackground() {
+    setState(() {
+      _customBackgroundBytes = null;
+      _customBackgroundPath = null;
+    });
+  }
+
   Widget _buildSectionHeader({
     required String title,
     required String subtitle,
@@ -1074,6 +1151,105 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
               color: textSecondary,
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCustomBackgroundControls() {
+    final hasImage =
+        _customBackgroundPath != null || _customBackgroundBytes != null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Row(
+        children: [
+          if (hasImage) ...[
+            Container(
+              width: 44,
+              height: 44,
+              margin: const EdgeInsets.only(right: 10),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: _customBackgroundPath != null
+                  ? Image.file(
+                      File(_customBackgroundPath!),
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    )
+                  : (_customBackgroundBytes != null
+                      ? Image.memory(
+                          _customBackgroundBytes!,
+                          fit: BoxFit.cover,
+                          gaplessPlayback: true,
+                          errorBuilder: (_, __, ___) =>
+                              const SizedBox.shrink(),
+                        )
+                      : const SizedBox.shrink()),
+            ),
+          ],
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: _isPickingBackground ? null : _pickCustomBackground,
+              icon: Icon(
+                Icons.photo_library_rounded,
+                size: 18,
+                color: _isPickingBackground
+                    ? const Color(0xFFB0B0B0)
+                    : const Color(0xFF1C1C1C),
+              ),
+              label: Text(
+                _isPickingBackground
+                    ? 'Loading...'
+                    : hasImage
+                        ? 'Change photo'
+                        : 'Choose photo',
+                style: GoogleFonts.spaceGrotesk(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: _isPickingBackground
+                      ? const Color(0xFFB0B0B0)
+                      : const Color(0xFF1C1C1C),
+                ),
+              ),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                side: const BorderSide(color: Color(0xFFE0E0E0), width: 1.4),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+            ),
+          ),
+          if (hasImage) ...[
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              onPressed: _clearCustomBackground,
+              icon: const Icon(
+                Icons.delete_outline_rounded,
+                size: 18,
+                color: Color(0xFFE11D48),
+              ),
+              label: Text(
+                'Remove',
+                style: GoogleFonts.spaceGrotesk(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: const Color(0xFFE11D48),
+                ),
+              ),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+                side: const BorderSide(color: Color(0xFFFECACA), width: 1.2),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1541,139 +1717,142 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
     final dateLabel = DateFormat('EEE, MMM d').format(widget.workoutDate);
     final timeLabel = DateFormat('h:mm a').format(widget.workoutDate);
 
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 420),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFFBF5),
-          borderRadius: BorderRadius.circular(26),
-          border: Border.all(color: const Color(0xFFF0E1D1), width: 1.4),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.08),
-              blurRadius: 26,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(26),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'RUN TICKET',
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.2,
-                        color: const Color(0xFF1C1C1C),
-                      ),
-                    ),
-                    Text(
-                      dateLabel,
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFF6B6B6B),
-                      ),
-                    ),
-                  ],
+    return _buildStoryFrame(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final mapHeight = constraints.maxHeight * 0.36;
+          return Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFFBF5),
+              borderRadius: BorderRadius.circular(26),
+              border: Border.all(color: const Color(0xFFF0E1D1), width: 1.4),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.08),
+                  blurRadius: 26,
+                  offset: const Offset(0, 10),
                 ),
-              ),
-              SizedBox(
-                height: 210,
-                width: double.infinity,
-                child:
-                    widget.routePoints != null && widget.routePoints!.isNotEmpty
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'RUN TICKET',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.2,
+                            color: const Color(0xFF1C1C1C),
+                          ),
+                        ),
+                        Text(
+                          dateLabel,
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF6B6B6B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(
+                    height: mapHeight,
+                    width: double.infinity,
+                    child: widget.routePoints != null &&
+                            widget.routePoints!.isNotEmpty
                         ? _buildCompactMap()
                         : _buildMapPlaceholder(),
+                  ),
+                  const SizedBox(height: 10),
+                  _buildPerforationRow(),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _buildHeroMetric(
+                            value: widget.distanceKm.toStringAsFixed(2),
+                            unit: 'km',
+                            label: 'Distance',
+                          ),
+                        ),
+                        Expanded(
+                          child: _buildHeroMetric(
+                            value: _formatDuration(widget.duration),
+                            unit: '',
+                            label: 'Time',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 6, 20, 12),
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        _buildTicketPill(
+                          icon: Icons.star_rounded,
+                          label: '${widget.pointsEarned} pts',
+                          color: const Color(0xFFFFB74D),
+                        ),
+                        _buildTicketPill(
+                          icon: Icons.map_rounded,
+                          label: '${widget.territoriesCaptured} zones',
+                          color: const Color(0xFF81C784),
+                        ),
+                        _buildTicketPill(
+                          icon: Icons.speed_rounded,
+                          label: '${widget.avgSpeed.toStringAsFixed(1)} km/h',
+                          color: const Color(0xFF64B5F6),
+                        ),
+                        _buildTicketPill(
+                          icon: Icons.directions_walk_rounded,
+                          label: '${widget.steps} steps',
+                          color: const Color(0xFFFF8A65),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Spacer(),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Plurihive',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFF1C1C1C),
+                          ),
+                        ),
+                        Text(
+                          timeLabel,
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF6B6B6B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 10),
-              _buildPerforationRow(),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: _buildHeroMetric(
-                        value: widget.distanceKm.toStringAsFixed(2),
-                        unit: 'km',
-                        label: 'Distance',
-                      ),
-                    ),
-                    Expanded(
-                      child: _buildHeroMetric(
-                        value: _formatDuration(widget.duration),
-                        unit: '',
-                        label: 'Time',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 6, 20, 18),
-                child: Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    _buildTicketPill(
-                      icon: Icons.star_rounded,
-                      label: '${widget.pointsEarned} pts',
-                      color: const Color(0xFFFFB74D),
-                    ),
-                    _buildTicketPill(
-                      icon: Icons.map_rounded,
-                      label: '${widget.territoriesCaptured} zones',
-                      color: const Color(0xFF81C784),
-                    ),
-                    _buildTicketPill(
-                      icon: Icons.speed_rounded,
-                      label: '${widget.avgSpeed.toStringAsFixed(1)} km/h',
-                      color: const Color(0xFF64B5F6),
-                    ),
-                    _buildTicketPill(
-                      icon: Icons.directions_walk_rounded,
-                      label: '${widget.steps} steps',
-                      color: const Color(0xFFFF8A65),
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Plurihive',
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                        color: const Color(0xFF1C1C1C),
-                      ),
-                    ),
-                    Text(
-                      timeLabel,
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFF6B6B6B),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -1681,122 +1860,125 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
   Widget _buildSummaryCardPlayful() {
     final dateLabel = DateFormat('MMM d').format(widget.workoutDate);
 
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 420),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Color(0xFFFFE7D6),
-              Color(0xFFDAD4FF),
-            ],
-          ),
-          borderRadius: BorderRadius.circular(28),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              blurRadius: 28,
-              offset: const Offset(0, 12),
-            ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Playful Run',
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
-                        color: const Color(0xFF1C1C1C),
-                      ),
-                    ),
-                    _buildBadge(dateLabel, isLight: true),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  height: 180,
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(22),
-                    border: Border.all(color: Colors.white70, width: 1),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(22),
-                    child: widget.routePoints != null &&
-                            widget.routePoints!.isNotEmpty
-                        ? _buildCompactMap()
-                        : _buildMapPlaceholder(),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 12, horizontal: 14),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: _buildHeroMetric(
-                          value: widget.distanceKm.toStringAsFixed(2),
-                          unit: 'km',
-                          label: 'Distance',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 12, horizontal: 14),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: _buildHeroMetric(
-                          value: _formatDuration(widget.duration),
-                          unit: '',
-                          label: 'Time',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  alignment: WrapAlignment.center,
-                  children: [
-                    _buildFunChip(
-                        Icons.star_rounded, '${widget.pointsEarned} pts'),
-                    _buildFunChip(Icons.map_rounded,
-                        '${widget.territoriesCaptured} zones'),
-                    _buildFunChip(Icons.speed_rounded,
-                        '${widget.avgSpeed.toStringAsFixed(1)} km/h'),
-                    _buildFunChip(
-                        Icons.directions_walk_rounded, '${widget.steps} steps'),
-                  ],
+    return _buildStoryFrame(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final mapHeight = constraints.maxHeight * 0.34;
+          return Container(
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color(0xFFFFE7D6),
+                  Color(0xFFDAD4FF),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(28),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 28,
+                  offset: const Offset(0, 12),
                 ),
               ],
             ),
-          ),
-        ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(28),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Playful Run',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF1C1C1C),
+                          ),
+                        ),
+                        _buildBadge(dateLabel, isLight: true),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      height: mapHeight,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(color: Colors.white70, width: 1),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(22),
+                        child: widget.routePoints != null &&
+                                widget.routePoints!.isNotEmpty
+                            ? _buildCompactMap()
+                            : _buildMapPlaceholder(),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 12, horizontal: 14),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(18),
+                            ),
+                            child: _buildHeroMetric(
+                              value: widget.distanceKm.toStringAsFixed(2),
+                              unit: 'km',
+                              label: 'Distance',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 12, horizontal: 14),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(18),
+                            ),
+                            child: _buildHeroMetric(
+                              value: _formatDuration(widget.duration),
+                              unit: '',
+                              label: 'Time',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      alignment: WrapAlignment.center,
+                      children: [
+                        _buildFunChip(
+                            Icons.star_rounded, '${widget.pointsEarned} pts'),
+                        _buildFunChip(Icons.map_rounded,
+                            '${widget.territoriesCaptured} zones'),
+                        _buildFunChip(Icons.speed_rounded,
+                            '${widget.avgSpeed.toStringAsFixed(1)} km/h'),
+                        _buildFunChip(
+                            Icons.directions_walk_rounded, '${widget.steps} steps'),
+                      ],
+                    ),
+                    const Spacer(),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -2182,6 +2364,286 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen>
       showStartEnd: _animatedRoutePoints.isEmpty,
     );
   }
+
+  Widget _buildLogoBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.55),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.15), width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Image.asset(
+            'assets/icons/logo.png',
+            width: 18,
+            height: 18,
+            color: Colors.white,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'PluriHive',
+            style: GoogleFonts.spaceGrotesk(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              letterSpacing: 0.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCustomBackgroundImage() {
+    if (_customBackgroundPath != null) {
+      return Image.file(
+        File(_customBackgroundPath!),
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => _buildCustomBackgroundFallback(),
+      );
+    }
+    if (_customBackgroundBytes != null) {
+      return Image.memory(
+        _customBackgroundBytes!,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => _buildCustomBackgroundFallback(),
+      );
+    }
+    return _buildCustomBackgroundFallback();
+  }
+
+  Widget _buildCustomBackgroundFallback() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+        ),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.photo_rounded,
+              color: Colors.white70,
+              size: 44,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Add your background',
+              style: GoogleFonts.spaceGrotesk(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Colors.white70,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Tap choose photo below',
+              style: GoogleFonts.dmSans(
+                fontSize: 12,
+                color: Colors.white54,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOverlayStat({required String label, required String value}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          value,
+          style: GoogleFonts.spaceGrotesk(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: GoogleFonts.dmSans(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: Colors.white70,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRoutePatternPreview() {
+    final hasRoute =
+        widget.routePoints != null && widget.routePoints!.isNotEmpty;
+    return Container(
+      height: 86,
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.96),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withOpacity(0.7)),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: hasRoute
+            ? CustomPaint(
+                painter: _RoutePatternPainter(
+                  points: widget.routePoints!,
+                  lineColor: const Color(0xFF0E9FA0),
+                ),
+              )
+            : Center(
+                child: Text(
+                  'Route pattern unavailable',
+                  style: GoogleFonts.dmSans(
+                    fontSize: 11,
+                    color: const Color(0xFF94A3B8),
+                  ),
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryCardCustom() {
+    final dateLabel = DateFormat('EEE, MMM d').format(widget.workoutDate);
+    final paceMinPerKm = widget.distanceKm > 0
+        ? (widget.duration.inSeconds / 60.0) / widget.distanceKm
+        : 0.0;
+    final paceLabel = _formatPace(paceMinPerKm);
+    final hasImage =
+        _customBackgroundPath != null || _customBackgroundBytes != null;
+
+    return _buildStoryFrame(
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(28),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.18),
+              blurRadius: 30,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: hasImage
+                    ? _buildCustomBackgroundImage()
+                    : _buildCustomBackgroundFallback(),
+              ),
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withOpacity(0.35),
+                        Colors.black.withOpacity(0.08),
+                        Colors.black.withOpacity(0.45),
+                      ],
+                      stops: const [0.0, 0.45, 1.0],
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 16,
+                left: 16,
+                right: 16,
+                child: Row(
+                  children: [
+                    _buildLogoBadge(),
+                    const Spacer(),
+                    _buildBadge(dateLabel, isLight: true),
+                  ],
+                ),
+              ),
+              Positioned(
+                bottom: 16,
+                left: 16,
+                right: 16,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.35),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: Colors.white.withOpacity(0.12)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Run recap',
+                        style: GoogleFonts.spaceGrotesk(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _buildOverlayStat(
+                              label: 'Distance',
+                              value:
+                                  '${widget.distanceKm.toStringAsFixed(2)} km',
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _buildOverlayStat(
+                              label: 'Pace',
+                              value: paceLabel,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _buildOverlayStat(
+                              label: 'Time',
+                              value: _formatDuration(widget.duration),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Running pattern',
+                        style: GoogleFonts.dmSans(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      _buildRoutePatternPreview(),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _InlineStat {
@@ -2267,5 +2729,79 @@ class _PaceLinePainter extends CustomPainter {
         oldDelegate.minValue != minValue ||
         oldDelegate.maxValue != maxValue ||
         oldDelegate.lineColor != lineColor;
+  }
+}
+
+class _RoutePatternPainter extends CustomPainter {
+  final List<LatLng> points;
+  final Color lineColor;
+
+  _RoutePatternPainter({
+    required this.points,
+    required this.lineColor,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2) return;
+
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLng = points.first.longitude;
+    double maxLng = points.first.longitude;
+
+    for (final point in points) {
+      if (point.latitude < minLat) minLat = point.latitude;
+      if (point.latitude > maxLat) maxLat = point.latitude;
+      if (point.longitude < minLng) minLng = point.longitude;
+      if (point.longitude > maxLng) maxLng = point.longitude;
+    }
+
+    double width = (maxLng - minLng).abs();
+    double height = (maxLat - minLat).abs();
+    if (width == 0) width = 0.000001;
+    if (height == 0) height = 0.000001;
+
+    const padding = 8.0;
+    final drawWidth = size.width - padding * 2;
+    final drawHeight = size.height - padding * 2;
+
+    Offset mapPoint(LatLng point) {
+      final x = ((point.longitude - minLng) / width) * drawWidth + padding;
+      final y = ((maxLat - point.latitude) / height) * drawHeight + padding;
+      return Offset(x, y);
+    }
+
+    final path = Path();
+    for (int i = 0; i < points.length; i++) {
+      final offset = mapPoint(points[i]);
+      if (i == 0) {
+        path.moveTo(offset.dx, offset.dy);
+      } else {
+        path.lineTo(offset.dx, offset.dy);
+      }
+    }
+
+    final linePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.6
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = lineColor;
+    canvas.drawPath(path, linePaint);
+
+    if (points.length >= 2) {
+      final start = mapPoint(points.first);
+      final end = mapPoint(points.last);
+      final startPaint = Paint()..color = lineColor.withOpacity(0.9);
+      final endPaint = Paint()..color = lineColor.withOpacity(0.9);
+      canvas.drawCircle(start, 3.5, startPaint);
+      canvas.drawCircle(end, 3.5, endPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RoutePatternPainter oldDelegate) {
+    return oldDelegate.points != points || oldDelegate.lineColor != lineColor;
   }
 }

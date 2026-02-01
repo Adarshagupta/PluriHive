@@ -10,12 +10,15 @@ import 'package:pedometer/pedometer.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_fonts/google_fonts.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:async';
 import 'dart:math';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'dart:io';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/services/background_tracking_service.dart';
 import '../../../../core/services/motion_detection_service.dart';
@@ -283,6 +286,10 @@ class _MapScreenState extends State<MapScreen>
       Duration(milliseconds: 240);
   static const Duration _widgetUpdateThrottle =
       Duration(seconds: 12);
+  static const Duration _syncStatusInterval =
+      Duration(seconds: 12);
+  static const Duration _syncRetryInterval =
+      Duration(seconds: 45);
   static const Duration _mapIdleFetchWindow =
       Duration(seconds: 2);
   DateTime? _lastWidgetUpdateAt;
@@ -321,6 +328,7 @@ class _MapScreenState extends State<MapScreen>
   Timer? _syncStatusTimer;
   int _pendingSyncCount = 0;
   bool _isSyncing = false;
+  DateTime? _lastSyncAttemptAt;
   bool _followUser = true;
   final Set<int> _activePointers = <int>{};
   DateTime? _lastMapGestureAt;
@@ -449,11 +457,11 @@ class _MapScreenState extends State<MapScreen>
     }
 
     // Kick off any pending offline sync in background
-    _refreshSyncStatus();
+    _refreshSyncStatus(triggerSync: true);
     _triggerBackgroundSync();
     _syncStatusTimer ??= Timer.periodic(
-      const Duration(seconds: 12),
-      (_) => _refreshSyncStatus(),
+      _syncStatusInterval,
+      (_) => _refreshSyncStatus(triggerSync: true),
     );
 
     _authApiService.getUserId().then((id) => _currentUserId = id);
@@ -1027,6 +1035,7 @@ class _MapScreenState extends State<MapScreen>
           avatarSource: avatarSource,
           territoryId: data['territoryId']?.toString(),
           territoryName: data['territoryName']?.toString(),
+          polygonPoints: polygonPoints,
         );
         return true;
       }
@@ -1079,6 +1088,7 @@ class _MapScreenState extends State<MapScreen>
     String? avatarSource,
     String? territoryId,
     String? territoryName,
+    List<LatLng>? polygonPoints,
   }) {
     final accent = isBoss
         ? const Color(0xFFF5B700)
@@ -1300,6 +1310,41 @@ class _MapScreenState extends State<MapScreen>
                                       child: const Text('Close'),
                                     ),
                                   ),
+                                  if (isOwn) ...[
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: OutlinedButton.icon(
+                                        onPressed: () {
+                                          _shareTerritoryDetails(
+                                            ownerName: ownerName,
+                                            isOwn: isOwn,
+                                            captureCount: captureCount,
+                                            points: points,
+                                            areaSqMeters: areaSqMeters,
+                                            isBoss: isBoss,
+                                            territoryName: cleanedName,
+                                            territoryId: territoryIdText,
+                                            polygonPoints: polygonPoints,
+                                          );
+                                        },
+                                        icon: const Icon(Icons.share),
+                                        label: const Text('Share'),
+                                        style: OutlinedButton.styleFrom(
+                                          side: BorderSide(
+                                            color: accent.withOpacity(0.35),
+                                          ),
+                                          foregroundColor:
+                                              const Color(0xFF111827),
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 14,
+                                          ),
+                                          textStyle: GoogleFonts.spaceGrotesk(
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                   if (isOwn &&
                                       !isBoss &&
                                       territoryIdText != null &&
@@ -1836,6 +1881,325 @@ class _MapScreenState extends State<MapScreen>
     for (final clientId in clientIds) {
       await _activityLocalDataSource.deleteByClientId(clientId);
     }
+  }
+
+  Future<void> _shareTerritoryDetails({
+    required String ownerName,
+    required bool isOwn,
+    required int captureCount,
+    required bool isBoss,
+    int? points,
+    double? areaSqMeters,
+    String? territoryName,
+    String? territoryId,
+    List<LatLng>? polygonPoints,
+  }) async {
+    final cleanedName = territoryName?.trim();
+    final hasName = cleanedName != null && cleanedName.isNotEmpty;
+    final territoryLabel = hasName ? '"$cleanedName"' : 'a territory';
+    final title = isOwn
+        ? 'I claimed $territoryLabel on PluriHive!'
+        : '$ownerName owns $territoryLabel on PluriHive';
+    final details = <String>[];
+    if (captureCount > 0) {
+      details.add('Captures: $captureCount');
+    }
+    if (points != null) {
+      details.add('Points: $points');
+    }
+    if (areaSqMeters != null) {
+      details.add('Area: ${_formatAreaForCard(areaSqMeters)}');
+    }
+    if (isBoss) {
+      details.add('Boss zone');
+    }
+    final detailLine = details.isNotEmpty ? '\n${details.join(' • ')}' : '';
+    final shareText = '$title$detailLine\n#PluriHive #Territory';
+
+    final resolvedPoints =
+        polygonPoints ?? _resolveTerritoryPolygonPoints(territoryId);
+    if (resolvedPoints != null && resolvedPoints.length >= 3) {
+      try {
+        final bytes = await _renderTerritoryShareImage(
+          points: resolvedPoints,
+          isOwn: isOwn,
+          ownerName: ownerName,
+          territoryName: cleanedName,
+          captureCount: captureCount,
+          pointsEarned: points,
+          areaSqMeters: areaSqMeters,
+          isBoss: isBoss,
+        );
+        if (bytes != null) {
+          final tempDir = await getTemporaryDirectory();
+          final file = File(
+            '${tempDir.path}/plurihive_territory_${DateTime.now().millisecondsSinceEpoch}.png',
+          );
+          await file.writeAsBytes(bytes);
+          await Share.shareXFiles(
+            [XFile(file.path)],
+            text: shareText,
+            subject: 'PluriHive Territory',
+          );
+          return;
+        }
+      } catch (e) {
+        print('Territory share image failed: $e');
+      }
+    }
+
+    await Share.share(
+      shareText,
+      subject: 'PluriHive Territory',
+    );
+  }
+
+  List<LatLng>? _resolveTerritoryPolygonPoints(String? territoryId) {
+    if (territoryId == null || territoryId.isEmpty) return null;
+    for (final entry in _territoryData.entries) {
+      final storedId = entry.value['territoryId']?.toString();
+      if (storedId == territoryId) {
+        final points = entry.value['polygonPoints'];
+        if (points is List<LatLng> && points.length >= 3) {
+          return points;
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<Uint8List?> _renderTerritoryShareImage({
+    required List<LatLng> points,
+    required bool isOwn,
+    required String ownerName,
+    required int captureCount,
+    required bool isBoss,
+    int? pointsEarned,
+    double? areaSqMeters,
+    String? territoryName,
+  }) async {
+    const width = 1080.0;
+    const height = 1920.0;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final size = const Size(width, height);
+
+    final bgPaint = Paint()
+      ..shader = ui.Gradient.linear(
+        Offset(0, 0),
+        Offset(0, height),
+        const [
+          Color(0xFF0F172A),
+          Color(0xFF111827),
+        ],
+      );
+    canvas.drawRect(Rect.fromLTWH(0, 0, width, height), bgPaint);
+
+    final accent =
+        isBoss ? const Color(0xFFF5B700) : (isOwn ? const Color(0xFF22C55E) : const Color(0xFFF59E0B));
+    final nameText = (territoryName != null && territoryName.isNotEmpty)
+        ? territoryName
+        : (isOwn ? 'Your Territory' : 'Territory');
+    final ownerText = isOwn ? 'Captured by you' : 'Owned by $ownerName';
+
+    final headerX = 96.0;
+    double headerY = 110.0;
+
+    final logo = await _loadTerritoryShareLogo();
+    if (logo != null) {
+      const logoSize = 42.0;
+      final logoRect = Rect.fromLTWH(headerX, headerY, logoSize, logoSize);
+      paintImage(
+        canvas: canvas,
+        rect: logoRect,
+        image: logo,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.high,
+      );
+      headerY += 2;
+      _drawCanvasText(
+        canvas,
+        'PluriHive',
+        Offset(headerX + logoSize + 12, headerY + 6),
+        color: Colors.white,
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+      );
+    } else {
+      _drawCanvasText(
+        canvas,
+        'PluriHive',
+        Offset(headerX, headerY),
+        color: Colors.white,
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+      );
+    }
+
+    _drawCanvasText(
+      canvas,
+      nameText,
+      Offset(headerX, 170),
+      color: Colors.white,
+      fontSize: 32,
+      fontWeight: FontWeight.w700,
+    );
+    _drawCanvasText(
+      canvas,
+      ownerText,
+      Offset(headerX, 214),
+      color: Colors.white70,
+      fontSize: 18,
+      fontWeight: FontWeight.w500,
+    );
+
+    final cardRect = Rect.fromLTWH(96, 320, width - 192, 980);
+    final cardRRect =
+        RRect.fromRectAndRadius(cardRect, const Radius.circular(36));
+    final cardPaint = Paint()..color = const Color(0xFFF8FAFC);
+    canvas.drawRRect(cardRRect, cardPaint);
+
+    final outlinePaint = Paint()
+      ..color = Colors.white.withOpacity(0.12)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2;
+    canvas.drawRRect(cardRRect, outlinePaint);
+
+    final previewRect = cardRect.deflate(48);
+    _drawTerritoryPolygon(
+      canvas,
+      previewRect,
+      points,
+      accent,
+    );
+
+    double footerY = cardRect.bottom + 60;
+    final detailParts = <String>[];
+    if (captureCount > 0) detailParts.add('$captureCount captures');
+    if (pointsEarned != null) detailParts.add('$pointsEarned pts');
+    if (areaSqMeters != null) {
+      detailParts.add(_formatAreaForCard(areaSqMeters));
+    }
+    if (isBoss) detailParts.add('Boss zone');
+
+    if (detailParts.isNotEmpty) {
+      _drawCanvasText(
+        canvas,
+        detailParts.join(' • '),
+        Offset(headerX, footerY),
+        color: Colors.white70,
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+      );
+    }
+
+    final picture = recorder.endRecording();
+    final image =
+        await picture.toImage(width.toInt(), height.toInt());
+    final byteData =
+        await image.toByteData(format: ui.ImageByteFormat.png);
+    return byteData?.buffer.asUint8List();
+  }
+
+  Future<ui.Image?> _loadTerritoryShareLogo() async {
+    try {
+      final data = await rootBundle.load('assets/icons/logo.png');
+      final codec = await ui.instantiateImageCodec(
+        data.buffer.asUint8List(),
+        targetWidth: 96,
+        targetHeight: 96,
+      );
+      final frame = await codec.getNextFrame();
+      return frame.image;
+    } catch (e) {
+      print('Logo load failed: $e');
+      return null;
+    }
+  }
+
+  void _drawCanvasText(
+    Canvas canvas,
+    String text,
+    Offset offset, {
+    required Color color,
+    required double fontSize,
+    required FontWeight fontWeight,
+  }) {
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: color,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          fontFamily: 'SpaceGrotesk',
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    textPainter.paint(canvas, offset);
+  }
+
+  void _drawTerritoryPolygon(
+    Canvas canvas,
+    Rect rect,
+    List<LatLng> points,
+    Color accent,
+  ) {
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLng = points.first.longitude;
+    double maxLng = points.first.longitude;
+
+    for (final point in points) {
+      if (point.latitude < minLat) minLat = point.latitude;
+      if (point.latitude > maxLat) maxLat = point.latitude;
+      if (point.longitude < minLng) minLng = point.longitude;
+      if (point.longitude > maxLng) maxLng = point.longitude;
+    }
+
+    double width = (maxLng - minLng).abs();
+    double height = (maxLat - minLat).abs();
+    if (width == 0) width = 0.000001;
+    if (height == 0) height = 0.000001;
+
+    final scaleX = rect.width / width;
+    final scaleY = rect.height / height;
+    final scale = min(scaleX, scaleY);
+    final drawWidth = width * scale;
+    final drawHeight = height * scale;
+    final offsetX = rect.left + (rect.width - drawWidth) / 2;
+    final offsetY = rect.top + (rect.height - drawHeight) / 2;
+
+    Offset mapPoint(LatLng point) {
+      final x = ((point.longitude - minLng) * scale) + offsetX;
+      final y = ((maxLat - point.latitude) * scale) + offsetY;
+      return Offset(x, y);
+    }
+
+    final path = Path();
+    for (int i = 0; i < points.length; i++) {
+      final offset = mapPoint(points[i]);
+      if (i == 0) {
+        path.moveTo(offset.dx, offset.dy);
+      } else {
+        path.lineTo(offset.dx, offset.dy);
+      }
+    }
+    path.close();
+
+    final fillPaint = Paint()
+      ..style = PaintingStyle.fill
+      ..color = accent.withOpacity(0.2);
+    canvas.drawPath(path, fillPaint);
+
+    final strokePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round
+      ..color = accent.withOpacity(0.9);
+    canvas.drawPath(path, strokePaint);
   }
 
   String? _extractAvatarSource(Map<String, dynamic> activityData) {
@@ -9287,13 +9651,16 @@ class _MapScreenState extends State<MapScreen>
     });
   }
 
-  Future<void> _refreshSyncStatus() async {
+  Future<void> _refreshSyncStatus({bool triggerSync = false}) async {
     try {
       final pending = await _pendingSyncDataSource.getPending();
       if (!mounted) return;
       setState(() {
         _pendingSyncCount = pending.length;
       });
+      if (triggerSync) {
+        _maybeTriggerSyncRetry(pendingCount: pending.length);
+      }
     } catch (e) {
       print('[warn] Sync status refresh failed: $e');
     }
@@ -9352,6 +9719,7 @@ class _MapScreenState extends State<MapScreen>
 
   void _triggerBackgroundSync() {
     if (_isSyncing) return;
+    _lastSyncAttemptAt = DateTime.now();
     if (mounted) {
       setState(() {
         _isSyncing = true;
@@ -9382,6 +9750,20 @@ class _MapScreenState extends State<MapScreen>
         _isSyncing = false;
       }
     });
+  }
+
+  void _maybeTriggerSyncRetry({int? pendingCount, bool force = false}) {
+    final count = pendingCount ?? _pendingSyncCount;
+    if (count <= 0) return;
+    if (_isSyncing) return;
+    final lastAttempt = _lastSyncAttemptAt;
+    final now = DateTime.now();
+    if (!force &&
+        lastAttempt != null &&
+        now.difference(lastAttempt) < _syncRetryInterval) {
+      return;
+    }
+    _triggerBackgroundSync();
   }
 
   void _handleStart(BuildContext context) {

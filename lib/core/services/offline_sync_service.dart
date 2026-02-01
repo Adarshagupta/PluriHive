@@ -10,6 +10,7 @@ class OfflineSyncService {
   final PendingSyncDataSource pendingSyncDataSource;
   final AuthApiService authApiService;
   final ActivityLocalDataSource? activityLocalDataSource;
+  Future<int>? _syncFuture;
 
   OfflineSyncService({
     required this.trackingApiService,
@@ -27,7 +28,20 @@ class OfflineSyncService {
     await pendingSyncDataSource.addTerritoryPayload(payload);
   }
 
-  Future<int> syncPending() async {
+  Future<int> syncPending() {
+    final inFlight = _syncFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+    final future = _syncPendingInternal();
+    final wrapped = future.whenComplete(() {
+      _syncFuture = null;
+    });
+    _syncFuture = wrapped;
+    return wrapped;
+  }
+
+  Future<int> _syncPendingInternal() async {
     final isAuthed = await authApiService.isAuthenticated();
     if (!isAuthed) {
       print('[sync] Offline sync skipped: not authenticated');

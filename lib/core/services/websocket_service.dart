@@ -8,6 +8,9 @@ class WebSocketService {
 
   IO.Socket? _socket;
   String? _userId;
+  bool _connecting = false;
+  DateTime? _lastConnectAttemptAt;
+  static const Duration _connectCooldown = Duration(seconds: 5);
   final List<Function(dynamic)> _pendingUserStatsListeners = [];
   final List<Function(dynamic)> _pendingTerritorySnapshotListeners = [];
   final List<Function(dynamic)> _pendingBoostListeners = [];
@@ -22,6 +25,26 @@ class WebSocketService {
 
     _userId = userId;
 
+    final now = DateTime.now();
+    if (_socket != null) {
+      if (_socket!.connected) {
+        return;
+      }
+      final lastAttempt = _lastConnectAttemptAt;
+      if (_connecting &&
+          lastAttempt != null &&
+          now.difference(lastAttempt) < _connectCooldown) {
+        return;
+      }
+      if (lastAttempt != null &&
+          now.difference(lastAttempt) < _connectCooldown) {
+        return;
+      }
+    }
+
+    _connecting = true;
+    _lastConnectAttemptAt = now;
+
     // Ensure baseUrl is sanitized and persisted before building socket options.
     try {
       final resolvedBase = await ApiConfig.getBaseUrl();
@@ -35,7 +58,7 @@ class WebSocketService {
     }
 
     final socketOptions = _buildSocketOptions(token);
-    final socketUri = ApiConfig.wsUrl;
+    final socketUri = _buildSocketUri();
     socketOptions['path'] = '/socket.io';
     print('[WS] connect uri=$socketUri');
 
@@ -43,6 +66,7 @@ class WebSocketService {
 
     _socket!.onConnect((_) {
       print('✅ WebSocket connected');
+      _connecting = false;
       // Announce user connection
       _socket!.emit('user:connect', {'userId': userId});
       _socket!.off('user:stats:update');
@@ -64,18 +88,22 @@ class WebSocketService {
 
     _socket!.onDisconnect((_) {
       print('❌ WebSocket disconnected');
+      _connecting = false;
     });
 
     _socket!.onReconnect((attempt) {
       print('🔄 WebSocket reconnected (attempt $attempt)');
+      _connecting = false;
     });
 
     _socket!.onConnectError((error) {
       print('❌ WebSocket connection error: $error');
+      _connecting = false;
     });
 
     _socket!.onError((error) {
       print('❌ WebSocket error: $error');
+      _connecting = false;
     });
 
     _socket!.connect();
@@ -106,13 +134,13 @@ class WebSocketService {
 
     final options = IO.OptionBuilder()
         .enableForceNew()
-        .setTransports(['websocket'])
+        .setTransports(['websocket', 'polling'])
         .disableAutoConnect()
         .enableReconnection()
         .setReconnectionAttempts(10)
         .setReconnectionDelay(500)
         .setReconnectionDelayMax(2000)
-        .setTimeout(8000)
+        .setTimeout(15000)
         .setAuth({'token': token})
         .setExtraHeaders({'Authorization': 'Bearer $token'})
         .build();
@@ -152,6 +180,7 @@ class WebSocketService {
       _socket!.dispose();
       _socket = null;
       _userId = null;
+      _connecting = false;
       print('🔌 WebSocket disconnected and disposed');
     }
   }

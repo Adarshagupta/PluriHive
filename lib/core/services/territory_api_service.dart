@@ -49,7 +49,7 @@ class TerritoryApiService {
             },
             body: jsonEncode(body),
           )
-          .timeout(ApiConfig.defaultTimeout);
+          .timeout(ApiConfig.uploadTimeout);
 
       final data = jsonDecode(response.body);
 
@@ -82,7 +82,7 @@ class TerritoryApiService {
             },
             body: jsonEncode(payload),
           )
-          .timeout(ApiConfig.defaultTimeout);
+          .timeout(ApiConfig.uploadTimeout);
 
       final data = jsonDecode(response.body);
 

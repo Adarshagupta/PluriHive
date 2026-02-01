@@ -37,6 +37,7 @@ export class RealtimeGateway
   private readonly territorySnapshotDelayMs = 80;
   private readonly territorySnapshotRadiusDelayMs = 160;
   private readonly territorySnapshotHardLimit = 8000;
+  private lastSnapshotErrorAt?: number;
   private territoryPendingByHex = new Map<string, any>();
   private territoryFlushTimer?: NodeJS.Timeout;
   private territoryEventBuffer: Array<{
@@ -260,66 +261,74 @@ export class RealtimeGateway
     },
     @ConnectedSocket() client: Socket,
   ) {
-    const lat = Number(data?.lat);
-    const lng = Number(data?.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
+    try {
+      const lat = Number(data?.lat);
+      const lng = Number(data?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
 
-    const rawRadii =
-      Array.isArray(data?.radiiKm) && data.radiiKm.length > 0
-        ? data.radiiKm
-        : [data?.radiusKm ?? 20];
-    const radii = Array.from(
-      new Set(
-        rawRadii
-          .map((radius) => Number(radius))
-          .filter((radius) => Number.isFinite(radius) && radius > 0)
-          .map((radius) =>
-            this.clampNumber(
-              radius,
-              this.territorySnapshotMinRadiusKm,
-              this.territorySnapshotMaxRadiusKm,
+      const rawRadii =
+        Array.isArray(data?.radiiKm) && data.radiiKm.length > 0
+          ? data.radiiKm
+          : [data?.radiusKm ?? 20];
+      const radii = Array.from(
+        new Set(
+          rawRadii
+            .map((radius) => Number(radius))
+            .filter((radius) => Number.isFinite(radius) && radius > 0)
+            .map((radius) =>
+              this.clampNumber(
+                radius,
+                this.territorySnapshotMinRadiusKm,
+                this.territorySnapshotMaxRadiusKm,
+              ),
             ),
-          ),
-      ),
-    ).sort((a, b) => a - b);
-    if (radii.length === 0) return;
+        ),
+      ).sort((a, b) => a - b);
+      if (radii.length === 0) return;
 
-    const batchSize = this.clampNumber(
-      Number(data?.batchSize ?? 450),
-      this.territorySnapshotBatchMin,
-      this.territorySnapshotBatchMax,
-    );
-
-    const requestId = randomUUID();
-    client.data.territorySnapshotRequestId = requestId;
-
-    const seenHex = new Set<string>();
-    for (const radiusKm of radii) {
-      if (!this.isSnapshotRequestActive(client, requestId)) return;
-      const territories = await this.queryTerritoriesInRadius(
-        lat,
-        lng,
-        radiusKm,
-      );
-      if (!this.isSnapshotRequestActive(client, requestId)) return;
-      const filtered = territories.filter((territory) => {
-        const hexId = territory?.hexId?.toString();
-        if (!hexId || seenHex.has(hexId)) return false;
-        seenHex.add(hexId);
-        return true;
-      });
-
-      await this.emitSnapshotBatches(
-        client,
-        filtered,
-        radiusKm,
-        batchSize,
-        requestId,
+      const batchSize = this.clampNumber(
+        Number(data?.batchSize ?? 450),
+        this.territorySnapshotBatchMin,
+        this.territorySnapshotBatchMax,
       );
 
-      if (!this.isSnapshotRequestActive(client, requestId)) return;
-      await this.sleep(this.territorySnapshotRadiusDelayMs);
+      const requestId = randomUUID();
+      client.data.territorySnapshotRequestId = requestId;
+
+      const seenHex = new Set<string>();
+      for (const radiusKm of radii) {
+        if (!this.isSnapshotRequestActive(client, requestId)) return;
+        const territories = await this.queryTerritoriesInRadius(
+          lat,
+          lng,
+          radiusKm,
+        );
+        if (!this.isSnapshotRequestActive(client, requestId)) return;
+        const filtered = territories.filter((territory) => {
+          const hexId = territory?.hexId?.toString();
+          if (!hexId || seenHex.has(hexId)) return false;
+          seenHex.add(hexId);
+          return true;
+        });
+
+        await this.emitSnapshotBatches(
+          client,
+          filtered,
+          radiusKm,
+          batchSize,
+          requestId,
+        );
+
+        if (!this.isSnapshotRequestActive(client, requestId)) return;
+        await this.sleep(this.territorySnapshotRadiusDelayMs);
+      }
+    } catch (error) {
+      const now = Date.now();
+      if (!this.lastSnapshotErrorAt || now - this.lastSnapshotErrorAt > 5000) {
+        this.lastSnapshotErrorAt = now;
+        console.log("territory snapshot failed:", error);
+      }
     }
   }
 
