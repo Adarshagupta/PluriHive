@@ -10,6 +10,7 @@ import { UserService } from "../user/user.service";
 import { CreateActivityDto } from "./dto/activity.dto";
 import { RedisService } from "../redis/redis.service";
 import { MapDrop } from "../engagement/entities/map-drop.entity";
+import { EngagementService } from "../engagement/engagement.service";
 
 @Injectable()
 export class TrackingService {
@@ -23,6 +24,7 @@ export class TrackingService {
     private mapDropRepository: Repository<MapDrop>,
     private userService: UserService,
     private redisService: RedisService,
+    private engagementService: EngagementService,
   ) {}
 
   async saveActivity(
@@ -148,7 +150,10 @@ export class TrackingService {
         points: normalizedData.pointsEarned || 0,
         workouts: 1,
       },
-      { notify: false },
+      {
+        notify: false,
+        occurredAt: normalizedData.endTime ?? new Date(),
+      },
     );
 
     const streakDate = normalizedData.endTime
@@ -156,6 +161,18 @@ export class TrackingService {
       : new Date();
     await this.userService.updateStreak(userId, streakDate, { notify: false });
     this.userService.notifyStatsUpdated(userId);
+
+    try {
+      await this.engagementService.updateMissionsFromActivity(userId, {
+        distanceMeters: normalizedData.distanceMeters,
+        steps: normalizedData.steps,
+        territories: normalizedData.territoriesCaptured,
+        workouts: 1,
+        occurredAt: normalizedData.endTime ?? new Date(),
+      });
+    } catch (error) {
+      console.error("Mission update failed:", error);
+    }
 
     await this.redisService.bumpVersion(this.getActivitiesVersionKey(userId));
 

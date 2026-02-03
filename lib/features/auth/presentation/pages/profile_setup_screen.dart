@@ -80,6 +80,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   final _weightController = TextEditingController();
   final _heightController = TextEditingController();
   final _ageController = TextEditingController();
+  final _cityController = TextEditingController();
   String _selectedGender = 'Male';
   String _selectedCountry = 'United States';
   String _unitSystem = 'metric';
@@ -93,6 +94,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     _weightController.dispose();
     _heightController.dispose();
     _ageController.dispose();
+    _cityController.dispose();
     _pageController.dispose();
     super.dispose();
   }
@@ -135,6 +137,9 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
             age: int.parse(_ageController.text),
             gender: _normalizeGenderForApi(_selectedGender),
             country: _selectedCountry,
+            city: _cityController.text.trim().isEmpty
+                ? null
+                : _cityController.text.trim(),
           ),
         );
   }
@@ -244,7 +249,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                   _buildProgressBar(),
                   const SizedBox(height: 20),
                   SizedBox(
-                    height: 420,
+                    height: 480,
                     child: PageView(
                       controller: _pageController,
                       physics: const NeverScrollableScrollPhysics(),
@@ -476,6 +481,24 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
             validator: (value) {
               if (value == null || value.isEmpty) {
                 return 'Please select a country';
+              }
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _cityController,
+            decoration: _authDecoration(
+              label: 'City',
+              icon: Icons.location_city,
+              hint: 'Enter your city',
+            ),
+            validator: (value) {
+              if (value == null || value.trim().isEmpty) {
+                return 'Please enter a city';
+              }
+              if (value.trim().length < 2) {
+                return 'City name is too short';
               }
               return null;
             },

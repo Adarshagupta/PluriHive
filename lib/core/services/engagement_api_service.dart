@@ -46,6 +46,14 @@ class EngagementApiService {
     return _get(ApiConfig.rewardsEndpoint);
   }
 
+  Future<Map<String, dynamic>> getDailyMissions() async {
+    return _get(ApiConfig.dailyMissionsEndpoint);
+  }
+
+  Future<Map<String, dynamic>> getWeeklyMissions() async {
+    return _get(ApiConfig.weeklyMissionsEndpoint);
+  }
+
   Future<Map<String, dynamic>> unlockReward(String rewardId) async {
     return _post(ApiConfig.rewardsUnlockEndpoint, {'rewardId': rewardId});
   }

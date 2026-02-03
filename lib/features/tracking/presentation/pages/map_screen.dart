@@ -250,6 +250,8 @@ class _MapScreenState extends State<MapScreen>
       []; // Actual route points for territory shape
   Map<String, Map<String, dynamic>> _territoryData =
       {}; // Store territory info by hexId
+  final Map<String, Map<String, dynamic>> _capturedAreaData =
+      {}; // Store live captured loop info by polygonId
   double _lastDistanceUpdate = 0.0;
   double _lastNotificationDistance =
       0.0; // Track distance for notification updates
@@ -375,6 +377,10 @@ class _MapScreenState extends State<MapScreen>
   double _holdProgress = 0.0;
   Timer? _holdTimer;
   static const Duration _holdDuration = Duration(seconds: 5);
+  bool _showEndHoldHint = false;
+  Timer? _endHoldHintTimer;
+  late AnimationController _endHintController;
+  late Animation<double> _endHintScale;
 
   @override
   void initState() {
@@ -398,6 +404,15 @@ class _MapScreenState extends State<MapScreen>
       vsync: this,
     );
     _animController.forward();
+
+    _endHintController = AnimationController(
+      duration: const Duration(milliseconds: 260),
+      vsync: this,
+    );
+    _endHintScale = CurvedAnimation(
+      parent: _endHintController,
+      curve: Curves.easeOutBack,
+    );
 
     _buttonAnimController = AnimationController(
       duration: Duration(milliseconds: 300),
@@ -998,6 +1013,26 @@ class _MapScreenState extends State<MapScreen>
 
   // Handle map tap to check if user tapped on a territory
   bool _handleMapTap(LatLng tapPosition) {
+    for (final entry in _capturedAreaData.entries) {
+      final data = entry.value;
+      final polygonPoints = data['polygonPoints'] as List<LatLng>?;
+      if (polygonPoints == null || polygonPoints.length < 3) {
+        continue;
+      }
+
+      if (_isPointInPolygon(tapPosition, polygonPoints)) {
+        _showTerritoryInfo(
+          ownerName: data['ownerName'] ?? 'You',
+          captureCount: data['captureCount'] ?? 1,
+          isOwn: true,
+          capturedAt: data['capturedAt'],
+          areaSqMeters: data['areaSqMeters'],
+          avatarSource: data['avatarSource'],
+        );
+        return true;
+      }
+    }
+
     for (final entry in _territoryData.entries) {
       final hexId = entry.key;
       final data = entry.value;
@@ -3294,6 +3329,7 @@ class _MapScreenState extends State<MapScreen>
     _motionDetection.stopDetection(); // Stop advanced motion detection
     _animController.dispose();
     _buttonAnimController.dispose();
+    _endHintController.dispose();
     _mapboxPointTapCancelable?.cancel();
     _mapboxPolylineTapCancelable?.cancel();
     _mapboxSyncDebounce?.cancel();
@@ -3301,6 +3337,7 @@ class _MapScreenState extends State<MapScreen>
     _captureAnimationTimer?.cancel();
     _audioPlayer.dispose();
     _holdTimer?.cancel();
+    _endHoldHintTimer?.cancel();
     _endTimer?.cancel();
     _syncStatusTimer?.cancel();
     _territoryRefreshTimer?.cancel();
@@ -4004,11 +4041,12 @@ class _MapScreenState extends State<MapScreen>
           builder: (context, locationState) {
             if (gameState is! GameLoaded) return SizedBox.shrink();
 
-            final isTracking = locationState is LocationTracking;
-            final distance = isTracking
-                ? locationState.totalDistance / 1000
-                : gameState.stats.totalDistanceKm;
-            final statusChips = _buildInlineStatusChips();
+              final isTracking = locationState is LocationTracking;
+              final distance = isTracking
+                  ? locationState.totalDistance / 1000
+                  : gameState.stats.totalDistanceKm;
+              final sessionCalories = isTracking ? (distance * 60).round() : 0;
+              final statusChips = _buildInlineStatusChips();
 
             return Container(
               margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
@@ -4038,34 +4076,7 @@ class _MapScreenState extends State<MapScreen>
                     ),
                     child: Row(
                       children: [
-                      if (isTracking)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFEF4444),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Row(
-                            children: const [
-                              Icon(Icons.circle, size: 6, color: Colors.white),
-                              SizedBox(width: 6),
-                              Text(
-                                'LIVE',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w800,
-                                  color: Colors.white,
-                                  letterSpacing: 0.4,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      if (isTracking) const SizedBox(width: 10),
-                      Expanded(
+                        Expanded(
                         child: _buildStatItem(
                           '${distance.toStringAsFixed(2)} km',
                           'Distance',
@@ -4090,13 +4101,15 @@ class _MapScreenState extends State<MapScreen>
                         ),
                       ),
                       _buildHudDivider(isTracking),
-                      Expanded(
-                        child: _buildStatItem(
-                          '${gameState.stats.currentStreak}d',
-                          'Streak',
-                          isTracking,
+                        Expanded(
+                          child: _buildStatItem(
+                            isTracking
+                                ? '$sessionCalories'
+                                : '${gameState.stats.currentStreak}d',
+                            isTracking ? 'Calories' : 'Streak',
+                            isTracking,
+                          ),
                         ),
-                      ),
                       ],
                     ),
                   ),
@@ -5504,9 +5517,10 @@ class _MapScreenState extends State<MapScreen>
     final currentUserId = _currentUserIdFromAuth() ?? 'current_user';
 
     final pendingOwnerMarkers = <Map<String, dynamic>>[];
-    setState(() {
-      _polygons.clear();
-      _territoryMarkers.clear();
+      setState(() {
+        _polygons.clear();
+        _territoryMarkers.clear();
+        _capturedAreaData.clear();
 
       // Group territories by owner to create filled areas
       Map<String, List<app.Territory>> territoriesByOwner = {};
@@ -6247,6 +6261,13 @@ class _MapScreenState extends State<MapScreen>
 
     // Generate unique ID for this captured area using timestamp
     final areaId = DateTime.now().millisecondsSinceEpoch.toString();
+    final capturedAt = DateTime.now();
+    final authState = context.read<AuthBloc>().state;
+    final ownerName =
+        authState is Authenticated ? authState.user.name : 'You';
+    final areaSqMeters = _calculatePolygonAreaSqMeters(routePoints);
+    final avatarSource = _currentUserAvatarSource();
+    final cacheKey = _currentUserIdFromAuth() ?? 'current_user';
     double sumLat = 0;
     double sumLng = 0;
     for (final point in routePoints) {
@@ -6265,6 +6286,15 @@ class _MapScreenState extends State<MapScreen>
       // _polygons.clear();  // REMOVED - this was deleting previous captures
       // _territoryMarkers.clear();  // REMOVED
 
+      _capturedAreaData[polygonId] = {
+        'polygonPoints': List<LatLng>.from(routePoints),
+        'ownerName': ownerName,
+        'captureCount': 1,
+        'capturedAt': capturedAt,
+        'areaSqMeters': areaSqMeters,
+        'avatarSource': avatarSource,
+      };
+
       // Fill the area you walked with transparent green
       _polygons.add(
         Polygon(
@@ -6276,17 +6306,13 @@ class _MapScreenState extends State<MapScreen>
           strokeWidth: 2,
           consumeTapEvents: true,
           onTap: () {
-            final authState = context.read<AuthBloc>().state;
-            final ownerName =
-                authState is Authenticated ? authState.user.name : 'You';
-            final areaSqMeters = _calculatePolygonAreaSqMeters(routePoints);
             _showTerritoryInfo(
               ownerName: ownerName,
               captureCount: 1,
               isOwn: true,
-              capturedAt: DateTime.now(),
+              capturedAt: capturedAt,
               areaSqMeters: areaSqMeters,
-              avatarSource: _currentUserAvatarSource(),
+              avatarSource: avatarSource,
             );
           },
         ),
@@ -6296,10 +6322,6 @@ class _MapScreenState extends State<MapScreen>
 
       // Show username in center of captured area
       if (routePoints.isNotEmpty) {
-        final authState = context.read<AuthBloc>().state;
-        final ownerName =
-            authState is Authenticated ? authState.user.name : 'You';
-        final areaSqMeters = _calculatePolygonAreaSqMeters(routePoints);
         _territoryMarkers.add(
           Marker(
             markerId: MarkerId('username_label_$areaId'),
@@ -6312,9 +6334,9 @@ class _MapScreenState extends State<MapScreen>
                 ownerName: ownerName,
                 captureCount: 1,
                 isOwn: true,
-                capturedAt: DateTime.now(),
+                capturedAt: capturedAt,
                 areaSqMeters: areaSqMeters,
-                avatarSource: _currentUserAvatarSource(),
+                avatarSource: avatarSource,
               );
             },
           ),
@@ -6322,8 +6344,6 @@ class _MapScreenState extends State<MapScreen>
       }
     });
 
-    final avatarSource = _currentUserAvatarSource();
-    final cacheKey = _currentUserIdFromAuth() ?? 'current_user';
     if (avatarSource != null && avatarSource.isNotEmpty) {
       _scheduleCapturedAreaAvatarUpdate(
         markerId: 'username_label_$areaId',
@@ -6331,15 +6351,11 @@ class _MapScreenState extends State<MapScreen>
         avatarCacheKey: cacheKey,
         avatarSource: avatarSource,
         onTap: () {
-          final authState = context.read<AuthBloc>().state;
-          final ownerName =
-              authState is Authenticated ? authState.user.name : 'You';
-          final areaSqMeters = _calculatePolygonAreaSqMeters(routePoints);
           _showTerritoryInfo(
             ownerName: ownerName,
             captureCount: 1,
             isOwn: true,
-            capturedAt: DateTime.now(),
+            capturedAt: capturedAt,
             areaSqMeters: areaSqMeters,
             avatarSource: avatarSource,
           );
@@ -9202,23 +9218,22 @@ class _MapScreenState extends State<MapScreen>
     print('📊 Total activity data entries: ${_activityData.length}');
 
     // First check activity polygons (user's own completed loops)
-    for (final entry in _activityData.entries) {
-      if (entry.key.startsWith('saved_area_')) {
-        final activity = entry.value;
-        final routeData = activity['routePoints'] as List<dynamic>?;
+      for (final entry in _activityData.entries) {
+        if (entry.key.startsWith('saved_area_')) {
+          final activity = entry.value;
+          final routeData = activity['routePoints'] as List<dynamic>?;
 
-        if (routeData != null && routeData.length >= 3) {
-          final routePoints = routeData
-              .map(
-                (p) =>
-                    LatLng(p['latitude'] as double, p['longitude'] as double),
-              )
-              .toList();
+          if (routeData != null && routeData.length >= 3) {
+            final routePoints =
+                routeData.map(_parseRoutePoint).whereType<LatLng>().toList();
+            if (routePoints.length < 3) {
+              continue;
+            }
 
-          if (_isPointInPolygon(tapPosition, routePoints)) {
-            print('✅ Tap is inside activity polygon: ${entry.key}');
-            _showActivityDetailDrawer(activity);
-            return true;
+            if (_isPointInPolygon(tapPosition, routePoints)) {
+              print('✅ Tap is inside activity polygon: ${entry.key}');
+              _showActivityDetailDrawer(activity);
+              return true;
           }
         }
       }
@@ -9502,10 +9517,18 @@ class _MapScreenState extends State<MapScreen>
 
             // Main button (Start/End)
             GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (_) {
+                if (_trackingState != TrackingState.stopped) {
+                  _showEndHoldHintPopup();
+                }
+              },
               onTap: () {
                 if (_trackingState == TrackingState.stopped) {
                   _useSimulation = false;
                   _handleStart(context);
+                } else {
+                  _showEndHoldHintPopup();
                 }
               },
               onLongPressStart: (_) {
@@ -9513,6 +9536,7 @@ class _MapScreenState extends State<MapScreen>
                   _showTrackingModeSelector(context);
                   return;
                 }
+                _showEndHoldHintPopup();
                 _startHoldTimer(context);
               },
               onLongPressEnd: (_) {
@@ -9522,8 +9546,31 @@ class _MapScreenState extends State<MapScreen>
                 _cancelHoldTimer();
               },
               child: Stack(
+                clipBehavior: Clip.none,
                 alignment: Alignment.center,
                 children: [
+                  if (_showEndHoldHint)
+                    Positioned(
+                      top: -64,
+                      child: AnimatedBuilder(
+                        animation: _endHintController,
+                        builder: (context, child) {
+                          final t =
+                              Curves.easeOut.transform(_endHintController.value);
+                          return Opacity(
+                            opacity: t,
+                            child: Transform.translate(
+                              offset: Offset(0, (1 - t) * 8),
+                              child: Transform.scale(
+                                scale: 0.92 + 0.08 * t,
+                                child: child,
+                              ),
+                            ),
+                          );
+                        },
+                        child: _buildEndHoldHintBubble(),
+                      ),
+                    ),
                   // Progress indicator
                   if (_isHoldingEnd)
                     SizedBox(
@@ -9649,6 +9696,65 @@ class _MapScreenState extends State<MapScreen>
       _isHoldingEnd = false;
       _holdProgress = 0.0;
     });
+  }
+
+  void _showEndHoldHintPopup() {
+    if (_trackingState == TrackingState.stopped) return;
+    _endHoldHintTimer?.cancel();
+    if (!_showEndHoldHint) {
+      setState(() => _showEndHoldHint = true);
+    }
+    _endHintController.forward(from: 0);
+    _endHoldHintTimer = Timer(const Duration(seconds: 3), () async {
+      if (!mounted) return;
+      await _endHintController.reverse();
+      if (mounted) {
+        setState(() => _showEndHoldHint = false);
+      }
+    });
+  }
+
+  void _hideEndHoldHintPopup() {
+    _endHoldHintTimer?.cancel();
+    if (!_showEndHoldHint) return;
+    _endHintController.reset();
+    setState(() => _showEndHoldHint = false);
+  }
+
+  Widget _buildEndHoldHintBubble() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.95),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.12),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.water_drop_rounded,
+            size: 16,
+            color: Color(0xFF38BDF8),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Hold 5s to end',
+            style: GoogleFonts.spaceGrotesk(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: const Color(0xFF0F172A),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _refreshSyncStatus({bool triggerSync = false}) async {

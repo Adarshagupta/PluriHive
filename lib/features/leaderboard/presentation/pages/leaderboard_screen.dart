@@ -10,7 +10,7 @@ import '../../../../core/services/leaderboard_api_service.dart';
 import '../../../../core/widgets/skeleton.dart';
 import '../../../../core/theme/app_theme.dart';
 
-enum LeaderboardScope { global, friends, nearby }
+enum LeaderboardScope { global, friends, nearby, city }
 
 enum LeaderboardRange { allTime, weekly, monthly }
 
@@ -137,6 +137,9 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           radiusKm: _nearbyRadiusKm,
           limit: limit,
         );
+        return data.map((u) => LeaderboardUser.fromMap(u)).toList();
+      case LeaderboardScope.city:
+        final data = await _apiService.getCityLeaderboard(limit: limit);
         return data.map((u) => LeaderboardUser.fromMap(u)).toList();
       case LeaderboardScope.global:
       default:
@@ -392,6 +395,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         return 'Your crew ranked by ${_metricLabel().toLowerCase()}';
       case LeaderboardScope.nearby:
         return 'Within ${_nearbyRadiusKm.toStringAsFixed(0)} km - ${_metricLabel().toLowerCase()}';
+      case LeaderboardScope.city:
+        return 'City leaders by ${_metricLabel().toLowerCase()}';
       case LeaderboardScope.global:
       default:
         return '${_rangeLabel()} leaders by ${_metricLabel().toLowerCase()}';
@@ -404,6 +409,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         return 'Friends';
       case LeaderboardScope.nearby:
         return 'Nearby';
+      case LeaderboardScope.city:
+        return 'City';
       case LeaderboardScope.global:
       default:
         return 'Global';
@@ -456,6 +463,12 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               LeaderboardScope.nearby,
               'Nearby',
               Icons.place,
+            ),
+            const SizedBox(width: 6),
+            _buildScopeChip(
+              LeaderboardScope.city,
+              'City',
+              Icons.location_city,
             ),
           ],
         ),

@@ -50,6 +50,12 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsString()
+  @MinLength(2)
+  @MaxLength(80)
+  city?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(500)
   profilePicture?: string;
 

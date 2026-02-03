@@ -66,6 +66,12 @@ export class User {
   @Column({ nullable: true })
   country: string;
 
+  @Column({ nullable: true, length: 80 })
+  city: string;
+
+  @Column({ nullable: true, length: 80 })
+  cityNormalized: string;
+
   // Onboarding status - MUST complete onboarding (non-negotiable)
   @Column({ default: false })
   hasCompletedOnboarding: boolean;

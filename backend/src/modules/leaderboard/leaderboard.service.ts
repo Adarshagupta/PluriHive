@@ -4,6 +4,9 @@ import { In, Repository } from "typeorm";
 import { User } from "../user/user.entity";
 import { RedisService } from "../redis/redis.service";
 import { Friendship } from "./friendship.entity";
+import { SeasonStats } from "../season/season-stats.entity";
+import { SeasonService } from "../season/season.service";
+import { FactionMembership } from "../faction/faction-membership.entity";
 
 @Injectable()
 export class LeaderboardService {
@@ -12,7 +15,12 @@ export class LeaderboardService {
     private userRepository: Repository<User>,
     @InjectRepository(Friendship)
     private friendshipRepository: Repository<Friendship>,
+    @InjectRepository(SeasonStats)
+    private seasonStatsRepository: Repository<SeasonStats>,
+    @InjectRepository(FactionMembership)
+    private factionMembershipRepository: Repository<FactionMembership>,
     private redisService: RedisService,
+    private seasonService: SeasonService,
   ) {}
 
   async getLeaderboard(limit: number = 50): Promise<User[]> {
@@ -99,6 +107,98 @@ export class LeaderboardService {
     }
 
     return query.getMany();
+  }
+
+  async getCityLeaderboard(city: string, limit: number = 50): Promise<User[]> {
+    const normalized = this.normalizeCity(city);
+    if (!normalized) return [];
+
+    return this.userRepository.find({
+      where: { cityNormalized: normalized },
+      order: { totalPoints: "DESC" },
+      take: limit,
+      select: [
+        "id",
+        "name",
+        "totalPoints",
+        "level",
+        "totalDistanceKm",
+        "totalSteps",
+        "totalTerritoriesCaptured",
+        "totalWorkouts",
+      ],
+    });
+  }
+
+  async getCityLeaderboardForUser(
+    userId: string,
+    limit: number = 50,
+  ): Promise<User[]> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ["id", "cityNormalized"],
+    });
+    if (!user?.cityNormalized) {
+      return [];
+    }
+    return this.getCityLeaderboard(user.cityNormalized, limit);
+  }
+
+  async getSeasonLeaderboard(limit: number = 50) {
+    const seasonId = this.seasonService.getCurrentSeasonId();
+    const stats = await this.seasonStatsRepository.find({
+      where: { seasonId },
+      relations: ["user"],
+      order: { points: "DESC" },
+      take: limit,
+    });
+
+    return stats.map((row) => ({
+      id: row.userId,
+      name: row.user?.name ?? "Unknown",
+      totalPoints: row.points,
+      seasonPoints: row.points,
+      level: row.user?.level ?? 1,
+      totalDistanceKm: Number(row.distanceKm || 0),
+      totalSteps: row.steps || 0,
+      totalTerritoriesCaptured: row.territories || 0,
+      totalWorkouts: row.workouts || 0,
+      seasonId,
+    }));
+  }
+
+  async getFactionLeaderboard(factionId: string, limit: number = 50) {
+    const seasonId = this.seasonService.getCurrentSeasonId();
+    const memberships = await this.factionMembershipRepository.find({
+      where: { factionId, seasonId },
+      relations: ["user"],
+    });
+    if (memberships.length === 0) return [];
+
+    const userIds = memberships.map((membership) => membership.userId);
+    const stats = await this.seasonStatsRepository.find({
+      where: { seasonId, userId: In(userIds) },
+    });
+    const statsMap = new Map(stats.map((row) => [row.userId, row]));
+
+    const rows = memberships.map((membership) => {
+      const row = statsMap.get(membership.userId);
+      return {
+        id: membership.userId,
+        name: membership.user?.name ?? "Unknown",
+        totalPoints: row?.points ?? 0,
+        seasonPoints: row?.points ?? 0,
+        level: membership.user?.level ?? 1,
+        totalDistanceKm: Number(row?.distanceKm || 0),
+        totalSteps: row?.steps || 0,
+        totalTerritoriesCaptured: row?.territories || 0,
+        totalWorkouts: row?.workouts || 0,
+        seasonId,
+      };
+    });
+
+    rows.sort((a, b) => b.totalPoints - a.totalPoints);
+    return rows.slice(0, limit);
   }
 
   async getUserRank(
@@ -462,5 +562,11 @@ export class LeaderboardService {
       }
     }
     return Array.from(ids);
+  }
+
+  private normalizeCity(value?: string) {
+    if (!value) return null;
+    const trimmed = value.trim().toLowerCase();
+    return trimmed.length > 0 ? trimmed : null;
   }
 }

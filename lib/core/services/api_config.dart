@@ -2,7 +2,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
   // Backend URLs
-  static const String localUrl = 'http://10.1.80.42:3000';
+  static const String localUrl = 'http://10.1.80.37:3000';
   static const String productionUrl = 'https://plurihub.sylicaai.com:443';
 
   static const String _backendPrefKey = 'selected_backend_url';
@@ -116,6 +116,9 @@ class ApiConfig {
 
   // Leaderboard endpoints
   static const String leaderboardEndpoint = '/leaderboard/global';
+  static const String leaderboardCityEndpoint = '/leaderboard/city';
+  static const String leaderboardSeasonEndpoint = '/leaderboard/season';
+  static const String leaderboardFactionEndpoint = '/leaderboard/faction';
 
   // Legal URLs (update to your hosted docs)
   static const String privacyPolicyUrl =
@@ -133,6 +136,8 @@ class ApiConfig {
   static const String rewardsEndpoint = '/engagement/rewards';
   static const String rewardsUnlockEndpoint = '/engagement/rewards/unlock';
   static const String rewardsSelectEndpoint = '/engagement/rewards/select';
+  static const String dailyMissionsEndpoint = '/engagement/missions/daily';
+  static const String weeklyMissionsEndpoint = '/engagement/missions/weekly';
 
   // Request timeouts
   static const Duration defaultTimeout = Duration(seconds: 30);

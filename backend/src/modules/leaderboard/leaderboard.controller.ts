@@ -105,6 +105,62 @@ export class LeaderboardController {
     }
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get("city")
+  async getCityLeaderboard(
+    @Request() req,
+    @Query("city") city?: string,
+    @Query("limit") limit?: string,
+  ) {
+    try {
+      const parsedLimit = limit ? Math.min(parseInt(limit), 100) : 50;
+      if (city && city.trim()) {
+        return await this.leaderboardService.getCityLeaderboard(
+          city.trim(),
+          parsedLimit,
+        );
+      }
+      return await this.leaderboardService.getCityLeaderboardForUser(
+        req.user.id,
+        parsedLimit,
+      );
+    } catch (error) {
+      console.error("City leaderboard error:", error);
+      throw new BadRequestException("Failed to load city leaderboard");
+    }
+  }
+
+  @Get("season")
+  async getSeasonLeaderboard(@Query("limit") limit?: string) {
+    try {
+      const parsedLimit = limit ? Math.min(parseInt(limit), 100) : 50;
+      return await this.leaderboardService.getSeasonLeaderboard(parsedLimit);
+    } catch (error) {
+      console.error("Season leaderboard error:", error);
+      throw new BadRequestException("Failed to load season leaderboard");
+    }
+  }
+
+  @Get("faction")
+  async getFactionLeaderboard(
+    @Query("factionId") factionId: string,
+    @Query("limit") limit?: string,
+  ) {
+    if (!factionId) {
+      throw new BadRequestException("factionId is required");
+    }
+    try {
+      const parsedLimit = limit ? Math.min(parseInt(limit), 100) : 50;
+      return await this.leaderboardService.getFactionLeaderboard(
+        factionId,
+        parsedLimit,
+      );
+    } catch (error) {
+      console.error("Faction leaderboard error:", error);
+      throw new BadRequestException("Failed to load faction leaderboard");
+    }
+  }
+
   @Get("rank")
   async getUserRank(@Query("userId") userId: string) {
     if (!userId) {

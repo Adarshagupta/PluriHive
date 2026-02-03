@@ -213,4 +213,33 @@ class LeaderboardApiService {
       throw Exception('Nearby leaderboard API error: $e');
     }
   }
+
+  /// Get city leaderboard (uses authenticated user's city when not provided)
+  Future<List<Map<String, dynamic>>> getCityLeaderboard({
+    int limit = 50,
+    String? city,
+  }) async {
+    try {
+      final params = {
+        'limit': limit.toString(),
+        if (city != null && city.trim().isNotEmpty) 'city': city.trim(),
+      };
+      final uri = Uri.parse('${ApiConfig.baseUrl}${ApiConfig.leaderboardCityEndpoint}')
+          .replace(queryParameters: params);
+
+      final response = await _client
+          .get(uri, headers: await _headers(requireAuth: true))
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      } else {
+        throw Exception(
+            'Failed to load city leaderboard: ${response.statusCode}');
+      }
+    } catch (e) {
+      throw Exception('City leaderboard API error: $e');
+    }
+  }
 }

@@ -41,17 +41,26 @@ export class Territory {
   @Column({ type: "varchar", length: 40, nullable: true })
   name?: string | null;
 
-  @Column({ type: "uuid" })
-  ownerId: string;
+  @Column({ type: "uuid", nullable: true })
+  ownerId: string | null;
 
-  @ManyToOne(() => User, (user) => user.territories)
-  owner: User;
+  @ManyToOne(() => User, (user) => user.territories, { nullable: true })
+  owner: User | null;
 
   @Column({ default: 1 })
   captureCount: number; // How many times captured
 
   @Column({ default: 50 })
   points: number; // Points earned
+
+  @Column({ default: 100 })
+  strength: number; // Territory strength (decays over time)
+
+  @Column({ type: "timestamp", nullable: true })
+  lastDefendedAt?: Date | null;
+
+  @Column({ type: "timestamp", nullable: true })
+  decayedAt?: Date | null;
 
   @Column({ type: "varchar", length: 64, nullable: true })
   lastCaptureSessionId?: string;

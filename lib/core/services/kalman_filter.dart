@@ -1,5 +1,4 @@
 import 'dart:math';
-import 'package:flutter/foundation.dart';
 
 /// ═══════════════════════════════════════════════════════════════════════════
 /// ULTRA-ADVANCED GPS FILTERING SYSTEM v2.0
@@ -227,8 +226,6 @@ class ExtendedKalmanFilter2D {
 /// ═══════════════════════════════════════════════════════════════════════════
 class AdvancedGPSFilter {
   final ExtendedKalmanFilter2D _ekf = ExtendedKalmanFilter2D();
-
-  double _maxAccuracyMeters;
   
   // Position history for advanced analysis
   final List<_GPSReading> _history = [];
@@ -245,14 +242,11 @@ class AdvancedGPSFilter {
   // Statistical tracking for adaptive thresholds
   double _meanAccuracy = 10.0;
   double _stdAccuracy = 5.0;
+  double _maxAccuracyMeters = 35.0;
 
-  AdvancedGPSFilter({double maxAccuracyMeters = 30.0})
-      : _maxAccuracyMeters = maxAccuracyMeters;
-
-  void _log(String message) {
-    if (kDebugMode) {
-      print(message);
-    }
+  void setMaxAccuracyMeters(double value) {
+    if (!value.isFinite || value <= 0) return;
+    _maxAccuracyMeters = value;
   }
   
   /// STRICT filtering pipeline
@@ -262,23 +256,23 @@ class AdvancedGPSFilter {
     required double accuracy,
     required DateTime timestamp,
   }) {
-    _log('🔬 AdvancedGPSFilter.process() called');
-    _log('   Input: ($latitude, $longitude) accuracy: ${accuracy.toStringAsFixed(1)}m');
+    print('🔬 AdvancedGPSFilter.process() called');
+    print('   Input: ($latitude, $longitude) accuracy: ${accuracy.toStringAsFixed(1)}m');
     
     // === LAYER 1: Accuracy validation ===
     if (!_isAccuracyAcceptable(accuracy)) {
-      _log('   ❌ REJECTED: Poor accuracy (${accuracy.toStringAsFixed(1)}m > threshold)');
+      print('   ❌ REJECTED: Poor accuracy (${accuracy.toStringAsFixed(1)}m > threshold)');
       return _getLastValidPosition();
     }
     
     // === LAYER 2: Outlier detection ===
     if (_isOutlier(latitude, longitude, accuracy, timestamp)) {
       _consecutiveOutliers++;
-      _log('   ❌ REJECTED: Outlier detected (consecutive: $_consecutiveOutliers)');
+      print('   ❌ REJECTED: Outlier detected (consecutive: $_consecutiveOutliers)');
       
       // If too many consecutive outliers, user probably moved - accept it
       if (_consecutiveOutliers >= MAX_CONSECUTIVE_OUTLIERS) {
-        _log('   🔄 Too many outliers - accepting as valid position jump');
+        print('   🔄 Too many outliers - accepting as valid position jump');
         _consecutiveOutliers = 0;
         _ekf.reset();
       } else {
@@ -299,7 +293,7 @@ class AdvancedGPSFilter {
     // === LAYER 4: Speed validation ===
     final instantSpeed = _calculateInstantSpeed(filtered['latitude']!, filtered['longitude']!, timestamp);
     if (instantSpeed > 15.0) { // Max 15 m/s = 54 km/h for walking/running
-      _log('   ⚠️ WARNING: High speed detected (${instantSpeed.toStringAsFixed(1)} m/s)');
+      print('   ⚠️ WARNING: High speed detected (${instantSpeed.toStringAsFixed(1)} m/s)');
       // Don't reject, but log for monitoring
     }
     
@@ -322,8 +316,8 @@ class AdvancedGPSFilter {
     // Update accuracy statistics
     _updateAccuracyStats(accuracy);
     
-    _log('   ✅ ACCEPTED: (${filtered['latitude']!.toStringAsFixed(6)}, ${filtered['longitude']!.toStringAsFixed(6)})');
-    _log('   📊 Speed: ${instantSpeed.toStringAsFixed(2)} m/s | Smoothed: ${_smoothedSpeed.toStringAsFixed(2)} m/s');
+    print('   ✅ ACCEPTED: (${filtered['latitude']!.toStringAsFixed(6)}, ${filtered['longitude']!.toStringAsFixed(6)})');
+    print('   📊 Speed: ${instantSpeed.toStringAsFixed(2)} m/s | Smoothed: ${_smoothedSpeed.toStringAsFixed(2)} m/s');
     
     return {
       'latitude': filtered['latitude']!,
@@ -336,8 +330,8 @@ class AdvancedGPSFilter {
   /// STRICT accuracy validation
   bool _isAccuracyAcceptable(double accuracy) {
     // Adaptive threshold based on historical accuracy
-    final adaptive = max(30.0, _meanAccuracy + 3 * _stdAccuracy);
-    final threshold = min(_maxAccuracyMeters, adaptive);
+    final adaptiveThreshold = max(30.0, _meanAccuracy + 3 * _stdAccuracy);
+    final threshold = min(_maxAccuracyMeters, adaptiveThreshold);
     return accuracy <= threshold;
   }
   
@@ -357,7 +351,7 @@ class AdvancedGPSFilter {
     // === CRITERION 1: Impossible speed ===
     // Max speed: 15 m/s (54 km/h) for running, with 2x buffer = 30 m/s
     if (requiredSpeed > 30.0) {
-      _log('   🚨 Outlier: Impossible speed ${requiredSpeed.toStringAsFixed(1)} m/s');
+      print('   🚨 Outlier: Impossible speed ${requiredSpeed.toStringAsFixed(1)} m/s');
       return true;
     }
     
@@ -370,7 +364,7 @@ class AdvancedGPSFilter {
       
       // If moving fast and sudden 90+ degree turn, likely GPS error
       if (requiredSpeed > 3.0 && headingChange > 90.0) {
-        _log('   🚨 Outlier: Sharp turn (${headingChange.toStringAsFixed(0)}°) at speed ${requiredSpeed.toStringAsFixed(1)} m/s');
+        print('   🚨 Outlier: Sharp turn (${headingChange.toStringAsFixed(0)}°) at speed ${requiredSpeed.toStringAsFixed(1)} m/s');
         return true;
       }
     }
@@ -382,7 +376,7 @@ class AdvancedGPSFilter {
       
       // Max acceleration: 5 m/s² (very generous for sprinting start)
       if (acceleration.abs() > 5.0) {
-        _log('   🚨 Outlier: Impossible acceleration ${acceleration.toStringAsFixed(1)} m/s²');
+        print('   🚨 Outlier: Impossible acceleration ${acceleration.toStringAsFixed(1)} m/s²');
         return true;
       }
     }
@@ -404,7 +398,7 @@ class AdvancedGPSFilter {
       final stdDist = sqrt(recentDistances.map((d) => pow(d - meanDist, 2)).reduce((a, b) => a + b) / recentDistances.length);
       
       if (distance > meanDist + 4 * stdDist && distance > 10.0) {
-        _log('   🚨 Outlier: Statistical anomaly (distance: ${distance.toStringAsFixed(1)}m, mean: ${meanDist.toStringAsFixed(1)}m, std: ${stdDist.toStringAsFixed(1)}m)');
+        print('   🚨 Outlier: Statistical anomaly (distance: ${distance.toStringAsFixed(1)}m, mean: ${meanDist.toStringAsFixed(1)}m, std: ${stdDist.toStringAsFixed(1)}m)');
         return true;
       }
     }
@@ -485,11 +479,6 @@ class AdvancedGPSFilter {
     _smoothedSpeed = 0.0;
     _meanAccuracy = 10.0;
     _stdAccuracy = 5.0;
-  }
-
-  void setMaxAccuracyMeters(double value) {
-    if (!value.isFinite || value <= 0) return;
-    _maxAccuracyMeters = value;
   }
   
   double get currentSpeed => _smoothedSpeed;

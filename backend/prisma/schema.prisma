@@ -21,6 +21,9 @@ model User {
   height    Float?
   age       Int?
   gender    String?
+  country   String?
+  city      String?
+  cityNormalized String?
 
   // Onboarding
   hasCompletedOnboarding Boolean @default(false)
@@ -120,4 +123,87 @@ model Activity {
   createdAt DateTime @default(now())
 
   @@map("activities")
+}
+
+model SeasonStats {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  seasonId    String
+  points      Int      @default(0)
+  distanceKm  Float    @default(0)
+  steps       Int      @default(0)
+  territories Int      @default(0)
+  workouts    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, seasonId])
+  @@map("season_stats")
+}
+
+model Faction {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  name      String
+  color     String
+  createdAt DateTime @default(now())
+
+  memberships FactionMembership[]
+
+  @@map("factions")
+}
+
+model FactionMembership {
+  id        String   @id @default(uuid())
+  userId    String
+  factionId String
+  seasonId  String
+  joinedAt  DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id])
+  faction Faction @relation(fields: [factionId], references: [id])
+
+  @@unique([userId, seasonId])
+  @@map("faction_memberships")
+}
+
+model Mission {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  period         String
+  type           String
+  goal           Int      @default(0)
+  progress       Int      @default(0)
+  rewardPoints   Int      @default(0)
+  periodStart    DateTime
+  completedAt    DateTime?
+  rewardGrantedAt DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([userId, period, type, periodStart])
+  @@map("missions")
+}
+
+model Duel {
+  id              String   @id @default(uuid())
+  challengerId    String
+  opponentId      String
+  status          String
+  rule            String
+  centerLat       Float
+  centerLng       Float
+  radiusKm        Float
+  startAt         DateTime?
+  endAt           DateTime?
+  challengerScore Int      @default(0)
+  opponentScore   Int      @default(0)
+  acceptedAt      DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("duels")
 }

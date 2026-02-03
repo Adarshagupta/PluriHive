@@ -6,6 +6,8 @@ import { TerritoryService } from './territory.service';
 import { UserModule } from '../user/user.module';
 import { RedisModule } from '../redis/redis.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { SeasonModule } from '../season/season.module';
+import { DuelModule } from '../duel/duel.module';
 
 @Module({
   imports: [
@@ -13,6 +15,8 @@ import { RealtimeModule } from '../realtime/realtime.module';
     UserModule,
     RedisModule,
     RealtimeModule,
+    SeasonModule,
+    DuelModule,
   ],
   controllers: [TerritoryController],
   providers: [TerritoryService],

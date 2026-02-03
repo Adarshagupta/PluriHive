@@ -169,6 +169,30 @@ export class RealtimeGateway
     }
   }
 
+  emitTerritoryDefenseAlert(userId: string, payload: any) {
+    for (const [socketId, uid] of this.connectedUsers.entries()) {
+      if (uid === userId) {
+        this.server.to(socketId).emit("territory:defense_alert", payload);
+      }
+    }
+  }
+
+  emitDuelInvite(userId: string, payload: any) {
+    for (const [socketId, uid] of this.connectedUsers.entries()) {
+      if (uid === userId) {
+        this.server.to(socketId).emit("duel:invite", payload);
+      }
+    }
+  }
+
+  emitDuelUpdated(userId: string, payload: any) {
+    for (const [socketId, uid] of this.connectedUsers.entries()) {
+      if (uid === userId) {
+        this.server.to(socketId).emit("duel:update", payload);
+      }
+    }
+  }
+
   emitBoostUpdated(userId: string, payload: any) {
     for (const [socketId, uid] of this.connectedUsers.entries()) {
       if (uid === userId) {

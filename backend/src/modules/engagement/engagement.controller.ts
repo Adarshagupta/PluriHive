@@ -44,6 +44,16 @@ export class EngagementController {
     );
   }
 
+  @Get("missions/daily")
+  async getDailyMissions(@Request() req) {
+    return this.engagementService.getDailyMissions(req.user.id);
+  }
+
+  @Get("missions/weekly")
+  async getWeeklyMissions(@Request() req) {
+    return this.engagementService.getWeeklyMissions(req.user.id);
+  }
+
   @Get("rewards")
   async getRewards(@Request() req) {
     return this.engagementService.getRewardsState(req.user.id);

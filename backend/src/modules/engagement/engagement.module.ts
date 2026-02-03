@@ -6,6 +6,7 @@ import { MapDrop } from "./entities/map-drop.entity";
 import { MapDropBoost } from "./entities/map-drop-boost.entity";
 import { PoiMissionEntity } from "./entities/poi-mission.entity";
 import { RewardUnlock } from "./entities/reward-unlock.entity";
+import { MissionEntity } from "./entities/mission.entity";
 import { User } from "../user/user.entity";
 import { UserModule } from "../user/user.module";
 import { RealtimeModule } from "../realtime/realtime.module";
@@ -17,6 +18,7 @@ import { RealtimeModule } from "../realtime/realtime.module";
       MapDropBoost,
       PoiMissionEntity,
       RewardUnlock,
+      MissionEntity,
       User,
     ]),
     UserModule,

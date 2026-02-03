@@ -51,6 +51,7 @@ import '../services/rewards_shop_service.dart';
 import '../services/engagement_api_service.dart';
 import '../services/smart_reminder_service.dart';
 import '../services/legal_api_service.dart';
+import '../services/missions_service.dart';
 
 final getIt = GetIt.instance;
 
@@ -145,6 +146,9 @@ Future<void> initializeDependencies() async {
   );
   getIt.registerLazySingleton<RewardsShopService>(
     () => RewardsShopService(apiService: getIt()),
+  );
+  getIt.registerLazySingleton<MissionsService>(
+    () => MissionsService(apiService: getIt()),
   );
 
   // Google Fit Service

@@ -9,6 +9,7 @@ import { MapDrop } from "./entities/map-drop.entity";
 import { MapDropBoost } from "./entities/map-drop-boost.entity";
 import { PoiMissionEntity } from "./entities/poi-mission.entity";
 import { RewardUnlock } from "./entities/reward-unlock.entity";
+import { MissionEntity, MissionType } from "./entities/mission.entity";
 import { User } from "../user/user.entity";
 import { UserService } from "../user/user.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
@@ -30,6 +31,12 @@ type PoiItem = {
   lng: number;
 };
 
+type MissionDefinition = {
+  type: MissionType;
+  goal: number;
+  rewardPoints: number;
+};
+
 const REWARD_CATALOG: RewardCatalogItem[] = [
   { id: "marker_azure", type: "marker", cost: 0 },
   { id: "marker_ember", type: "marker", cost: 250 },
@@ -38,6 +45,20 @@ const REWARD_CATALOG: RewardCatalogItem[] = [
   { id: "badge_trail", type: "badge", cost: 120 },
   { id: "badge_drop", type: "badge", cost: 300 },
   { id: "badge_conquer", type: "badge", cost: 600 },
+];
+
+const DAILY_MISSIONS: MissionDefinition[] = [
+  { type: "distance_meters", goal: 2000, rewardPoints: 120 },
+  { type: "steps", goal: 3000, rewardPoints: 100 },
+  { type: "territories", goal: 3, rewardPoints: 150 },
+  { type: "workouts", goal: 1, rewardPoints: 80 },
+];
+
+const WEEKLY_MISSIONS: MissionDefinition[] = [
+  { type: "distance_meters", goal: 15000, rewardPoints: 500 },
+  { type: "steps", goal: 20000, rewardPoints: 400 },
+  { type: "territories", goal: 20, rewardPoints: 600 },
+  { type: "workouts", goal: 5, rewardPoints: 300 },
 ];
 
 @Injectable()
@@ -61,6 +82,8 @@ export class EngagementService {
     private readonly poiMissionRepository: Repository<PoiMissionEntity>,
     @InjectRepository(RewardUnlock)
     private readonly rewardUnlockRepository: Repository<RewardUnlock>,
+    @InjectRepository(MissionEntity)
+    private readonly missionRepository: Repository<MissionEntity>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly userService: UserService,
@@ -182,7 +205,7 @@ export class EngagementService {
       await this.userService.updateStats(
         userId,
         { points: mission.rewardPoints },
-        { notify: true },
+        { notify: true, occurredAt: new Date() },
       );
     }
 
@@ -196,6 +219,74 @@ export class EngagementService {
       completedNow,
       rewardGrantedNow,
     };
+  }
+
+  async getDailyMissions(userId: string) {
+    const periodStart = this.getDayStart(new Date());
+    const missions = await this.ensureMissions(
+      userId,
+      "daily",
+      periodStart,
+      DAILY_MISSIONS,
+    );
+    return { missions: missions.map((mission) => this.serializeDailyMission(mission)) };
+  }
+
+  async getWeeklyMissions(userId: string) {
+    const periodStart = this.getWeekStart(new Date());
+    const missions = await this.ensureMissions(
+      userId,
+      "weekly",
+      periodStart,
+      WEEKLY_MISSIONS,
+    );
+    return { missions: missions.map((mission) => this.serializeDailyMission(mission)) };
+  }
+
+  async updateMissionsFromActivity(
+    userId: string,
+    data: {
+      distanceMeters?: number;
+      steps?: number;
+      territories?: number;
+      workouts?: number;
+      occurredAt?: Date;
+    },
+  ) {
+    const occurredAt = data.occurredAt ?? new Date();
+    const dailyStart = this.getDayStart(occurredAt);
+    const weeklyStart = this.getWeekStart(occurredAt);
+    const deltas: Record<MissionType, number> = {
+      distance_meters: Math.max(0, Math.round(data.distanceMeters || 0)),
+      steps: Math.max(0, Math.round(data.steps || 0)),
+      territories: Math.max(0, Math.round(data.territories || 0)),
+      workouts: Math.max(0, Math.round(data.workouts || 0)),
+    };
+
+    const daily = await this.ensureMissions(
+      userId,
+      "daily",
+      dailyStart,
+      DAILY_MISSIONS,
+    );
+    const weekly = await this.ensureMissions(
+      userId,
+      "weekly",
+      weeklyStart,
+      WEEKLY_MISSIONS,
+    );
+
+    const dailyRewards = await this.applyMissionProgress(daily, deltas);
+    const weeklyRewards = await this.applyMissionProgress(weekly, deltas);
+
+    const totalReward = dailyRewards + weeklyRewards;
+    if (totalReward > 0) {
+      await this.userService.updateStats(
+        userId,
+        { points: totalReward },
+        { notify: true, occurredAt: occurredAt },
+      );
+    }
   }
 
   async getRewardsState(userId: string) {
@@ -357,6 +448,24 @@ export class EngagementService {
     };
   }
 
+  private serializeDailyMission(mission: MissionEntity) {
+    return {
+      id: mission.id,
+      period: mission.period,
+      type: mission.type,
+      goal: mission.goal,
+      progress: mission.progress,
+      rewardPoints: mission.rewardPoints,
+      periodStart: mission.periodStart?.toISOString?.() ?? mission.periodStart,
+      completedAt: mission.completedAt
+        ? mission.completedAt.toISOString()
+        : null,
+      rewardGrantedAt: mission.rewardGrantedAt
+        ? mission.rewardGrantedAt.toISOString()
+        : null,
+    };
+  }
+
   private async extendBoost(
     userId: string,
     pickedDrops: MapDrop[],
@@ -454,6 +563,97 @@ export class EngagementService {
 
   private getRewardItem(id: string) {
     return REWARD_CATALOG.find((item) => item.id === id);
+  }
+
+  private async ensureMissions(
+    userId: string,
+    period: "daily" | "weekly",
+    periodStart: Date,
+    definitions: MissionDefinition[],
+  ) {
+    const existing = await this.missionRepository.find({
+      where: { userId, period, periodStart },
+      order: { createdAt: "ASC" },
+    });
+
+    if (existing.length >= definitions.length) {
+      return existing;
+    }
+
+    const existingTypes = new Set(existing.map((mission) => mission.type));
+    const toCreate = definitions.filter(
+      (definition) => !existingTypes.has(definition.type),
+    );
+
+    if (toCreate.length === 0) return existing;
+
+    const created = toCreate.map((definition) =>
+      this.missionRepository.create({
+        userId,
+        period,
+        type: definition.type,
+        goal: definition.goal,
+        rewardPoints: definition.rewardPoints,
+        periodStart,
+        progress: 0,
+      }),
+    );
+
+    const saved = await this.missionRepository.save(created);
+    return [...existing, ...saved];
+  }
+
+  private async applyMissionProgress(
+    missions: MissionEntity[],
+    deltas: Record<MissionType, number>,
+  ) {
+    let rewardPoints = 0;
+    const now = new Date();
+    const updates: MissionEntity[] = [];
+
+    for (const mission of missions) {
+      if (mission.rewardGrantedAt) continue;
+
+      if (mission.progress >= mission.goal && !mission.rewardGrantedAt) {
+        mission.completedAt = mission.completedAt ?? now;
+        mission.rewardGrantedAt = now;
+        rewardPoints += mission.rewardPoints || 0;
+        updates.push(mission);
+        continue;
+      }
+
+      const delta = deltas[mission.type] ?? 0;
+      if (delta <= 0) continue;
+
+      const next = Math.min(mission.goal, mission.progress + delta);
+      if (next !== mission.progress) {
+        mission.progress = next;
+        if (mission.progress >= mission.goal && !mission.completedAt) {
+          mission.completedAt = now;
+          mission.rewardGrantedAt = now;
+          rewardPoints += mission.rewardPoints || 0;
+        }
+        updates.push(mission);
+      }
+    }
+
+    if (updates.length > 0) {
+      await this.missionRepository.save(updates);
+    }
+
+    return rewardPoints;
+  }
+
+  private getDayStart(date: Date) {
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  }
+
+  private getWeekStart(date: Date) {
+    const start = this.getDayStart(date);
+    const day = start.getUTCDay();
+    const diff = (day + 6) % 7;
+    start.setUTCDate(start.getUTCDate() - diff);
+    return start;
   }
 
   private async loadPois(lat: number, lng: number) {

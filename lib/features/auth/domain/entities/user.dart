@@ -9,6 +9,7 @@ class User extends Equatable {
   final int? age;
   final String? gender;
   final String? country;
+  final String? city;
   final bool hasCompletedOnboarding;
   final String? avatarModelUrl;
   final String? avatarImageUrl;
@@ -30,6 +31,7 @@ class User extends Equatable {
     this.age,
     this.gender,
     this.country,
+    this.city,
     this.hasCompletedOnboarding = false,
     this.avatarModelUrl,
     this.avatarImageUrl,
@@ -51,6 +53,7 @@ class User extends Equatable {
     age,
     gender,
     country,
+    city,
     hasCompletedOnboarding,
     avatarModelUrl,
     avatarImageUrl,
@@ -71,6 +74,7 @@ class User extends Equatable {
     int? age,
     String? gender,
     String? country,
+    String? city,
     bool? hasCompletedOnboarding,
     String? avatarModelUrl,
     String? avatarImageUrl,
@@ -90,6 +94,7 @@ class User extends Equatable {
       age: age ?? this.age,
       gender: gender ?? this.gender,
       country: country ?? this.country,
+      city: city ?? this.city,
       hasCompletedOnboarding: hasCompletedOnboarding ?? this.hasCompletedOnboarding,
       avatarModelUrl: avatarModelUrl ?? this.avatarModelUrl,
       avatarImageUrl: avatarImageUrl ?? this.avatarImageUrl,
@@ -111,6 +116,7 @@ class User extends Equatable {
     'age': age,
     'gender': gender,
     'country': country,
+    'city': city,
     'hasCompletedOnboarding': hasCompletedOnboarding,
     'avatarModelUrl': avatarModelUrl,
     'avatarImageUrl': avatarImageUrl,
@@ -131,6 +137,7 @@ class User extends Equatable {
     age: json['age'],
     gender: json['gender'],
     country: json['country'],
+    city: json['city'],
     hasCompletedOnboarding: json['hasCompletedOnboarding'] ?? false,
     avatarModelUrl: json['avatarModelUrl'],
     avatarImageUrl: json['avatarImageUrl'],

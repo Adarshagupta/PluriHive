@@ -13,6 +13,8 @@ import { RoutesModule } from './modules/routes/routes.module';
 import { AppModule as AppUpdateModule } from './modules/app/app.module';
 import { EngagementModule } from './modules/engagement/engagement.module';
 import { LegalModule } from './modules/legal/legal.module';
+import { FactionModule } from './modules/faction/faction.module';
+import { DuelModule } from './modules/duel/duel.module';
 
 @Module({
   imports: [
@@ -124,6 +126,8 @@ import { LegalModule } from './modules/legal/legal.module';
     AppUpdateModule,
     EngagementModule,
     LegalModule,
+    FactionModule,
+    DuelModule,
   ],
 })
 export class AppModule {}

@@ -10,6 +10,7 @@ import '../../../../core/widgets/skeleton.dart';
 import '../../../../core/services/google_fit_service.dart';
 import '../../../../core/services/websocket_service.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/services/missions_service.dart';
 import 'package:health/health.dart';
 import '../../../game/presentation/bloc/game_bloc.dart';
 import '../../../auth/presentation/bloc/auth_bloc.dart';
@@ -35,6 +36,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   late TrackingApiService _trackingApiService;
   late GoogleFitService _googleFitService;
   late WebSocketService _webSocketService;
+  late MissionsService _missionsService;
   late final void Function(dynamic) _statsUpdateListener;
   late SharedPreferences _prefs;
   Map<String, dynamic>? _weatherData;
@@ -49,6 +51,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   HealthConnectSdkStatus? _healthConnectStatus;
   Map<String, dynamic>? _healthSummary;
   List<HeartRateSample> _heartRateSamples = [];
+  bool _isLoadingMissions = false;
+  List<Mission> _dailyMissions = [];
+  List<Mission> _weeklyMissions = [];
   late List<String> _sectionOrder;
 
   static const String _homeSectionOrderKey = 'home_section_order';
@@ -56,6 +61,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     'progress',
     'miniStats',
     'weeklyGoal',
+    'missions',
     'health',
     'territory',
     'recentActivity',
@@ -67,6 +73,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     _trackingApiService = di.getIt<TrackingApiService>();
     _googleFitService = di.getIt<GoogleFitService>();
     _webSocketService = di.getIt<WebSocketService>();
+    _missionsService = di.getIt<MissionsService>();
     _prefs = di.getIt<SharedPreferences>();
     _sectionOrder = _loadSectionOrder();
     _statsUpdateListener = (_) {
@@ -84,6 +91,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       _fetchWeather();
       _loadRecentActivities();
       _loadHealthSummary();
+      _loadMissions();
     });
   }
 
@@ -99,6 +107,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     await _fetchWeather();
     await _loadRecentActivities();
     await _loadHealthSummary();
+    await _loadMissions();
   }
 
   Future<void> _loadHealthSummary() async {
@@ -152,6 +161,27 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     } catch (e) {
       print('Error loading Health Connect data: $e');
       setState(() => _isLoadingHealth = false);
+    }
+  }
+
+  Future<void> _loadMissions() async {
+    if (_isLoadingMissions) return;
+    setState(() => _isLoadingMissions = true);
+    try {
+      final results = await Future.wait([
+        _missionsService.getDailyMissions(),
+        _missionsService.getWeeklyMissions(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _dailyMissions = results[0];
+        _weeklyMissions = results[1];
+        _isLoadingMissions = false;
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingMissions = false);
+      }
     }
   }
 
@@ -402,6 +432,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         return _buildMiniStatsSection();
       case 'weeklyGoal':
         return _buildWeeklyGoalSection();
+      case 'missions':
+        return _buildMissionsSection();
       case 'health':
         return _healthConnected ? _buildHealthConnectCard() : const SizedBox.shrink();
       case 'territory':
@@ -1097,6 +1129,170 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildMissionsSection() {
+    if (_isLoadingMissions) {
+      return _buildMissionsSkeleton();
+    }
+
+    if (_dailyMissions.isEmpty && _weeklyMissions.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 15,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.task_alt, color: AppTheme.primaryColor, size: 20),
+              const SizedBox(width: 8),
+              const Text(
+                'Missions',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black87,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (_dailyMissions.isNotEmpty)
+            _buildMissionGroup('Daily', _dailyMissions),
+          if (_weeklyMissions.isNotEmpty) ...[
+            if (_dailyMissions.isNotEmpty) const SizedBox(height: 16),
+            _buildMissionGroup('Weekly', _weeklyMissions),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMissionGroup(String title, List<Mission> missions) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: Colors.grey.shade600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Column(
+          children: missions.map(_buildMissionRow).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMissionRow(Mission mission) {
+    final goal = mission.goal > 0 ? mission.goal : 1;
+    final progress = (mission.progress / goal).clamp(0.0, 1.0);
+    final label = _missionLabel(mission.type);
+    final valueText = mission.type == 'distance_meters'
+        ? '${(mission.progress / 1000).toStringAsFixed(1)} / ${(goal / 1000).toStringAsFixed(1)} km'
+        : '${mission.progress} / $goal';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
+              ),
+              Text(
+                valueText,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 8,
+              backgroundColor: Colors.grey.shade200,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                progress >= 1.0 ? const Color(0xFF3BB273) : AppTheme.accentColor,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _missionLabel(String type) {
+    switch (type) {
+      case 'distance_meters':
+        return 'Distance';
+      case 'steps':
+        return 'Steps';
+      case 'territories':
+        return 'Territories';
+      case 'workouts':
+        return 'Workouts';
+      default:
+        return type;
+    }
+  }
+
+  Widget _buildMissionsSkeleton() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 15,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SkeletonBox(height: 18, width: 120, borderRadius: BorderRadius.circular(8)),
+          const SizedBox(height: 12),
+          SkeletonBox(height: 10, width: double.infinity, borderRadius: BorderRadius.circular(8)),
+          const SizedBox(height: 10),
+          SkeletonBox(height: 10, width: double.infinity, borderRadius: BorderRadius.circular(8)),
+        ],
+      ),
     );
   }
 

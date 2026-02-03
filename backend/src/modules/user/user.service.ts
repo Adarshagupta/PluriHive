@@ -15,6 +15,8 @@ import { PoiMissionEntity } from "../engagement/entities/poi-mission.entity";
 import { RewardUnlock } from "../engagement/entities/reward-unlock.entity";
 import { Friendship } from "../leaderboard/friendship.entity";
 import { EmailService } from "../notifications/email.service";
+import { SeasonService } from "../season/season.service";
+import { Duel } from "../duel/duel.entity";
 
 @Injectable()
 export class UserService {
@@ -25,6 +27,7 @@ export class UserService {
     private realtimeGateway: RealtimeGateway,
     private dataSource: DataSource,
     private emailService: EmailService,
+    private seasonService: SeasonService,
   ) {}
 
   async findById(id: string): Promise<User> {
@@ -48,6 +51,10 @@ export class UserService {
     if (updates.age !== undefined) allowedUpdates.age = updates.age;
     if (updates.gender !== undefined) allowedUpdates.gender = updates.gender;
     if (updates.country !== undefined) allowedUpdates.country = updates.country;
+    if (updates.city !== undefined) {
+      allowedUpdates.city = updates.city;
+      allowedUpdates.cityNormalized = this.normalizeCity(updates.city);
+    }
     if (updates.profilePicture !== undefined) {
       allowedUpdates.profilePicture = updates.profilePicture;
     }
@@ -67,6 +74,7 @@ export class UserService {
       age: updatedUser.age,
       gender: updatedUser.gender,
       country: updatedUser.country,
+      city: updatedUser.city,
     });
 
     await this.bumpUserCacheVersion(userId);
@@ -98,7 +106,7 @@ export class UserService {
       points?: number;
       workouts?: number;
     },
-    options?: { notify?: boolean },
+    options?: { notify?: boolean; occurredAt?: Date },
   ): Promise<User> {
     const user = await this.findById(userId);
 
@@ -116,6 +124,15 @@ export class UserService {
     if (stats.workouts) user.totalWorkouts += stats.workouts;
 
     const saved = await this.userRepository.save(user);
+    try {
+      await this.seasonService.updateSeasonStats(
+        userId,
+        stats,
+        options?.occurredAt,
+      );
+    } catch (error) {
+      console.error('Season stats update failed:', error);
+    }
     await this.bumpUserCacheVersion(userId);
     if (options?.notify ?? true) {
       this.notifyStatsUpdated(userId);
@@ -149,6 +166,10 @@ export class UserService {
       await manager.delete(MapDropBoost, { userId });
       await manager.delete(MapDrop, { userId });
       await manager.delete(PoiMissionEntity, { userId });
+      await manager.delete(Duel, [
+        { challengerId: userId },
+        { opponentId: userId },
+      ]);
       await manager.delete(RewardUnlock, { userId });
       await manager.delete(Activity, { userId });
       await manager.delete(RouteEntity, { userId });
@@ -267,6 +288,12 @@ export class UserService {
     const diff = (day + 6) % 7; // days since Monday
     d.setUTCDate(d.getUTCDate() - diff);
     return d;
+  }
+
+  private normalizeCity(value?: string) {
+    if (!value) return null;
+    const trimmed = value.trim().toLowerCase();
+    return trimmed.length > 0 ? trimmed : null;
   }
 
   sanitizeUser(user: User) {
