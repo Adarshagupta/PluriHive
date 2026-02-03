@@ -8,13 +8,13 @@ class ApiConfig {
   static const String _backendPrefKey = 'selected_backend_url';
 
   // Current backend URL (mutable for runtime switching)
-  static String baseUrl = localUrl; // Using local backend for testing
+  static String baseUrl = productionUrl; // Using production backend
 
   // Initialize backend URL from saved preference
   static Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
     final saved =
-        prefs.getString(_backendPrefKey) ?? localUrl; // Default to local
+        prefs.getString(_backendPrefKey) ?? productionUrl; // Default to production
     final sanitized = _sanitizeBaseUrl(saved);
     baseUrl = sanitized;
     if (sanitized != saved) {
@@ -26,7 +26,7 @@ class ApiConfig {
   static Future<String> getBaseUrl() async {
     final prefs = await SharedPreferences.getInstance();
     final saved =
-        prefs.getString(_backendPrefKey) ?? localUrl; // Default to local
+        prefs.getString(_backendPrefKey) ?? productionUrl; // Default to production
     final sanitized = _sanitizeBaseUrl(saved);
     if (sanitized != saved) {
       await prefs.setString(_backendPrefKey, sanitized);
