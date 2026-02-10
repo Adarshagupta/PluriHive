@@ -108,6 +108,22 @@ class GameBloc extends Bloc<GameEvent, GameState> {
     return super.close();
   }
 
+  UserStats _statsOrDefault() {
+    if (state is GameLoaded) {
+      return (state as GameLoaded).stats;
+    }
+    return const UserStats(
+      totalPoints: 0,
+      level: 1,
+      territoriesCaptured: 0,
+      totalDistanceKm: 0,
+      totalCaloriesBurned: 0,
+      currentStreak: 0,
+      longestStreak: 0,
+      streakFreezes: 0,
+    );
+  }
+
   Future<void> _onLoadGameData(
     LoadGameData event,
     Emitter<GameState> emit,
@@ -150,7 +166,7 @@ class GameBloc extends Bloc<GameEvent, GameState> {
       print(
           '📥 GameBloc LoadGameData: Loaded from backend - distance = ${stats.totalDistanceKm} km, points = ${stats.totalPoints}');
       emit(GameLoaded(stats));
-        await _updateHomeWidget(stats);
+      await _updateHomeWidget(stats);
     } catch (e) {
       print('⚠️ Error loading game data from backend: $e');
       // Fallback to local data
@@ -165,7 +181,6 @@ class GameBloc extends Bloc<GameEvent, GameState> {
       }
     }
   }
-
 
   Future<void> _updateHomeWidget(UserStats stats) async {
     try {
@@ -188,47 +203,47 @@ class GameBloc extends Bloc<GameEvent, GameState> {
     AddPoints event,
     Emitter<GameState> emit,
   ) async {
-    if (state is! GameLoaded) return;
-    final current = state as GameLoaded;
-    final updated = current.stats.copyWith(
-      totalPoints: current.stats.totalPoints + event.points,
+    final current = _statsOrDefault();
+    final updated = current.copyWith(
+      totalPoints: current.totalPoints + event.points,
     );
     emit(GameLoaded(updated));
+    await _updateHomeWidget(updated);
   }
 
   Future<void> _onUpdateDistance(
     UpdateDistance event,
     Emitter<GameState> emit,
   ) async {
-    if (state is! GameLoaded) return;
-    final current = state as GameLoaded;
-    final updated = current.stats.copyWith(
-      totalDistanceKm: current.stats.totalDistanceKm + event.distanceKm,
+    final current = _statsOrDefault();
+    final updated = current.copyWith(
+      totalDistanceKm: current.totalDistanceKm + event.distanceKm,
     );
     emit(GameLoaded(updated));
+    await _updateHomeWidget(updated);
   }
 
   Future<void> _onAddCalories(
     AddCalories event,
     Emitter<GameState> emit,
   ) async {
-    if (state is! GameLoaded) return;
-    final current = state as GameLoaded;
-    final updated = current.stats.copyWith(
-      totalCaloriesBurned: current.stats.totalCaloriesBurned + event.calories,
+    final current = _statsOrDefault();
+    final updated = current.copyWith(
+      totalCaloriesBurned: current.totalCaloriesBurned + event.calories,
     );
     emit(GameLoaded(updated));
+    await _updateHomeWidget(updated);
   }
 
   Future<void> _onTerritoryCapture(
     TerritoryCapture event,
     Emitter<GameState> emit,
   ) async {
-    if (state is! GameLoaded) return;
-    final current = state as GameLoaded;
-    final updated = current.stats.copyWith(
-      territoriesCaptured: current.stats.territoriesCaptured + 1,
+    final current = _statsOrDefault();
+    final updated = current.copyWith(
+      territoriesCaptured: current.territoriesCaptured + 1,
     );
     emit(GameLoaded(updated));
+    await _updateHomeWidget(updated);
   }
 }

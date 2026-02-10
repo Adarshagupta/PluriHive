@@ -3,12 +3,12 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 
 class MapboxConfig {
   static const String _accessToken =
-      String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
+      'pk.eyJ1Ijoic3lsaWNhYWkiLCJhIjoiY21rd3UwcGtvMDFmdDNkcjBhdzc4ejEyaCJ9.yKkADo8N37hnMeJS44VBRQ';
 
   static Future<void> initialize() async {
     if (_accessToken.isEmpty) {
       debugPrint(
-        'Mapbox access token missing. Provide via --dart-define=MAPBOX_ACCESS_TOKEN=...',
+        'Mapbox access token missing.',
       );
       return;
     }

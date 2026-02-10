@@ -166,19 +166,15 @@ class _MapScreenState extends State<MapScreen>
   final Map<String, Map<String, dynamic>> _activityData =
       {}; // Store activity data by polylineId
   static const String _territorySourceId = 'territory-source';
-  static const String _territoryCapturedFillLayerId =
-      'territory-captured-fill';
-  static const String _territoryCapturedLineLayerId =
-      'territory-captured-line';
-  static const String _territoryCapturedGlowLayerId =
-      'territory-captured-glow';
+  static const String _territoryCapturedFillLayerId = 'territory-captured-fill';
+  static const String _territoryCapturedLineLayerId = 'territory-captured-line';
+  static const String _territoryCapturedGlowLayerId = 'territory-captured-glow';
   static const String _territoryCapturedExtrusionLayerId =
       'territory-captured-extrusion';
   static const String _territoryOwnFillLayerId = 'territory-own-fill';
   static const String _territoryOwnLineLayerId = 'territory-own-line';
   static const String _territoryOwnGlowLayerId = 'territory-own-glow';
-  static const String _territoryOwnExtrusionLayerId =
-      'territory-own-extrusion';
+  static const String _territoryOwnExtrusionLayerId = 'territory-own-extrusion';
   static const String _territoryOtherFillLayerId = 'territory-other-fill';
   static const String _territoryOtherLineLayerId = 'territory-other-line';
   static const String _territoryBossFillLayerId = 'territory-boss-fill';
@@ -199,6 +195,7 @@ class _MapScreenState extends State<MapScreen>
   bool _mapboxSyncInProgress = false;
   bool _mapboxSyncPending = false;
   bool _territoryLayersReady = false;
+  Future<void>? _territoryLayerInitFuture;
   mapbox.GeoJsonSource? _territoryGeoJsonSource;
   DateTime? _lastPipCameraUpdate;
   static const Duration _pipCameraThrottle = Duration(milliseconds: 500);
@@ -282,18 +279,12 @@ class _MapScreenState extends State<MapScreen>
   double? _smoothedCameraBearing;
   DateTime? _lastCameraUpdate;
   DateTime? _lastRouteRenderAt;
-  static const Duration _cameraUpdateThrottle =
-      Duration(milliseconds: 260);
-  static const Duration _routeRenderThrottle =
-      Duration(milliseconds: 240);
-  static const Duration _widgetUpdateThrottle =
-      Duration(seconds: 12);
-  static const Duration _syncStatusInterval =
-      Duration(seconds: 12);
-  static const Duration _syncRetryInterval =
-      Duration(seconds: 45);
-  static const Duration _mapIdleFetchWindow =
-      Duration(seconds: 2);
+  static const Duration _cameraUpdateThrottle = Duration(milliseconds: 260);
+  static const Duration _routeRenderThrottle = Duration(milliseconds: 240);
+  static const Duration _widgetUpdateThrottle = Duration(seconds: 12);
+  static const Duration _syncStatusInterval = Duration(seconds: 12);
+  static const Duration _syncRetryInterval = Duration(seconds: 45);
+  static const Duration _mapIdleFetchWindow = Duration(seconds: 2);
   DateTime? _lastWidgetUpdateAt;
 
   // Loop closure feedback
@@ -302,6 +293,12 @@ class _MapScreenState extends State<MapScreen>
   int _lastLoadedTerritoryCount = 0; // Track last loaded count to prevent spam
   int _currentSessionTerritories =
       0; // Track territories captured in current session
+  double _sessionDistanceCreditedKm = 0.0;
+  int _sessionPointsCredited = 0;
+  int _sessionCaloriesCredited = 0;
+  int _sessionTerritoriesCredited = 0;
+  static const double _minTerritoryCaptureDistanceKm = 0.1;
+  static const double _minTerritoryCaptureAreaSqMeters = 100.0;
   int _localStreakDays = 0;
   int _bestStreakDays = 0;
 
@@ -543,7 +540,8 @@ class _MapScreenState extends State<MapScreen>
     }
   }
 
-  Future<void> _checkPreciseLocationAccess({bool requestPermission = false}) async {
+  Future<void> _checkPreciseLocationAccess(
+      {bool requestPermission = false}) async {
     if (_isCheckingLocationGate) return;
     final hadAccess = _hasLocationAccess;
     if (mounted) {
@@ -824,7 +822,11 @@ class _MapScreenState extends State<MapScreen>
     }
   }
 
-  void _scheduleTerritoryFetch(LatLng center, {bool force = false}) {
+  void _scheduleTerritoryFetch(
+    LatLng center, {
+    bool force = false,
+    List<double>? radiiKm,
+  }) {
     if (!_shouldRenderHeavyOverlays) {
       return;
     }
@@ -849,14 +851,15 @@ class _MapScreenState extends State<MapScreen>
     _setTerritoryLoading(true);
     _territoryFetchDebounce?.cancel();
     _territoryFetchDebounce = Timer(const Duration(milliseconds: 160), () {
-      _fetchTerritoriesProgressively(center, token);
+      _fetchTerritoriesProgressively(center, token, radiiKm: radiiKm);
     });
   }
 
   Future<void> _fetchTerritoriesProgressively(
     LatLng center,
-    int token,
-  ) async {
+    int token, {
+    List<double>? radiiKm,
+  }) async {
     if (!_shouldRenderHeavyOverlays) {
       if (token == _territoryFetchToken) {
         _setTerritoryLoading(false);
@@ -868,8 +871,10 @@ class _MapScreenState extends State<MapScreen>
     final currentUserId = await authService.getUserId() ?? '';
 
     var totalFetched = 0;
+    final effectiveRadii =
+        (radiiKm == null || radiiKm.isEmpty) ? _territoryFetchRadiiKm : radiiKm;
     try {
-      for (final radiusKm in _territoryFetchRadiiKm) {
+      for (final radiusKm in effectiveRadii) {
         if (!mounted || token != _territoryFetchToken) return;
         final key = _territoryFetchKey(center, radiusKm);
         final lastFetchAt = _territoryFetchTimestamps[key];
@@ -907,7 +912,8 @@ class _MapScreenState extends State<MapScreen>
     if (!_shouldRenderHeavyOverlays) return;
     if (_polygons.isNotEmpty || _territoryData.isNotEmpty) return;
     _allTerritoriesFallbackAttempted = true;
-    await _loadTerritoriesFromBackend();
+    // Intentionally disabled to avoid loading the entire world dataset.
+    return;
   }
 
   void _renderTerritories(
@@ -956,10 +962,8 @@ class _MapScreenState extends State<MapScreen>
         List<LatLng>? polygonPoints;
 
         if (routePoints != null && routePoints.isNotEmpty) {
-          final parsedPoints = routePoints
-              .map(_parseRoutePoint)
-              .whereType<LatLng>()
-              .toList();
+          final parsedPoints =
+              routePoints.map(_parseRoutePoint).whereType<LatLng>().toList();
           if (parsedPoints.length >= 3) {
             polygonPoints = parsedPoints;
           }
@@ -1130,9 +1134,8 @@ class _MapScreenState extends State<MapScreen>
         : (isOwn ? const Color(0xFF2ECC71) : const Color(0xFFF39C12));
     final cleanedName = territoryName?.trim();
     final hasName = cleanedName != null && cleanedName.isNotEmpty;
-    final headline = hasName
-        ? cleanedName
-        : (isOwn ? 'Your Territory' : 'Territory');
+    final headline =
+        hasName ? cleanedName : (isOwn ? 'Your Territory' : 'Territory');
     final subtitle = hasName
         ? (isOwn ? 'Your territory' : 'Owned by $ownerName')
         : (isOwn ? 'Owned by you' : 'Owned by $ownerName');
@@ -2030,8 +2033,9 @@ class _MapScreenState extends State<MapScreen>
       );
     canvas.drawRect(Rect.fromLTWH(0, 0, width, height), bgPaint);
 
-    final accent =
-        isBoss ? const Color(0xFFF5B700) : (isOwn ? const Color(0xFF22C55E) : const Color(0xFFF59E0B));
+    final accent = isBoss
+        ? const Color(0xFFF5B700)
+        : (isOwn ? const Color(0xFF22C55E) : const Color(0xFFF59E0B));
     final nameText = (territoryName != null && territoryName.isNotEmpty)
         ? territoryName
         : (isOwn ? 'Your Territory' : 'Territory');
@@ -2129,10 +2133,8 @@ class _MapScreenState extends State<MapScreen>
     }
 
     final picture = recorder.endRecording();
-    final image =
-        await picture.toImage(width.toInt(), height.toInt());
-    final byteData =
-        await image.toByteData(format: ui.ImageByteFormat.png);
+    final image = await picture.toImage(width.toInt(), height.toInt());
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
     return byteData?.buffer.asUint8List();
   }
 
@@ -2239,7 +2241,8 @@ class _MapScreenState extends State<MapScreen>
 
   String? _extractAvatarSource(Map<String, dynamic> activityData) {
     final userData = activityData['user'];
-    return _extractAvatarFromMap(userData) ?? _extractAvatarFromMap(activityData);
+    return _extractAvatarFromMap(userData) ??
+        _extractAvatarFromMap(activityData);
   }
 
   String? _extractAvatarFromMap(dynamic data) {
@@ -2368,8 +2371,10 @@ class _MapScreenState extends State<MapScreen>
 
   LatLng? _parseRoutePoint(dynamic point) {
     if (point is Map) {
-      final latRaw =
-          point['latitude'] ?? point['lat'] ?? point['Latitude'] ?? point['Lat'];
+      final latRaw = point['latitude'] ??
+          point['lat'] ??
+          point['Latitude'] ??
+          point['Lat'];
       final lngRaw = point['longitude'] ??
           point['lng'] ??
           point['lon'] ??
@@ -2530,12 +2535,11 @@ class _MapScreenState extends State<MapScreen>
           }
 
           // Convert route points to LatLng safely
-          final routePoints = routeData
-              .map(_parseRoutePoint)
-              .whereType<LatLng>()
-              .toList();
+          final routePoints =
+              routeData.map(_parseRoutePoint).whereType<LatLng>().toList();
           if (routePoints.length < 2) {
-            print('[warn] Skipping activity ${activityData['id']} - not enough valid points');
+            print(
+                '[warn] Skipping activity ${activityData['id']} - not enough valid points');
             continue;
           }
 
@@ -2558,20 +2562,11 @@ class _MapScreenState extends State<MapScreen>
               Polygon(
                 polygonId: PolygonId(polygonId),
                 points: routePoints,
-                fillColor:
-                    const Color(0xFF4CAF50).withOpacity(_capturedAreaFillOpacity),
+                fillColor: const Color(0xFF4CAF50)
+                    .withOpacity(_capturedAreaFillOpacity),
                 strokeColor: const Color(0xFF2E7D32).withOpacity(0.7),
                 strokeWidth: 2,
-                consumeTapEvents: true,
-                onTap: () {
-                  showModalBottomSheet(
-                    context: context,
-                    backgroundColor: Colors.transparent,
-                    isScrollControlled: true,
-                    builder: (context) =>
-                        ActivityDetailDrawer(activity: activityData),
-                  );
-                },
+                consumeTapEvents: false,
               ),
             );
           }
@@ -2596,7 +2591,9 @@ class _MapScreenState extends State<MapScreen>
           );
 
           // Add marker at center with username (captured areas only)
-          if (hasCapturedArea && routePoints.isNotEmpty && !isDuplicateCapture) {
+          if (hasCapturedArea &&
+              routePoints.isNotEmpty &&
+              !isDuplicateCapture) {
             double sumLat = 0, sumLng = 0;
             for (final point in routePoints) {
               sumLat += point.latitude;
@@ -2612,16 +2609,14 @@ class _MapScreenState extends State<MapScreen>
                 ? (userData['name']?.toString() ?? 'You')
                 : 'You';
             final ownerId = userData is Map
-                ? (userData['id']?.toString() ??
-                    userData['userId']?.toString())
+                ? (userData['id']?.toString() ?? userData['userId']?.toString())
                 : null;
             final isOwn =
                 ownerId == null || ownerId == _currentUserIdFromAuth();
             final captureCountRaw = _toIntSafe(
               activityData['territoriesCaptured'],
             );
-            final captureCount =
-                captureCountRaw > 0 ? captureCountRaw : 1;
+            final captureCount = captureCountRaw > 0 ? captureCountRaw : 1;
             final points = activityData['pointsEarned'] != null
                 ? _toIntSafe(activityData['pointsEarned'])
                 : null;
@@ -2648,20 +2643,17 @@ class _MapScreenState extends State<MapScreen>
                     points: points,
                     capturedAt: capturedAt,
                     areaSqMeters: areaSqMeters,
-                    avatarSource:
-                        _extractAvatarSource(activityData) ??
+                    avatarSource: _extractAvatarSource(activityData) ??
                         _currentUserAvatarSource(),
                   );
                 },
               ),
             );
 
-            final avatarSource =
-                _extractAvatarSource(activityData) ??
+            final avatarSource = _extractAvatarSource(activityData) ??
                 _currentUserAvatarSource();
             final avatarCacheKey = userData is Map
-                ? (userData['id']?.toString() ??
-                    userData['userId']?.toString())
+                ? (userData['id']?.toString() ?? userData['userId']?.toString())
                 : null;
             final cacheKey =
                 avatarCacheKey ?? _currentUserIdFromAuth() ?? markerId;
@@ -2783,8 +2775,9 @@ class _MapScreenState extends State<MapScreen>
 
       final url =
           'https://api.openweathermap.org/data/2.5/weather?lat=${position.latitude}&lon=${position.longitude}&appid=$_weatherApiKey&units=metric';
-      final response =
-          await _httpClient.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+      final response = await _httpClient
+          .get(Uri.parse(url))
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode != 200) return;
       final data = json.decode(response.body);
@@ -2801,8 +2794,7 @@ class _MapScreenState extends State<MapScreen>
 
   bool _isRainingFromWeather(Map<String, dynamic> data) {
     try {
-      final main =
-          data['weather'][0]['main'].toString().toLowerCase();
+      final main = data['weather'][0]['main'].toString().toLowerCase();
       return main.contains('rain') ||
           main.contains('drizzle') ||
           main.contains('thunder');
@@ -2813,8 +2805,7 @@ class _MapScreenState extends State<MapScreen>
 
   double _rainIntensityFromWeather() {
     if (_weatherData == null) return 0.5;
-    final main =
-        _weatherData!['weather'][0]['main'].toString().toLowerCase();
+    final main = _weatherData!['weather'][0]['main'].toString().toLowerCase();
     final desc =
         _weatherData!['weather'][0]['description'].toString().toLowerCase();
     if (main.contains('thunder') || desc.contains('heavy')) {
@@ -3044,8 +3035,7 @@ class _MapScreenState extends State<MapScreen>
           y: origin.y + sin(angle) * radius,
         );
         if (await _hasRoadAtScreenCoordinate(candidate)) {
-          final snappedPoint =
-              await _mapboxMap!.coordinateForPixel(candidate);
+          final snappedPoint = await _mapboxMap!.coordinateForPixel(candidate);
           return _latLngFromPoint(snappedPoint);
         }
       }
@@ -3149,9 +3139,7 @@ class _MapScreenState extends State<MapScreen>
           markerId: MarkerId('poi_${poi.id}'),
           position: poi.position,
           icon: BitmapDescriptor.defaultMarkerWithHue(
-            visited
-                ? BitmapDescriptor.hueGreen
-                : BitmapDescriptor.hueViolet,
+            visited ? BitmapDescriptor.hueGreen : BitmapDescriptor.hueViolet,
           ),
           onTap: _openPoiMissionSheet,
         ),
@@ -3414,8 +3402,7 @@ class _MapScreenState extends State<MapScreen>
             BlocBuilder<LocationBloc, LocationState>(
               builder: (context, locationState) {
                 mapbox.CameraOptions initialCamera = mapbox.CameraOptions(
-                  center:
-                      _pointFromLatLng(const LatLng(37.7749, -122.4194)),
+                  center: _pointFromLatLng(const LatLng(37.7749, -122.4194)),
                   zoom: 15,
                   pitch: _is3DActive ? 45 : 0,
                 );
@@ -3475,6 +3462,7 @@ class _MapScreenState extends State<MapScreen>
                               }
                               await _ensureMapboxManagers(reset: true);
                               _territoryLayersReady = false;
+                              _territoryLayerInitFuture = null;
                               await _ensureRoadLayerIds();
                               if (_shouldRenderHeavyOverlays) {
                                 await _ensureTerritoryStyleLayers();
@@ -3498,6 +3486,7 @@ class _MapScreenState extends State<MapScreen>
                             },
                             onStyleLoadedListener: (_) {
                               _territoryLayersReady = false;
+                              _territoryLayerInitFuture = null;
                               _resetRoadLayerIds();
                               _ensureMapboxManagers(reset: true)
                                   .then((_) => _ensureRoadLayerIds())
@@ -3666,8 +3655,7 @@ class _MapScreenState extends State<MapScreen>
                             ),
                             const SizedBox(height: 8),
                             TextButton(
-                              onPressed: () =>
-                                  _checkPreciseLocationAccess(),
+                              onPressed: () => _checkPreciseLocationAccess(),
                               child: const Text('Try again'),
                             ),
                           ],
@@ -3709,82 +3697,9 @@ class _MapScreenState extends State<MapScreen>
               bottom: 220,
               child: BlocBuilder<LocationBloc, LocationState>(
                 builder: (context, state) {
-                  if (state is! LocationTracking) return SizedBox.shrink();
-                  return Container(
-                    width: 80,
-                    padding: EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.08),
-                          blurRadius: 8,
-                          offset: Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.directions_walk,
-                          color: Color(0xFF2196F3),
-                          size: 22,
-                        ),
-                        SizedBox(height: 2),
-                        Text(
-                          '$_advancedSteps',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black87,
-                          ),
-                        ),
-                        Text(
-                          'steps',
-                          style: TextStyle(
-                            fontSize: 9,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                        if (_displayedMotionType != MotionType.stationary) ...[
-                          SizedBox(height: 3),
-                          Container(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: 5,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: _displayedMotionType == MotionType.running
-                                  ? Colors.red.shade100
-                                  : _displayedMotionType == MotionType.jogging
-                                      ? Colors.orange.shade100
-                                      : Colors.blue.shade100,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              _displayedMotionType
-                                  .toString()
-                                  .split('.')
-                                  .last
-                                  .toUpperCase(),
-                              style: TextStyle(
-                                fontSize: 7,
-                                fontWeight: FontWeight.bold,
-                                color: _displayedMotionType ==
-                                        MotionType.running
-                                    ? Colors.red.shade700
-                                    : _displayedMotionType == MotionType.jogging
-                                        ? Colors.orange.shade700
-                                        : Colors.blue.shade700,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  );
+                  if (state is! LocationTracking)
+                    return const SizedBox.shrink();
+                  return _buildStepCounterDisplay();
                 },
               ),
             ),
@@ -4039,76 +3954,140 @@ class _MapScreenState extends State<MapScreen>
       builder: (context, gameState) {
         return BlocBuilder<LocationBloc, LocationState>(
           builder: (context, locationState) {
-            if (gameState is! GameLoaded) return SizedBox.shrink();
+            if (gameState is! GameLoaded) return const SizedBox.shrink();
 
-              final isTracking = locationState is LocationTracking;
-              final distance = isTracking
-                  ? locationState.totalDistance / 1000
-                  : gameState.stats.totalDistanceKm;
-              final sessionCalories = isTracking ? (distance * 60).round() : 0;
-              final statusChips = _buildInlineStatusChips();
+            final isTracking = locationState is LocationTracking;
+            final distance = isTracking
+                ? locationState.totalDistance / 1000
+                : gameState.stats.totalDistanceKm;
+            final sessionCalories = isTracking ? (distance * 60).round() : 0;
+            final displayStreak =
+                max(gameState.stats.currentStreak, _localStreakDays);
+            final statusChips = _buildInlineStatusChips();
+            final headline = isTracking ? 'Live Session' : 'Map Overview';
+            final headlineColor =
+                isTracking ? const Color(0xFF4ADE80) : AppTheme.primaryColor;
+            final panelGradient = isTracking
+                ? [
+                    const Color(0xFF07182B).withOpacity(0.94),
+                    const Color(0xFF0F2C48).withOpacity(0.9),
+                  ]
+                : [
+                    Colors.white.withOpacity(0.96),
+                    const Color(0xFFEAF7F7).withOpacity(0.96),
+                  ];
 
             return Container(
-              margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-              padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+              margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
                     decoration: BoxDecoration(
-                      color: isTracking
-                          ? const Color(0xFF0F172A).withOpacity(0.88)
-                          : Colors.white.withOpacity(0.95),
-                      borderRadius: BorderRadius.circular(22),
+                      gradient: LinearGradient(
+                        colors: panelGradient,
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(24),
                       border: Border.all(
                         color: isTracking
-                            ? Colors.white.withOpacity(0.12)
-                            : Colors.white.withOpacity(0.6),
+                            ? Colors.white.withOpacity(0.18)
+                            : Colors.white.withOpacity(0.9),
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.16),
-                          blurRadius: 16,
-                          offset: const Offset(0, 6),
+                          color:
+                              Colors.black.withOpacity(isTracking ? 0.2 : 0.14),
+                          blurRadius: 20,
+                          offset: const Offset(0, 8),
                         ),
                       ],
                     ),
-                    child: Row(
+                    child: Column(
                       children: [
-                        Expanded(
-                        child: _buildStatItem(
-                          '${distance.toStringAsFixed(2)} km',
-                          'Distance',
-                          isTracking,
-                          isPrimary: true,
+                        Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: headlineColor,
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: headlineColor.withOpacity(0.45),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 0),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              headline,
+                              style: GoogleFonts.spaceGrotesk(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.2,
+                                color: isTracking
+                                    ? Colors.white
+                                    : AppTheme.textPrimary,
+                              ),
+                            ),
+                            const Spacer(),
+                            Text(
+                              isTracking ? 'TRACKING' : 'IDLE',
+                              style: GoogleFonts.dmSans(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.9,
+                                color: isTracking
+                                    ? Colors.white70
+                                    : AppTheme.textSecondary,
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                      _buildHudDivider(isTracking),
-                      Expanded(
-                        child: _buildStatItem(
-                          '${gameState.stats.territoriesCaptured}',
-                          'Territories',
-                          isTracking,
-                        ),
-                      ),
-                      _buildHudDivider(isTracking),
-                      Expanded(
-                        child: _buildStatItem(
-                          '${gameState.stats.totalPoints}',
-                          'Points',
-                          isTracking,
-                        ),
-                      ),
-                      _buildHudDivider(isTracking),
-                        Expanded(
-                          child: _buildStatItem(
-                            isTracking
-                                ? '$sessionCalories'
-                                : '${gameState.stats.currentStreak}d',
-                            isTracking ? 'Calories' : 'Streak',
-                            isTracking,
-                          ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatItem(
+                                '${distance.toStringAsFixed(2)} km',
+                                'Distance',
+                                isTracking,
+                                isPrimary: true,
+                              ),
+                            ),
+                            _buildHudDivider(isTracking),
+                            Expanded(
+                              child: _buildStatItem(
+                                '${gameState.stats.territoriesCaptured}',
+                                'Territories',
+                                isTracking,
+                              ),
+                            ),
+                            _buildHudDivider(isTracking),
+                            Expanded(
+                              child: _buildStatItem(
+                                '${gameState.stats.totalPoints}',
+                                'Points',
+                                isTracking,
+                              ),
+                            ),
+                            _buildHudDivider(isTracking),
+                            Expanded(
+                              child: _buildStatItem(
+                                isTracking
+                                    ? '$sessionCalories'
+                                    : '${displayStreak}d',
+                                isTracking ? 'Calories' : 'Streak',
+                                isTracking,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -4283,21 +4262,27 @@ class _MapScreenState extends State<MapScreen>
       children: [
         Text(
           value,
-          style: TextStyle(
-            fontSize: isPrimary ? 16 : 14,
-            fontWeight: isPrimary ? FontWeight.w900 : FontWeight.w800,
-            color: isTracking
-                ? Colors.white
-                : (isPrimary ? const Color(0xFF0F172A) : Colors.black87),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: GoogleFonts.spaceGrotesk(
+            fontSize: isPrimary ? 15 : 13,
+            fontWeight: isPrimary ? FontWeight.w700 : FontWeight.w600,
+            color: isTracking ? Colors.white : const Color(0xFF0F172A),
+            letterSpacing: -0.2,
           ),
         ),
-        const SizedBox(height: 2),
+        const SizedBox(height: 3),
         Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
+          label.toUpperCase(),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: GoogleFonts.dmSans(
+            fontSize: 9,
             fontWeight: FontWeight.w700,
-            color: isTracking ? Colors.white70 : Colors.grey.shade600,
+            letterSpacing: 0.7,
+            color: isTracking ? Colors.white70 : AppTheme.textSecondary,
           ),
         ),
       ],
@@ -4309,7 +4294,17 @@ class _MapScreenState extends State<MapScreen>
       width: 1,
       height: 28,
       margin: const EdgeInsets.symmetric(horizontal: 10),
-      color: isTracking ? Colors.white12 : Colors.grey.shade300,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            isTracking ? Colors.white12 : Colors.transparent,
+            isTracking ? Colors.white38 : Colors.black12,
+            isTracking ? Colors.white12 : Colors.transparent,
+          ],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
     );
   }
 
@@ -4325,11 +4320,27 @@ class _MapScreenState extends State<MapScreen>
               // Active tracking info
               if (isTracking)
                 Container(
-                  margin: EdgeInsets.only(bottom: 16),
-                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  margin: const EdgeInsets.only(bottom: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
                   decoration: BoxDecoration(
-                    color: Colors.black87,
-                    borderRadius: BorderRadius.circular(25),
+                    gradient: LinearGradient(
+                      colors: [
+                        const Color(0xFF07192E).withOpacity(0.92),
+                        const Color(0xFF123B5D).withOpacity(0.9),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: Colors.white.withOpacity(0.2)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.2),
+                        blurRadius: 14,
+                        offset: const Offset(0, 6),
+                      ),
+                    ],
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -4338,17 +4349,25 @@ class _MapScreenState extends State<MapScreen>
                         width: 8,
                         height: 8,
                         decoration: BoxDecoration(
-                          color: Colors.red,
+                          color: const Color(0xFFFB7185),
                           shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFFFB7185).withOpacity(0.45),
+                              blurRadius: 8,
+                              offset: const Offset(0, 0),
+                            ),
+                          ],
                         ),
                       ),
-                      SizedBox(width: 8),
+                      const SizedBox(width: 8),
                       Text(
                         'Tracking: ${(state.totalDistance / 1000).toStringAsFixed(2)} km',
-                        style: TextStyle(
+                        style: GoogleFonts.spaceGrotesk(
                           color: Colors.white,
-                          fontSize: 14,
+                          fontSize: 13,
                           fontWeight: FontWeight.w700,
+                          letterSpacing: 0.1,
                         ),
                       ),
                     ],
@@ -4538,7 +4557,8 @@ class _MapScreenState extends State<MapScreen>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.local_fire_department, size: 14, color: Colors.orange),
+          const Icon(Icons.local_fire_department,
+              size: 14, color: Colors.orange),
           const SizedBox(width: 6),
           Text(
             'Streak ${_localStreakDays}d • Best ${_bestStreakDays}d',
@@ -4658,8 +4678,7 @@ class _MapScreenState extends State<MapScreen>
     final lat2 = _toRadians(to.latitude);
     final dLng = _toRadians(to.longitude - from.longitude);
     final y = sin(dLng) * cos(lat2);
-    final x = cos(lat1) * sin(lat2) -
-        sin(lat1) * cos(lat2) * cos(dLng);
+    final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng);
     final bearing = atan2(y, x) * 180.0 / pi;
     return (bearing + 360.0) % 360.0;
   }
@@ -4767,260 +4786,329 @@ class _MapScreenState extends State<MapScreen>
 
   Future<void> _ensureTerritoryStyleLayers() async {
     if (_mapboxMap == null) return;
-    final style = _mapboxMap!.style;
-    await _ensureTerritorySource();
-
-    Future<void> ensureLayer(String id, mapbox.Layer layer) async {
-      final exists = await style.styleLayerExists(id);
-      if (!exists) {
-        await style.addLayer(layer);
-      }
+    if (_territoryLayersReady) return;
+    if (_territoryLayerInitFuture != null) {
+      await _territoryLayerInitFuture;
+      return;
     }
+    final completer = Completer<void>();
+    _territoryLayerInitFuture = completer.future;
+    final style = _mapboxMap!.style;
+    try {
+      await _ensureTerritorySource();
 
-    await ensureLayer(
-      _territoryCapturedFillLayerId,
-      mapbox.FillLayer(
-        id: _territoryCapturedFillLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        fillColor: const Color(0xFF4CAF50).value,
-        fillOpacity: _capturedAreaFillOpacity,
-        filter: [
-          '==',
-          ['get', 'kind'],
-          'captured',
-        ],
-      ),
-    );
+      Future<void> ensureLayer(String id, mapbox.Layer layer) async {
+        final exists = await style.styleLayerExists(id);
+        if (exists) return;
+        try {
+          await style.addLayer(layer);
+        } on PlatformException catch (e) {
+          final message = e.message ?? e.toString();
+          if (message.contains('already exists')) {
+            return;
+          }
+          rethrow;
+        }
+      }
 
-    await ensureLayer(
-      _territoryCapturedLineLayerId,
-      mapbox.LineLayer(
-        id: _territoryCapturedLineLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        lineColor: const Color(0xFF2E7D32).value,
-        lineOpacity: 0.75,
-        lineWidth: 2.2,
-        filter: [
-          '==',
-          ['get', 'kind'],
-          'captured',
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryCapturedFillLayerId,
+        mapbox.FillLayer(
+          id: _territoryCapturedFillLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          fillColor: const Color(0xFF4CAF50).value,
+          fillOpacity: _capturedAreaFillOpacity,
+          filter: [
+            '==',
+            ['get', 'kind'],
+            'captured',
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryCapturedGlowLayerId,
-      mapbox.LineLayer(
-        id: _territoryCapturedGlowLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        lineColor: const Color(0xFF4CAF50).value,
-        lineOpacity: 0.35,
-        lineWidth: 6.0,
-        lineBlur: 3.5,
-        filter: [
-          '==',
-          ['get', 'kind'],
-          'captured',
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryCapturedLineLayerId,
+        mapbox.LineLayer(
+          id: _territoryCapturedLineLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          lineColor: const Color(0xFF2E7D32).value,
+          lineOpacity: 0.75,
+          lineWidth: 2.2,
+          filter: [
+            '==',
+            ['get', 'kind'],
+            'captured',
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryCapturedExtrusionLayerId,
-      mapbox.FillExtrusionLayer(
-        id: _territoryCapturedExtrusionLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        fillExtrusionColor: const Color(0xFF4CAF50).value,
-        fillExtrusionOpacity: 0.65,
-        fillExtrusionHeightExpression: ['get', 'height'],
-        fillExtrusionBaseExpression: ['get', 'base'],
-        fillExtrusionVerticalGradient: true,
-        filter: [
-          '==',
-          ['get', 'kind'],
-          'captured',
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryCapturedGlowLayerId,
+        mapbox.LineLayer(
+          id: _territoryCapturedGlowLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          lineColor: const Color(0xFF4CAF50).value,
+          lineOpacity: 0.35,
+          lineWidth: 6.0,
+          lineBlur: 3.5,
+          filter: [
+            '==',
+            ['get', 'kind'],
+            'captured',
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryOwnFillLayerId,
-      mapbox.FillLayer(
-        id: _territoryOwnFillLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        fillColor: const Color(0xFF4CAF50).value,
-        fillOpacity: _territoryFillOpacity,
-        filter: [
-          'all',
-          ['==', ['get', 'kind'], 'territory'],
-          ['==', ['get', 'isOwn'], true],
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryCapturedExtrusionLayerId,
+        mapbox.FillExtrusionLayer(
+          id: _territoryCapturedExtrusionLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          fillExtrusionColor: const Color(0xFF4CAF50).value,
+          fillExtrusionOpacity: 0.65,
+          fillExtrusionHeightExpression: ['get', 'height'],
+          fillExtrusionBaseExpression: ['get', 'base'],
+          fillExtrusionVerticalGradient: true,
+          filter: [
+            '==',
+            ['get', 'kind'],
+            'captured',
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryOwnLineLayerId,
-      mapbox.LineLayer(
-        id: _territoryOwnLineLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        lineColor: const Color(0xFF2E7D32).value,
-        lineOpacity: 0.6,
-        lineWidth: 2.0,
-        filter: [
-          'all',
-          ['==', ['get', 'kind'], 'territory'],
-          ['==', ['get', 'isOwn'], true],
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryOwnFillLayerId,
+        mapbox.FillLayer(
+          id: _territoryOwnFillLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          fillColor: const Color(0xFF4CAF50).value,
+          fillOpacity: _territoryFillOpacity,
+          filter: [
+            'all',
+            [
+              '==',
+              ['get', 'kind'],
+              'territory'
+            ],
+            [
+              '==',
+              ['get', 'isOwn'],
+              true
+            ],
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryOwnGlowLayerId,
-      mapbox.LineLayer(
-        id: _territoryOwnGlowLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        lineColor: const Color(0xFF4CAF50).value,
-        lineOpacity: 0.25,
-        lineWidth: 5.0,
-        lineBlur: 3.0,
-        filter: [
-          'all',
-          ['==', ['get', 'kind'], 'territory'],
-          ['==', ['get', 'isOwn'], true],
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryOwnLineLayerId,
+        mapbox.LineLayer(
+          id: _territoryOwnLineLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          lineColor: const Color(0xFF2E7D32).value,
+          lineOpacity: 0.6,
+          lineWidth: 2.0,
+          filter: [
+            'all',
+            [
+              '==',
+              ['get', 'kind'],
+              'territory'
+            ],
+            [
+              '==',
+              ['get', 'isOwn'],
+              true
+            ],
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryOwnExtrusionLayerId,
-      mapbox.FillExtrusionLayer(
-        id: _territoryOwnExtrusionLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        fillExtrusionColor: const Color(0xFF4CAF50).value,
-        fillExtrusionOpacity: 0.4,
-        fillExtrusionHeightExpression: ['get', 'height'],
-        fillExtrusionBaseExpression: ['get', 'base'],
-        fillExtrusionVerticalGradient: true,
-        filter: [
-          'all',
-          ['==', ['get', 'kind'], 'territory'],
-          ['==', ['get', 'isOwn'], true],
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryOwnGlowLayerId,
+        mapbox.LineLayer(
+          id: _territoryOwnGlowLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          lineColor: const Color(0xFF4CAF50).value,
+          lineOpacity: 0.25,
+          lineWidth: 5.0,
+          lineBlur: 3.0,
+          filter: [
+            'all',
+            [
+              '==',
+              ['get', 'kind'],
+              'territory'
+            ],
+            [
+              '==',
+              ['get', 'isOwn'],
+              true
+            ],
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryOtherFillLayerId,
-      mapbox.FillLayer(
-        id: _territoryOtherFillLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        fillColor: const Color(0xFFFF5722).value,
-        fillOpacity: _territoryFillOpacity,
-        filter: [
-          'all',
-          ['==', ['get', 'kind'], 'territory'],
-          ['==', ['get', 'isOwn'], false],
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryOwnExtrusionLayerId,
+        mapbox.FillExtrusionLayer(
+          id: _territoryOwnExtrusionLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          fillExtrusionColor: const Color(0xFF4CAF50).value,
+          fillExtrusionOpacity: 0.4,
+          fillExtrusionHeightExpression: ['get', 'height'],
+          fillExtrusionBaseExpression: ['get', 'base'],
+          fillExtrusionVerticalGradient: true,
+          filter: [
+            'all',
+            [
+              '==',
+              ['get', 'kind'],
+              'territory'
+            ],
+            [
+              '==',
+              ['get', 'isOwn'],
+              true
+            ],
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryOtherLineLayerId,
-      mapbox.LineLayer(
-        id: _territoryOtherLineLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        lineColor: const Color(0xFFEF6C00).value,
-        lineOpacity: 0.55,
-        lineWidth: 2.0,
-        filter: [
-          'all',
-          ['==', ['get', 'kind'], 'territory'],
-          ['==', ['get', 'isOwn'], false],
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryOtherFillLayerId,
+        mapbox.FillLayer(
+          id: _territoryOtherFillLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          fillColor: const Color(0xFFFF5722).value,
+          fillOpacity: _territoryFillOpacity,
+          filter: [
+            'all',
+            [
+              '==',
+              ['get', 'kind'],
+              'territory'
+            ],
+            [
+              '==',
+              ['get', 'isOwn'],
+              false
+            ],
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryBossFillLayerId,
-      mapbox.FillLayer(
-        id: _territoryBossFillLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        fillColor: const Color(0xFFF59E0B).value,
-        fillOpacity: _territoryFillOpacity,
-        filter: [
-          '==',
-          ['get', 'kind'],
-          'boss',
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryOtherLineLayerId,
+        mapbox.LineLayer(
+          id: _territoryOtherLineLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          lineColor: const Color(0xFFEF6C00).value,
+          lineOpacity: 0.55,
+          lineWidth: 2.0,
+          filter: [
+            'all',
+            [
+              '==',
+              ['get', 'kind'],
+              'territory'
+            ],
+            [
+              '==',
+              ['get', 'isOwn'],
+              false
+            ],
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryBossLineLayerId,
-      mapbox.LineLayer(
-        id: _territoryBossLineLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        lineColor: const Color(0xFFF59E0B).value,
-        lineOpacity: 0.7,
-        lineWidth: 2.4,
-        filter: [
-          '==',
-          ['get', 'kind'],
-          'boss',
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryBossFillLayerId,
+        mapbox.FillLayer(
+          id: _territoryBossFillLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          fillColor: const Color(0xFFF59E0B).value,
+          fillOpacity: _territoryFillOpacity,
+          filter: [
+            '==',
+            ['get', 'kind'],
+            'boss',
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryBossGlowLayerId,
-      mapbox.LineLayer(
-        id: _territoryBossGlowLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        lineColor: const Color(0xFFF59E0B).value,
-        lineOpacity: 0.3,
-        lineWidth: 6.0,
-        lineBlur: 3.0,
-        filter: [
-          '==',
-          ['get', 'kind'],
-          'boss',
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryBossLineLayerId,
+        mapbox.LineLayer(
+          id: _territoryBossLineLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          lineColor: const Color(0xFFF59E0B).value,
+          lineOpacity: 0.7,
+          lineWidth: 2.4,
+          filter: [
+            '==',
+            ['get', 'kind'],
+            'boss',
+          ],
+        ),
+      );
 
-    await ensureLayer(
-      _territoryBossExtrusionLayerId,
-      mapbox.FillExtrusionLayer(
-        id: _territoryBossExtrusionLayerId,
-        sourceId: _territorySourceId,
-        slot: mapbox.LayerSlot.MIDDLE,
-        fillExtrusionColor: const Color(0xFFF59E0B).value,
-        fillExtrusionOpacity: 0.35,
-        fillExtrusionHeightExpression: ['get', 'height'],
-        fillExtrusionBaseExpression: ['get', 'base'],
-        fillExtrusionVerticalGradient: true,
-        filter: [
-          '==',
-          ['get', 'kind'],
-          'boss',
-        ],
-      ),
-    );
+      await ensureLayer(
+        _territoryBossGlowLayerId,
+        mapbox.LineLayer(
+          id: _territoryBossGlowLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          lineColor: const Color(0xFFF59E0B).value,
+          lineOpacity: 0.3,
+          lineWidth: 6.0,
+          lineBlur: 3.0,
+          filter: [
+            '==',
+            ['get', 'kind'],
+            'boss',
+          ],
+        ),
+      );
 
-    _territoryLayersReady = true;
+      await ensureLayer(
+        _territoryBossExtrusionLayerId,
+        mapbox.FillExtrusionLayer(
+          id: _territoryBossExtrusionLayerId,
+          sourceId: _territorySourceId,
+          slot: mapbox.LayerSlot.MIDDLE,
+          fillExtrusionColor: const Color(0xFFF59E0B).value,
+          fillExtrusionOpacity: 0.35,
+          fillExtrusionHeightExpression: ['get', 'height'],
+          fillExtrusionBaseExpression: ['get', 'base'],
+          fillExtrusionVerticalGradient: true,
+          filter: [
+            '==',
+            ['get', 'kind'],
+            'boss',
+          ],
+        ),
+      );
+      _territoryLayersReady = true;
+      completer.complete();
+    } catch (e) {
+      completer.completeError(e);
+      rethrow;
+    } finally {
+      _territoryLayerInitFuture = null;
+    }
   }
 
   bool _isCapturedPolygonId(String polygonId) {
@@ -5035,8 +5123,8 @@ class _MapScreenState extends State<MapScreen>
     return 0.0;
   }
 
-  double _heightForPolygon(String polygonId, String kind, bool isOwn,
-      List<LatLng> points) {
+  double _heightForPolygon(
+      String polygonId, String kind, bool isOwn, List<LatLng> points) {
     final area = _calculatePolygonAreaSqMeters(points);
     final base = _baseHeightForKind(kind, isOwn);
     if (base <= 0) return 0.0;
@@ -5073,9 +5161,8 @@ class _MapScreenState extends State<MapScreen>
       final points = polygon.points;
       if (points.length < 3) continue;
       final id = polygon.polygonId.value;
-      final coords = points
-          .map((p) => [p.longitude, p.latitude])
-          .toList(growable: true);
+      final coords =
+          points.map((p) => [p.longitude, p.latitude]).toList(growable: true);
       if (coords.isNotEmpty &&
           (coords.first[0] != coords.last[0] ||
               coords.first[1] != coords.last[1])) {
@@ -5108,8 +5195,7 @@ class _MapScreenState extends State<MapScreen>
       double height = targetHeight;
       if (animStart != null && targetHeight > 0) {
         final elapsed = DateTime.now().difference(animStart);
-        final progress =
-            (elapsed.inMilliseconds / 1400).clamp(0.0, 1.0);
+        final progress = (elapsed.inMilliseconds / 1400).clamp(0.0, 1.0);
         final eased = 1 - pow(1 - progress, 3).toDouble();
         height = targetHeight * eased;
         if (progress >= 1.0) {
@@ -5151,8 +5237,7 @@ class _MapScreenState extends State<MapScreen>
       if (_territoryGeoJsonSource != null) {
         await _territoryGeoJsonSource!.updateGeoJSON(geoJson);
       } else {
-        await _mapboxMap!
-            .style
+        await _mapboxMap!.style
             .setStyleSourceProperty(_territorySourceId, 'data', geoJson);
       }
       return;
@@ -5164,8 +5249,7 @@ class _MapScreenState extends State<MapScreen>
     if (_territoryGeoJsonSource != null) {
       await _territoryGeoJsonSource!.updateGeoJSON(geoJson);
     } else {
-      await _mapboxMap!
-          .style
+      await _mapboxMap!.style
           .setStyleSourceProperty(_territorySourceId, 'data', geoJson);
     }
   }
@@ -5309,7 +5393,8 @@ class _MapScreenState extends State<MapScreen>
     final shadowPaint = Paint()
       ..color = Colors.black.withOpacity(0.18)
       ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, size * 0.1);
-    canvas.drawCircle(center.translate(0, size * 0.05), radius * 1.1, shadowPaint);
+    canvas.drawCircle(
+        center.translate(0, size * 0.05), radius * 1.1, shadowPaint);
 
     final fillPaint = Paint()
       ..color = color
@@ -5359,7 +5444,8 @@ class _MapScreenState extends State<MapScreen>
       final polygonOptions = <mapbox.PolygonAnnotationOptions>[];
       if (showOverlays) {
         for (final circle in _getMapCircles()) {
-          final ringPoints = _generateCirclePoints(circle.center, circle.radius);
+          final ringPoints =
+              _generateCirclePoints(circle.center, circle.radius);
           final ring = ringPoints.map(_pointFromLatLng).toList();
           if (ring.isNotEmpty && ring.first != ring.last) {
             ring.add(ring.first);
@@ -5384,8 +5470,8 @@ class _MapScreenState extends State<MapScreen>
         if (polyline.points.length < 2) continue;
         if (!showOverlays) {
           final id = polyline.polylineId.value;
-          final allowIdle = id == 'activity_route' ||
-              id.startsWith('route_plan');
+          final allowIdle =
+              id == 'activity_route' || id.startsWith('route_plan');
           if (!allowIdle) continue;
         }
         final line = polyline.points.map(_pointFromLatLng).toList();
@@ -5434,8 +5520,7 @@ class _MapScreenState extends State<MapScreen>
           Color fallbackColor = Colors.blue;
           if (markerId.startsWith('poi_')) {
             final poiId = markerId.substring(4);
-            final visited =
-                _activePoiMission?.visited.contains(poiId) ?? false;
+            final visited = _activePoiMission?.visited.contains(poiId) ?? false;
             fallbackColor =
                 visited ? const Color(0xFF22C55E) : const Color(0xFF8B5CF6);
           } else if (markerId.startsWith('boss_')) {
@@ -5517,10 +5602,10 @@ class _MapScreenState extends State<MapScreen>
     final currentUserId = _currentUserIdFromAuth() ?? 'current_user';
 
     final pendingOwnerMarkers = <Map<String, dynamic>>[];
-      setState(() {
-        _polygons.clear();
-        _territoryMarkers.clear();
-        _capturedAreaData.clear();
+    setState(() {
+      _polygons.clear();
+      _territoryMarkers.clear();
+      _capturedAreaData.clear();
 
       // Group territories by owner to create filled areas
       Map<String, List<app.Territory>> territoriesByOwner = {};
@@ -5591,11 +5676,10 @@ class _MapScreenState extends State<MapScreen>
           0,
           (sum, territory) => sum + territory.points,
         );
-        final latestCapturedAt = ownerTerritories
-            .map((territory) => territory.capturedAt)
-            .reduce(
-              (current, next) => current.isAfter(next) ? current : next,
-            );
+        final latestCapturedAt =
+            ownerTerritories.map((territory) => territory.capturedAt).reduce(
+                  (current, next) => current.isAfter(next) ? current : next,
+                );
         DateTime? latestBattleAt;
         for (final territory in ownerTerritories) {
           final battleAt = territory.lastBattleAt;
@@ -5608,8 +5692,7 @@ class _MapScreenState extends State<MapScreen>
         final cachedAvatarSource = _extractAvatarFromMap(
           _userProfileCache[ownerId],
         );
-        final ownerAvatarSource =
-            cachedAvatarSource ??
+        final ownerAvatarSource = cachedAvatarSource ??
             (isOwnTerritory ? _currentUserAvatarSource() : null);
         final ownerOnTap = () {
           _showTerritoryInfo(
@@ -5661,9 +5744,8 @@ class _MapScreenState extends State<MapScreen>
       final lastBattleAt = pending['lastBattleAt'] as DateTime?;
       final areaSqMeters = _toDoubleSafe(pending['areaSqMeters']);
       final currentUserId = _currentUserIdFromAuth() ?? _currentUserId;
-      bool isOwn = ownerId != null &&
-          currentUserId != null &&
-          ownerId == currentUserId;
+      bool isOwn =
+          ownerId != null && currentUserId != null && ownerId == currentUserId;
       if (!isOwn && ownerId == null && pending['isOwn'] == true) {
         isOwn = true;
       }
@@ -5770,6 +5852,8 @@ class _MapScreenState extends State<MapScreen>
     if (_loopCaptureInFlight) return;
     _loopCaptureInFlight = true;
     var didCapture = false;
+    final persistedHexIds = <String>{};
+    final persistedRoute = <LatLng>[];
 
     try {
       final routeLatLngs =
@@ -5815,14 +5899,6 @@ class _MapScreenState extends State<MapScreen>
 
       if (capturedHexIds.isEmpty) return;
 
-      setState(() {
-        _currentSessionTerritories += 1;
-        _capturedHexIds.addAll(capturedHexIds);
-        _territoryRoutePoints = simplified;
-      });
-
-      _showCapturedArea(simplified);
-
       final loopId = _uuid.v4();
       final hexCoordinates = <Map<String, double>>[];
       for (final hexId in capturedHexIds) {
@@ -5848,19 +5924,35 @@ class _MapScreenState extends State<MapScreen>
         final territoryApiService = di.getIt<TerritoryApiService>();
         await territoryApiService.captureTerritoriesPayload(payload);
         _reportedHexIds.addAll(capturedHexIds);
+        persistedHexIds.addAll(capturedHexIds);
+        persistedRoute.addAll(simplified);
         didCapture = true;
       } catch (e) {
         try {
           await _offlineSyncService.queueTerritoryPayload(payload);
           _reportedHexIds.addAll(capturedHexIds);
           _triggerBackgroundSync();
+          persistedHexIds.addAll(capturedHexIds);
+          persistedRoute.addAll(simplified);
           didCapture = true;
         } catch (queueError) {
-          print('[warn] Failed to queue realtime territory payload: $queueError');
+          print(
+              '[warn] Failed to queue realtime territory payload: $queueError');
         }
       }
     } finally {
       if (didCapture) {
+        setState(() {
+          _currentSessionTerritories += 1;
+          _capturedHexIds.addAll(persistedHexIds);
+          _territoryRoutePoints = persistedRoute;
+        });
+        _showCapturedArea(persistedRoute);
+        const territoryBonusPoints = 50;
+        context.read<GameBloc>().add(TerritoryCapture());
+        context.read<GameBloc>().add(AddPoints(territoryBonusPoints));
+        _sessionTerritoriesCredited += 1;
+        _sessionPointsCredited += territoryBonusPoints;
         _loopStartIndex = max(0, state.routePoints.length - 1);
         _loopStartDistanceMeters = state.totalDistance;
         _distanceToStart = double.infinity;
@@ -5893,18 +5985,21 @@ class _MapScreenState extends State<MapScreen>
       // Update distance in GameBloc
       print('📊 Updating GameBloc: +${distanceDelta.toStringAsFixed(3)} km');
       context.read<GameBloc>().add(UpdateDistance(distanceDelta));
+      _sessionDistanceCreditedKm += distanceDelta;
 
       // Award points based on distance (100 points per km, boosted by drops)
       final boostMultiplier = _mapDropService.activeBoost?.multiplier ?? 1;
       final pointsDelta = (distanceDelta * 100 * boostMultiplier).round();
       if (pointsDelta > 0) {
         context.read<GameBloc>().add(AddPoints(pointsDelta));
+        _sessionPointsCredited += pointsDelta;
       }
 
       // Update calories (60 cal per km)
       final caloriesDelta = (distanceDelta * 60).round();
       if (caloriesDelta > 0) {
         context.read<GameBloc>().add(AddCalories(caloriesDelta));
+        _sessionCaloriesCredited += caloriesDelta;
       }
     }
 
@@ -6263,8 +6358,7 @@ class _MapScreenState extends State<MapScreen>
     final areaId = DateTime.now().millisecondsSinceEpoch.toString();
     final capturedAt = DateTime.now();
     final authState = context.read<AuthBloc>().state;
-    final ownerName =
-        authState is Authenticated ? authState.user.name : 'You';
+    final ownerName = authState is Authenticated ? authState.user.name : 'You';
     final areaSqMeters = _calculatePolygonAreaSqMeters(routePoints);
     final avatarSource = _currentUserAvatarSource();
     final cacheKey = _currentUserIdFromAuth() ?? 'current_user';
@@ -6508,8 +6602,7 @@ class _MapScreenState extends State<MapScreen>
         'icon': Icons.flag,
         'label': 'Missions',
         'active': _activePoiMission != null &&
-            _activePoiMission!.visited.length <
-                _activePoiMission!.pois.length,
+            _activePoiMission!.visited.length < _activePoiMission!.pois.length,
         'onTap': _openPoiMissionSheet,
       },
       {
@@ -7263,26 +7356,45 @@ class _MapScreenState extends State<MapScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.95),
-        borderRadius: BorderRadius.circular(16),
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFF07192E).withOpacity(0.92),
+            const Color(0xFF123B5D).withOpacity(0.9),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withOpacity(0.2)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.12),
-            blurRadius: 16,
-            offset: const Offset(0, 6),
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
           ),
         ],
       ),
       child: Row(
         children: [
           Container(
-            width: 40,
-            height: 40,
+            width: 42,
+            height: 42,
             decoration: BoxDecoration(
-              color: Colors.blueGrey.shade50,
-              borderRadius: BorderRadius.circular(12),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF38BDF8), Color(0xFF0EA5E9)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(13),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF38BDF8).withOpacity(0.35),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
-            child: const Icon(Icons.route, color: Colors.blueGrey),
+            child: const Icon(Icons.route, color: Colors.white, size: 22),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -7293,36 +7405,58 @@ class _MapScreenState extends State<MapScreen>
                   routeName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: GoogleFonts.spaceGrotesk(
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
-                    color: Colors.black87,
+                    color: Colors.white,
+                    letterSpacing: -0.1,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Remaining ${_formatKm(remainingMeters)} of ${_formatKm(totalMeters)} · ETA $etaLabel',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  statusText,
-                  style: TextStyle(
+                  'Remaining ${_formatKm(remainingMeters)} of ${_formatKm(totalMeters)} | ETA $etaLabel',
+                  style: GoogleFonts.dmSans(
                     fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: statusColor,
+                    color: Colors.white70,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: statusColor.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: statusColor.withOpacity(0.45)),
+                  ),
+                  child: Text(
+                    statusText,
+                    style: GoogleFonts.dmSans(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: statusColor,
+                      letterSpacing: 0.3,
+                    ),
                   ),
                 ),
               ],
             ),
           ),
           const SizedBox(width: 8),
-          Icon(
-            Icons.wifi_tethering,
-            size: 18,
-            color: _isRealtimeRouteEnabled
-                ? Colors.blueAccent
-                : Colors.grey.shade400,
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.wifi_tethering,
+              size: 17,
+              color: _isRealtimeRouteEnabled
+                  ? const Color(0xFF7DD3FC)
+                  : Colors.white38,
+            ),
           ),
         ],
       ),
@@ -8706,8 +8840,7 @@ class _MapScreenState extends State<MapScreen>
     if (mission == null || mission.pois.isEmpty) {
       return const SizedBox.shrink();
     }
-    final label =
-        'Mission ${mission.visited.length}/${mission.pois.length}';
+    final label = 'Mission ${mission.visited.length}/${mission.pois.length}';
 
     return GestureDetector(
       onTap: _openPoiMissionSheet,
@@ -8848,39 +8981,72 @@ class _MapScreenState extends State<MapScreen>
     required bool isActive,
     required VoidCallback onTap,
   }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: isActive ? Colors.black87 : Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              blurRadius: 10,
-              offset: Offset(0, 2),
+    final iconColor = isActive ? Colors.white : const Color(0xFF0B2D30);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: isActive
+                  ? [
+                      AppTheme.primaryColor,
+                      AppTheme.accentColor,
+                    ]
+                  : [
+                      Colors.white.withOpacity(0.96),
+                      const Color(0xFFEAF7F7).withOpacity(0.96),
+                    ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              color: isActive ? Colors.white : Colors.black87,
-              size: 24,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: isActive
+                  ? Colors.white.withOpacity(0.35)
+                  : Colors.white.withOpacity(0.92),
             ),
-            SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                color: isActive ? Colors.white : Colors.black87,
+            boxShadow: [
+              BoxShadow(
+                color: isActive
+                    ? AppTheme.primaryColor.withOpacity(0.32)
+                    : Colors.black.withOpacity(0.14),
+                blurRadius: 14,
+                offset: const Offset(0, 6),
               ),
-            ),
-          ],
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: isActive
+                      ? Colors.white.withOpacity(0.18)
+                      : Colors.white.withOpacity(0.9),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, color: iconColor, size: 18),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                style: GoogleFonts.dmSans(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: iconColor,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -8903,26 +9069,43 @@ class _MapScreenState extends State<MapScreen>
 
     if (_currentSpeed < 6) {
       category = 'Walking';
-      speedColor = Colors.blue;
+      speedColor = const Color(0xFF38BDF8);
     } else if (_currentSpeed < 10) {
       category = 'Jogging';
-      speedColor = Colors.orange;
+      speedColor = const Color(0xFFF59E0B);
     } else {
       category = 'Running';
-      speedColor = Colors.red;
+      speedColor = const Color(0xFFFB7185);
     }
 
     return Container(
-      width: 120,
-      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      width: 140,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.85),
-        borderRadius: BorderRadius.circular(16),
+        gradient: LinearGradient(
+          colors: isTracking
+              ? [
+                  const Color(0xFF091A30).withOpacity(0.92),
+                  const Color(0xFF12395B).withOpacity(0.9),
+                ]
+              : [
+                  Colors.white.withOpacity(0.95),
+                  const Color(0xFFEAF7F7).withOpacity(0.95),
+                ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        border: Border.all(
+          color: isTracking
+              ? Colors.white.withOpacity(0.18)
+              : Colors.white.withOpacity(0.9),
+        ),
+        borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 8,
-            offset: Offset(0, 2),
+            color: Colors.black.withOpacity(0.16),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
@@ -8939,33 +9122,47 @@ class _MapScreenState extends State<MapScreen>
                 decoration: BoxDecoration(
                   color: speedColor,
                   shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: speedColor.withOpacity(0.45),
+                      blurRadius: 6,
+                      offset: const Offset(0, 0),
+                    ),
+                  ],
                 ),
               ),
-              SizedBox(width: 5),
+              const SizedBox(width: 5),
               Text(
                 category,
-                style: TextStyle(
+                style: GoogleFonts.dmSans(
                   fontSize: 9,
                   fontWeight: FontWeight.w700,
-                  color: Colors.grey.shade600,
+                  letterSpacing: 0.5,
+                  color: isTracking ? Colors.white70 : AppTheme.textSecondary,
                 ),
               ),
             ],
           ),
-          SizedBox(height: 3),
+          const SizedBox(height: 4),
           Text(
             '${_currentSpeed.toStringAsFixed(1)} km/h',
-            style: TextStyle(
+            style: GoogleFonts.spaceGrotesk(
               fontSize: 18,
-              fontWeight: FontWeight.w900,
-              color: Colors.black87,
+              fontWeight: FontWeight.w700,
+              color: isTracking ? Colors.white : const Color(0xFF0F172A),
+              letterSpacing: -0.2,
             ),
           ),
           // Distance to start indicator
           if (_distanceToStart < double.infinity) ...[
-            SizedBox(height: 6),
-            Divider(height: 1),
-            SizedBox(height: 6),
+            const SizedBox(height: 6),
+            Divider(
+              height: 1,
+              color: isTracking
+                  ? Colors.white.withOpacity(0.2)
+                  : Colors.black.withOpacity(0.08),
+            ),
+            const SizedBox(height: 6),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -8973,22 +9170,24 @@ class _MapScreenState extends State<MapScreen>
                   Icons.my_location,
                   size: 12,
                   color: _distanceToStart < 100
-                      ? Colors.green
+                      ? const Color(0xFF4ADE80)
                       : _distanceToStart < 200
-                          ? Colors.orange
-                          : Colors.grey,
+                          ? const Color(0xFFFBBF24)
+                          : (isTracking ? Colors.white60 : Colors.grey),
                 ),
-                SizedBox(width: 4),
+                const SizedBox(width: 4),
                 Text(
                   '${_distanceToStart.toStringAsFixed(0)}m',
-                  style: TextStyle(
+                  style: GoogleFonts.dmSans(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
                     color: _distanceToStart < 100
-                        ? Colors.green
+                        ? const Color(0xFF4ADE80)
                         : _distanceToStart < 200
-                            ? Colors.orange
-                            : Colors.grey.shade600,
+                            ? const Color(0xFFFBBF24)
+                            : (isTracking
+                                ? Colors.white70
+                                : Colors.grey.shade600),
                   ),
                 ),
               ],
@@ -8996,47 +9195,159 @@ class _MapScreenState extends State<MapScreen>
           ],
           // Estimated capturable area (when close enough to complete loop)
           if (_estimatedAreaSqMeters > 0 && _distanceToStart < 100) ...[
-            SizedBox(height: 6),
-            Divider(height: 1),
-            SizedBox(height: 6),
+            const SizedBox(height: 6),
+            Divider(
+              height: 1,
+              color: isTracking
+                  ? Colors.white.withOpacity(0.2)
+                  : Colors.black.withOpacity(0.08),
+            ),
+            const SizedBox(height: 6),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.crop_square, size: 12, color: Colors.purple),
-                SizedBox(width: 4),
+                const Icon(
+                  Icons.crop_square,
+                  size: 12,
+                  color: Color(0xFFA855F7),
+                ),
+                const SizedBox(width: 4),
                 Text(
                   _formatArea(_estimatedAreaSqMeters),
-                  style: TextStyle(
+                  style: GoogleFonts.dmSans(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
-                    color: Colors.purple,
+                    color: isTracking
+                        ? const Color(0xFFF0ABFC)
+                        : const Color(0xFFA855F7),
                   ),
                 ),
               ],
             ),
           ],
           if (_goalDistanceKm != null || _goalAreaSqMeters != null) ...[
-            SizedBox(height: 6),
-            Divider(height: 1),
-            SizedBox(height: 6),
+            const SizedBox(height: 6),
+            Divider(
+              height: 1,
+              color: isTracking
+                  ? Colors.white.withOpacity(0.2)
+                  : Colors.black.withOpacity(0.08),
+            ),
+            const SizedBox(height: 6),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.flag, size: 12, color: Colors.blueGrey),
-                SizedBox(width: 4),
+                Icon(
+                  Icons.flag,
+                  size: 12,
+                  color: isTracking ? const Color(0xFF7DD3FC) : Colors.blueGrey,
+                ),
+                const SizedBox(width: 4),
                 Text(
                   _goalDistanceKm != null
                       ? 'Goal: ${(currentDistanceKm / _goalDistanceKm! * 100).clamp(0, 100).toStringAsFixed(0)}%'
                       : _estimatedAreaSqMeters > 0
                           ? 'Goal: ${(_estimatedAreaSqMeters / _goalAreaSqMeters! * 100).clamp(0, 100).toStringAsFixed(0)}%'
                           : 'Goal set',
-                  style: TextStyle(
+                  style: GoogleFonts.dmSans(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
-                    color: Colors.blueGrey,
+                    color: isTracking
+                        ? const Color(0xFFE0F2FE)
+                        : Colors.blueGrey.shade700,
                   ),
                 ),
               ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStepCounterDisplay() {
+    final motionLabel = _displayedMotionType.toString().split('.').last;
+    final motionColor = _displayedMotionType == MotionType.running
+        ? const Color(0xFFFB7185)
+        : _displayedMotionType == MotionType.jogging
+            ? const Color(0xFFFBBF24)
+            : const Color(0xFF38BDF8);
+
+    return Container(
+      width: 88,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFF091A30).withOpacity(0.92),
+            const Color(0xFF12395B).withOpacity(0.9),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withOpacity(0.18)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.16),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.14),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.directions_walk,
+              color: Colors.white,
+              size: 18,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '$_advancedSteps',
+            style: GoogleFonts.spaceGrotesk(
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              letterSpacing: -0.2,
+            ),
+          ),
+          Text(
+            'STEPS',
+            style: GoogleFonts.dmSans(
+              fontSize: 8,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.0,
+              color: Colors.white70,
+            ),
+          ),
+          if (_displayedMotionType != MotionType.stationary) ...[
+            const SizedBox(height: 5),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                color: motionColor.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: motionColor.withOpacity(0.45)),
+              ),
+              child: Text(
+                motionLabel.toUpperCase(),
+                style: GoogleFonts.dmSans(
+                  fontSize: 7,
+                  fontWeight: FontWeight.w700,
+                  color: motionColor,
+                  letterSpacing: 0.6,
+                ),
+              ),
             ),
           ],
         ],
@@ -9218,22 +9529,22 @@ class _MapScreenState extends State<MapScreen>
     print('📊 Total activity data entries: ${_activityData.length}');
 
     // First check activity polygons (user's own completed loops)
-      for (final entry in _activityData.entries) {
-        if (entry.key.startsWith('saved_area_')) {
-          final activity = entry.value;
-          final routeData = activity['routePoints'] as List<dynamic>?;
+    for (final entry in _activityData.entries) {
+      if (entry.key.startsWith('saved_area_')) {
+        final activity = entry.value;
+        final routeData = activity['routePoints'] as List<dynamic>?;
 
-          if (routeData != null && routeData.length >= 3) {
-            final routePoints =
-                routeData.map(_parseRoutePoint).whereType<LatLng>().toList();
-            if (routePoints.length < 3) {
-              continue;
-            }
+        if (routeData != null && routeData.length >= 3) {
+          final routePoints =
+              routeData.map(_parseRoutePoint).whereType<LatLng>().toList();
+          if (routePoints.length < 3) {
+            continue;
+          }
 
-            if (_isPointInPolygon(tapPosition, routePoints)) {
-              print('✅ Tap is inside activity polygon: ${entry.key}');
-              _showActivityDetailDrawer(activity);
-              return true;
+          if (_isPointInPolygon(tapPosition, routePoints)) {
+            print('✅ Tap is inside activity polygon: ${entry.key}');
+            _showActivityDetailDrawer(activity);
+            return true;
           }
         }
       }
@@ -9452,20 +9763,28 @@ class _MapScreenState extends State<MapScreen>
                   width: 60,
                   height: 60,
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.white.withOpacity(0.98),
+                        const Color(0xFFEAF7F7).withOpacity(0.96),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
                     shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white.withOpacity(0.9)),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 15,
-                        offset: Offset(0, 5),
+                        color: Colors.black.withOpacity(0.16),
+                        blurRadius: 16,
+                        offset: const Offset(0, 6),
                       ),
                     ],
                   ),
-                  child: Icon(
+                  child: const Icon(
                     Icons.home_rounded,
-                    size: 28,
-                    color: Colors.black87,
+                    size: 27,
+                    color: Color(0xFF0B2D30),
                   ),
                 ),
               ),
@@ -9486,18 +9805,30 @@ class _MapScreenState extends State<MapScreen>
                       width: 70,
                       height: 70,
                       decoration: BoxDecoration(
-                        color: _trackingState == TrackingState.paused
-                            ? Colors.green
-                            : Colors.orange,
+                        gradient: LinearGradient(
+                          colors: _trackingState == TrackingState.paused
+                              ? [
+                                  const Color(0xFF22C55E),
+                                  const Color(0xFF16A34A),
+                                ]
+                              : [
+                                  const Color(0xFFF59E0B),
+                                  const Color(0xFFD97706),
+                                ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
                         shape: BoxShape.circle,
+                        border:
+                            Border.all(color: Colors.white.withOpacity(0.35)),
                         boxShadow: [
                           BoxShadow(
                             color: (_trackingState == TrackingState.paused
-                                    ? Colors.green
-                                    : Colors.orange)
-                                .withOpacity(0.3),
-                            blurRadius: 15,
-                            offset: Offset(0, 5),
+                                    ? const Color(0xFF22C55E)
+                                    : const Color(0xFFF59E0B))
+                                .withOpacity(0.35),
+                            blurRadius: 18,
+                            offset: const Offset(0, 7),
                           ),
                         ],
                       ),
@@ -9555,8 +9886,8 @@ class _MapScreenState extends State<MapScreen>
                       child: AnimatedBuilder(
                         animation: _endHintController,
                         builder: (context, child) {
-                          final t =
-                              Curves.easeOut.transform(_endHintController.value);
+                          final t = Curves.easeOut
+                              .transform(_endHintController.value);
                           return Opacity(
                             opacity: t,
                             child: Transform.translate(
@@ -9574,32 +9905,45 @@ class _MapScreenState extends State<MapScreen>
                   // Progress indicator
                   if (_isHoldingEnd)
                     SizedBox(
-                      width: 80,
-                      height: 80,
+                      width: 86,
+                      height: 86,
                       child: CircularProgressIndicator(
                         value: _holdProgress,
                         strokeWidth: 4,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                        backgroundColor: Colors.white.withOpacity(0.3),
+                        valueColor: const AlwaysStoppedAnimation<Color>(
+                          Color(0xFF7DD3FC),
+                        ),
+                        backgroundColor: Colors.white.withOpacity(0.24),
                       ),
                     ),
                   // Button
                   Container(
-                    width: 70,
-                    height: 70,
+                    width: 74,
+                    height: 74,
                     decoration: BoxDecoration(
-                      color: _trackingState == TrackingState.stopped
-                          ? Colors.black87
-                          : Colors.red,
+                      gradient: LinearGradient(
+                        colors: _trackingState == TrackingState.stopped
+                            ? [
+                                const Color(0xFF0B2D30),
+                                const Color(0xFF0B6F73),
+                              ]
+                            : [
+                                const Color(0xFFEF4444),
+                                const Color(0xFFDC2626),
+                              ],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
                       shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white.withOpacity(0.35)),
                       boxShadow: [
                         BoxShadow(
                           color: (_trackingState == TrackingState.stopped
-                                  ? Colors.black87
-                                  : Colors.red)
-                              .withOpacity(0.3),
-                          blurRadius: 15,
-                          offset: Offset(0, 5),
+                                  ? AppTheme.accentColor
+                                  : const Color(0xFFEF4444))
+                              .withOpacity(0.4),
+                          blurRadius: 20,
+                          offset: const Offset(0, 8),
                         ),
                       ],
                     ),
@@ -9636,17 +9980,29 @@ class _MapScreenState extends State<MapScreen>
                   width: 60,
                   height: 60,
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.white.withOpacity(0.98),
+                        const Color(0xFFEAF7F7).withOpacity(0.96),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
                     shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white.withOpacity(0.9)),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 15,
-                        offset: Offset(0, 5),
+                        color: Colors.black.withOpacity(0.16),
+                        blurRadius: 16,
+                        offset: const Offset(0, 6),
                       ),
                     ],
                   ),
-                  child: Icon(Icons.history, size: 28, color: Colors.black87),
+                  child: const Icon(
+                    Icons.history,
+                    size: 27,
+                    color: Color(0xFF0B2D30),
+                  ),
                 ),
               ),
             ],
@@ -9803,6 +10159,19 @@ class _MapScreenState extends State<MapScreen>
     _lastMapGestureAt = DateTime.now();
   }
 
+  double _computeViewportRadiusKm({
+    required double zoom,
+    required double latitude,
+  }) {
+    final size = MediaQuery.of(context).size;
+    final minPixels = min(size.width, size.height);
+    final metersPerPixel =
+        156543.03392 * cos(latitude * pi / 180) / pow(2.0, zoom);
+    final radiusMeters = (minPixels / 2) * metersPerPixel;
+    final radiusKm = radiusMeters / 1000.0;
+    return radiusKm.clamp(0.5, 25.0);
+  }
+
   Future<void> _handleMapIdle() async {
     if (!_shouldRenderHeavyOverlays || _mapboxMap == null) {
       return;
@@ -9815,9 +10184,12 @@ class _MapScreenState extends State<MapScreen>
     _lastMapGestureAt = null;
     try {
       final camera = await _mapboxMap!.getCameraState();
-      if (camera.zoom < 12.0) return;
       final center = _latLngFromPoint(camera.center);
-      _scheduleTerritoryFetch(center, force: true);
+      final radiusKm = _computeViewportRadiusKm(
+        zoom: camera.zoom,
+        latitude: center.latitude,
+      );
+      _scheduleTerritoryFetch(center, force: true, radiiKm: [radiusKm]);
     } catch (e) {
       print('Failed to load territories for map center: $e');
     }
@@ -9834,20 +10206,17 @@ class _MapScreenState extends State<MapScreen>
       _isSyncing = true;
     }
 
-    _offlineSyncService
-        .syncPending()
-        .then((synced) async {
-          await _refreshSyncStatus();
-          if (synced > 0) {
-            await _loadSavedCapturedAreas();
-            if (_lastKnownLocation != null) {
-              _scheduleTerritoryFetch(_lastKnownLocation!, force: true);
-            } else {
-              await _refreshRecentTerritories();
-            }
-          }
-        })
-        .whenComplete(() {
+    _offlineSyncService.syncPending().then((synced) async {
+      await _refreshSyncStatus();
+      if (synced > 0) {
+        await _loadSavedCapturedAreas();
+        if (_lastKnownLocation != null) {
+          _scheduleTerritoryFetch(_lastKnownLocation!, force: true);
+        } else {
+          await _refreshRecentTerritories();
+        }
+      }
+    }).whenComplete(() {
       if (mounted) {
         setState(() {
           _isSyncing = false;
@@ -9895,6 +10264,10 @@ class _MapScreenState extends State<MapScreen>
       _lastLoopCaptureAt = null;
       _reportedHexIds.clear();
       _capturedHexIds.clear();
+      _sessionDistanceCreditedKm = 0.0;
+      _sessionPointsCredited = 0;
+      _sessionCaloriesCredited = 0;
+      _sessionTerritoriesCredited = 0;
       _smoothedCameraTarget = null;
       _smoothedCameraBearing = null;
       _splitIndex = 0;
@@ -10029,63 +10402,97 @@ class _MapScreenState extends State<MapScreen>
         _distanceToStart = loopDistanceToStart;
       }
 
-      // Check if loop was completed (returned within 100m of start)
-      final bool loopCompleted = loopDistanceToStart < 100;
-      final int newTerritoryCount = _currentSessionTerritories > 0
-          ? _currentSessionTerritories
-          : (loopCompleted ? 1 : 0); // 1 territory per completed loop
-
-      print(
-        '🔄 Loop completed: $loopCompleted (distance to start: ${loopDistanceToStart.toStringAsFixed(1)}m)',
-      );
-
-      // If loop completed, create a territory with the actual route shape
-      if (_currentSessionTerritories == 0 &&
-          _capturedHexIds.isEmpty &&
-          loopCompleted &&
-          locationState is LocationTracking &&
-          locationState.routePoints.isNotEmpty) {
-        // Calculate center point of the route
-        double sumLat = 0;
-        double sumLng = 0;
-        for (final point in locationState.routePoints) {
-          sumLat += point.latitude;
-          sumLng += point.longitude;
-        }
-        final centerLat = sumLat / locationState.routePoints.length;
-        final centerLng = sumLng / locationState.routePoints.length;
-
-        // Generate hex ID for this territory (for uniqueness)
-        final hexId = TerritoryGridHelper.getHexId(centerLat, centerLng);
-        _capturedHexIds.add(hexId);
-
-        // Store the actual route points for the territory shape
-        _territoryRoutePoints = locationState.routePoints
-            .map((p) => LatLng(p.latitude, p.longitude))
-            .toList();
-
-        print(
-          '🏆 Territory created: loop shape with ${_territoryRoutePoints.length} points',
-        );
-      }
-
-      // 1 point per 100 meters walked
-      final pointsEarned =
-          (distance * 10).round(); // distance in km, so * 10 = per 100m
-
-      print('✅ Territories captured: $newTerritoryCount');
-      print('💰 Points earned: $pointsEarned');
-      print('🔢 _capturedHexIds.length = ${_capturedHexIds.length}');
-
       // Capture route points for display BEFORE stopping
       final routePoints = locationState is LocationTracking
           ? locationState.routePoints
               .map((p) => LatLng(p.latitude, p.longitude))
               .toList()
           : <LatLng>[];
+      final routeAreaSqMeters = routePoints.length >= 3
+          ? _calculatePolygonAreaSqMeters(routePoints)
+          : 0.0;
+
+      // Check if loop was completed (returned within 100m of start)
+      final bool loopCompleted = loopDistanceToStart < 100;
+      final bool fallbackLoopCaptureEligible = loopCompleted &&
+          distance >= _minTerritoryCaptureDistanceKm &&
+          routeAreaSqMeters >= _minTerritoryCaptureAreaSqMeters;
+      final int newTerritoryCount = _currentSessionTerritories > 0
+          ? _currentSessionTerritories
+          : (fallbackLoopCaptureEligible ? 1 : 0);
+
+      print(
+        '🔄 Loop completed: $loopCompleted (distance to start: ${loopDistanceToStart.toStringAsFixed(1)}m)',
+      );
+      print(
+        '🧭 Fallback capture eligible: $fallbackLoopCaptureEligible '
+        '(distance=${distance.toStringAsFixed(3)}km, area=${routeAreaSqMeters.toStringAsFixed(1)}m²)',
+      );
+
+      // If this session had no realtime capture, optionally create one validated loop territory.
+      if (_currentSessionTerritories == 0 &&
+          _capturedHexIds.isEmpty &&
+          fallbackLoopCaptureEligible &&
+          routePoints.isNotEmpty) {
+        // Calculate center point of the route
+        double sumLat = 0;
+        double sumLng = 0;
+        for (final point in routePoints) {
+          sumLat += point.latitude;
+          sumLng += point.longitude;
+        }
+        final centerLat = sumLat / routePoints.length;
+        final centerLng = sumLng / routePoints.length;
+
+        // Generate hex ID for this territory (for uniqueness)
+        final hexId = TerritoryGridHelper.getHexId(centerLat, centerLng);
+        _capturedHexIds.add(hexId);
+
+        // Store the actual route points for the territory shape
+        _territoryRoutePoints = routePoints;
+        _estimatedAreaSqMeters = routeAreaSqMeters;
+
+        print(
+          '🏆 Territory created: loop shape with ${_territoryRoutePoints.length} points',
+        );
+      } else if (_currentSessionTerritories == 0 &&
+          !fallbackLoopCaptureEligible) {
+        // Avoid showing misleading tiny-loop area as a captured territory.
+        _estimatedAreaSqMeters = 0.0;
+      }
+
+      final distancePoints = (distance * 100).round();
+      final territoryPoints = newTerritoryCount * 50;
+      final pointsEarned =
+          max(distancePoints + territoryPoints, _sessionPointsCredited);
+
+      final remainingDistanceCredit =
+          (distance - _sessionDistanceCreditedKm).clamp(0.0, double.infinity);
+      if (remainingDistanceCredit > 0) {
+        context.read<GameBloc>().add(UpdateDistance(remainingDistanceCredit));
+      }
+      final totalCalories = (distance * 60).round();
+      final remainingCalories =
+          max(0, totalCalories - _sessionCaloriesCredited);
+      if (remainingCalories > 0) {
+        context.read<GameBloc>().add(AddCalories(remainingCalories));
+      }
+      final remainingPoints = max(0, pointsEarned - _sessionPointsCredited);
+      if (remainingPoints > 0) {
+        context.read<GameBloc>().add(AddPoints(remainingPoints));
+      }
+      final remainingTerritories =
+          max(0, newTerritoryCount - _sessionTerritoriesCredited);
+      for (int i = 0; i < remainingTerritories; i++) {
+        context.read<GameBloc>().add(TerritoryCapture());
+      }
+
+      print('✅ Territories captured: $newTerritoryCount');
+      print('💰 Points earned: $pointsEarned');
+      print('🔢 _capturedHexIds.length = ${_capturedHexIds.length}');
 
       // Show captured area as single filled polygon
-      if (routePoints.length >= 3) {
+      if (newTerritoryCount > 0 && routePoints.length >= 3) {
         _showCapturedArea(routePoints);
       }
 
@@ -10113,6 +10520,10 @@ class _MapScreenState extends State<MapScreen>
         _currentSpeed = 0.0;
         _capturedHexIds.clear(); // Clear AFTER save
         _lastDistanceUpdate = 0.0;
+        _sessionDistanceCreditedKm = 0.0;
+        _sessionPointsCredited = 0;
+        _sessionCaloriesCredited = 0;
+        _sessionTerritoriesCredited = 0;
         _trackingStartTime = null;
         _sessionStartSteps = 0;
         _startPointCircle = null;
@@ -10230,6 +10641,10 @@ class _MapScreenState extends State<MapScreen>
         _capturedHexIds.clear();
         _lastDistanceUpdate = 0.0;
         _lastNotificationDistance = 0.0;
+        _sessionDistanceCreditedKm = 0.0;
+        _sessionPointsCredited = 0;
+        _sessionCaloriesCredited = 0;
+        _sessionTerritoriesCredited = 0;
         _currentSessionTerritories = 0; // Reset session territories
         _loopStartIndex = 0;
         _loopStartDistanceMeters = 0.0;
@@ -10328,23 +10743,21 @@ class _MapScreenState extends State<MapScreen>
       return;
     }
 
-    final recent = state.routePoints
-        .sublist(max(0, state.routePoints.length - 30));
+    final recent =
+        state.routePoints.sublist(max(0, state.routePoints.length - 30));
 
     double? avgAccuracy;
     final accuracyValues =
         recent.map((p) => p.accuracy).whereType<double>().toList();
     if (accuracyValues.isNotEmpty) {
-      avgAccuracy = accuracyValues.reduce((a, b) => a + b) /
-          accuracyValues.length;
+      avgAccuracy =
+          accuracyValues.reduce((a, b) => a + b) / accuracyValues.length;
     }
 
     final accuracyScore = avgAccuracy == null
         ? 55.0
-        : (1.0 -
-                ((avgAccuracy.clamp(5.0, 35.0) - 5.0) /
-                    30.0))
-            .clamp(0.0, 1.0) *
+        : (1.0 - ((avgAccuracy.clamp(5.0, 35.0) - 5.0) / 30.0))
+                .clamp(0.0, 1.0) *
             100.0;
 
     double headingChangeSum = 0.0;
@@ -10353,23 +10766,23 @@ class _MapScreenState extends State<MapScreen>
       final p0 = recent[i - 2];
       final p1 = recent[i - 1];
       final p2 = recent[i];
-      final h1 =
-          _calculateBearing(LatLng(p0.latitude, p0.longitude), LatLng(p1.latitude, p1.longitude));
-      final h2 =
-          _calculateBearing(LatLng(p1.latitude, p1.longitude), LatLng(p2.latitude, p2.longitude));
+      final h1 = _calculateBearing(
+          LatLng(p0.latitude, p0.longitude), LatLng(p1.latitude, p1.longitude));
+      final h2 = _calculateBearing(
+          LatLng(p1.latitude, p1.longitude), LatLng(p2.latitude, p2.longitude));
       final delta = ((h2 - h1 + 540) % 360) - 180;
       headingChangeSum += delta.abs();
       headingSamples += 1;
     }
     final avgHeadingChange =
         headingSamples > 0 ? headingChangeSum / headingSamples : 0.0;
-    final smoothScore = (1.0 - (avgHeadingChange / 90.0))
-        .clamp(0.0, 1.0) *
-        100.0;
+    final smoothScore =
+        (1.0 - (avgHeadingChange / 90.0)).clamp(0.0, 1.0) * 100.0;
 
     final totalDistance = state.totalDistance;
-    final pointsPerKm =
-        totalDistance > 0 ? (state.routePoints.length / (totalDistance / 1000)) : 0.0;
+    final pointsPerKm = totalDistance > 0
+        ? (state.routePoints.length / (totalDistance / 1000))
+        : 0.0;
     final densityScore = (pointsPerKm / 80.0).clamp(0.0, 1.0) * 100.0;
 
     final score =
@@ -10427,8 +10840,7 @@ class _MapScreenState extends State<MapScreen>
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  List<LatLng> _limitLatLngPoints(List<LatLng> points,
-      {int maxPoints = 2000}) {
+  List<LatLng> _limitLatLngPoints(List<LatLng> points, {int maxPoints = 2000}) {
     if (points.length <= maxPoints) {
       return points;
     }
@@ -10537,6 +10949,34 @@ class _MapScreenState extends State<MapScreen>
           'capturedHexIds': _capturedHexIds.toList(),
         if (mapSnapshot != null) 'routeMapSnapshot': mapSnapshot,
       };
+
+      final localActivityPreview = {
+        'id': activity.id,
+        'startTime': (activity.startTime ?? DateTime.now()).toIso8601String(),
+        'endTime': (activity.endTime ?? DateTime.now()).toIso8601String(),
+        'createdAt': (activity.endTime ?? DateTime.now()).toIso8601String(),
+        'routePoints': activityPayload['routePoints'],
+        'distanceMeters': distance * 1000,
+        'territoriesCaptured': territoriesCount,
+        'pointsEarned': pointsEarned,
+        if (territoriesCount > 0 && _estimatedAreaSqMeters > 0)
+          'capturedAreaSqMeters': _estimatedAreaSqMeters,
+      };
+      if (mounted) {
+        setState(() {
+          _activityHistory.insert(
+            0,
+            _normalizeActivityData(localActivityPreview),
+          );
+          if (_activityHistory.length > 200) {
+            _activityHistory = _activityHistory.sublist(0, 200);
+          }
+          _updateLocalStreaks();
+        });
+        if (_showHeatmap) {
+          _buildHeatmapCircles();
+        }
+      }
 
       // Queue first (offline-safe), then sync in background
       await _offlineSyncService.queueActivityPayload(activityPayload);
