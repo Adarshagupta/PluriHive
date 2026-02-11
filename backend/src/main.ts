@@ -7,20 +7,42 @@ import * as path from 'path';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  
   const isProd = process.env.NODE_ENV === 'production';
   const corsOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
-  if (isProd && corsOrigins.length === 0) {
-    throw new Error('CORS_ORIGINS must be set in production');
+  if (isProd) {
+    if (!process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET must be set in production');
+    }
+
+    const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
+    const hasDiscreteDatabaseConfig = Boolean(
+      process.env.DATABASE_HOST &&
+        process.env.DATABASE_USER &&
+        process.env.DATABASE_PASSWORD &&
+        process.env.DATABASE_NAME,
+    );
+
+    if (!hasDatabaseUrl && !hasDiscreteDatabaseConfig) {
+      throw new Error(
+        'DATABASE_URL or DATABASE_HOST/DATABASE_USER/DATABASE_PASSWORD/DATABASE_NAME must be set in production',
+      );
+    }
+
+    if (corsOrigins.length === 0) {
+      console.warn(
+        'CORS_ORIGINS is not set in production. Allowing all origins temporarily.',
+      );
+    }
   }
+
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   // Enable CORS for Flutter app / web client
   app.enableCors({
-    origin: isProd ? corsOrigins : true,
+    origin: isProd ? (corsOrigins.length > 0 ? corsOrigins : true) : true,
     credentials: true,
   });
 
@@ -33,15 +55,6 @@ async function bootstrap() {
     app.useStaticAssets(staticRoot, { prefix: '/static' });
   }
 
-  if (isProd) {
-    const requiredEnv = ['JWT_SECRET', 'DATABASE_PASSWORD'];
-    for (const key of requiredEnv) {
-      if (!process.env[key]) {
-        throw new Error(`${key} must be set in production`);
-      }
-    }
-  }
-  
   // Global validation pipe
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
